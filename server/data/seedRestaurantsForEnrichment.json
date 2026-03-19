@@ -1,0 +1,52 @@
+[
+  {
+    "restaurantId": "rest_1",
+    "name": "Lou Malnati's",
+    "neighborhood": "River North",
+    "city": "Chicago",
+    "state": "IL",
+    "address": "439 N Wells St, Chicago, IL",
+    "lat": 41.8902,
+    "lng": -87.6369
+  },
+  {
+    "restaurantId": "rest_2",
+    "name": "Girl & the Goat",
+    "neighborhood": "West Loop",
+    "city": "Chicago",
+    "state": "IL",
+    "address": "809 W Randolph St, Chicago, IL",
+    "lat": 41.8815,
+    "lng": -87.6472
+  },
+  {
+    "restaurantId": "rest_3",
+    "name": "Portillo's",
+    "neighborhood": "River North",
+    "city": "Chicago",
+    "state": "IL",
+    "address": "100 W Ontario St, Chicago, IL",
+    "lat": 41.8934,
+    "lng": -87.6314
+  },
+  {
+    "restaurantId": "rest_4",
+    "name": "The Purple Pig",
+    "neighborhood": "Magnificent Mile",
+    "city": "Chicago",
+    "state": "IL",
+    "address": "500 N Michigan Ave, Chicago, IL",
+    "lat": 41.8904,
+    "lng": -87.6242
+  },
+  {
+    "restaurantId": "rest_5",
+    "name": "Au Cheval",
+    "neighborhood": "West Loop",
+    "city": "Chicago",
+    "state": "IL",
+    "address": "800 W Randolph St, Chicago, IL",
+    "lat": 41.8845,
+    "lng": -87.6477
+  }
+]

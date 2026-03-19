@@ -32,6 +32,10 @@ export interface PoolItem {
   previewPhotoUrl?: string;
   /** Resolved image URL (https or relative proxy path). Never a photo_reference. */
   imageUrl?: string;
+  /** One social proof badge: e.g. "3 friends saved this", "Trending tonight", "People like you loved this". */
+  socialProofBadge?: string | null;
+  /** Optional group consensus signal, e.g. \"3/4 liked this\". */
+  groupSignal?: string | null;
 }
 
 export interface GetPoolResponse {
@@ -77,10 +81,16 @@ export async function getTonightPool(
   code: string,
   page = 0,
   pageSize = 20,
+  participantId?: string | null,
 ): Promise<GetPoolResponse> {
+  const params: { page: number; pageSize: number; participantId?: string } = {
+    page,
+    pageSize,
+  };
+  if (participantId) params.participantId = participantId;
   const { data } = await apiClient.get<GetPoolResponse>(
     `/api/tonight/sessions/${encodeURIComponent(code)}/pool`,
-    { params: { page, pageSize } },
+    { params },
   );
   return data;
 }

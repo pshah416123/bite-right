@@ -56,35 +56,47 @@ const restaurants = [];
 const logs = [];
 
 /** SavedRestaurant: one per (userId, restaurantId). source: TONIGHT | DISCOVER | FEED | MANUAL */
-/** @type {Array<{ id: string; userId: string; restaurantId: string; savedAt: string; source: string; note?: string }>} */
+/** @type {Array<{ id: string; userId: string; restaurantId: string; savedAt: string; source: string; note?: string; snapshot?: { name?: string; previewPhotoUrl?: string | null; address?: string | null; city?: string | null; neighborhood?: string | null; lat?: number | null; lng?: number | null; cuisines?: string[] } }>} */
 const savedRestaurants = [];
+
+/** Negative feedback on recommendations: hide / suggest_less. */
+/** @type {Array<{ id: string; userId: string; restaurantId: string; actionType: 'hide'|'suggest_less'; createdAt: string; relatedFeatures?: { cuisine?: string; neighborhood?: string; priceLevel?: number } }>} */
+const negativeFeedback = [];
 
 /** Static restaurant info for rest_1..rest_5 (Chicago). Google-selected places are in `restaurants`. */
 const STATIC_RESTAURANTS = {
-  rest_1: { name: "Lou Malnati's", address: 'River North, IL', city: 'Chicago', neighborhood: 'River North', lat: 41.8902, lng: -87.6369, previewPhotoUrl: 'https://placehold.co/800x600/e5e7eb/6b7280?text=No+photo', websiteUrl: 'https://www.loumalnatis.com', phone: '+1-312-828-9800' },
-  rest_2: { name: 'Girl & the Goat', address: 'West Loop, IL', city: 'Chicago', neighborhood: 'West Loop', lat: 41.8815, lng: -87.6472, previewPhotoUrl: 'https://images.pexels.com/photos/262978/pexels-photo-262978.jpeg?auto=compress&cs=tinysrgb&w=800', websiteUrl: 'https://www.girlandthegoat.com', googleMapsUrl: 'https://maps.google.com/?cid=123' },
-  rest_3: { name: "Portillo's", address: 'River North, IL', city: 'Chicago', neighborhood: 'River North', lat: 41.8902, lng: -87.6369, previewPhotoUrl: 'https://images.pexels.com/photos/461198/pexels-photo-461198.jpeg?auto=compress&cs=tinysrgb&w=800', websiteUrl: 'https://www.portillos.com' },
-  rest_4: { name: 'The Purple Pig', address: 'Magnificent Mile, IL', city: 'Chicago', neighborhood: 'Magnificent Mile', lat: 41.8904, lng: -87.6242, previewPhotoUrl: 'https://images.pexels.com/photos/4194626/pexels-photo-4194626.jpeg?auto=compress&cs=tinysrgb&w=800', websiteUrl: 'https://www.thepurplepigchicago.com' },
-  rest_5: { name: 'Au Cheval', address: 'West Loop, IL', city: 'Chicago', neighborhood: 'West Loop', lat: 41.8815, lng: -87.6472, previewPhotoUrl: 'https://images.pexels.com/photos/1639557/pexels-photo-1639557.jpeg?auto=compress&cs=tinysrgb&w=800', websiteUrl: 'https://www.aucheval.com' },
+  // Use real food imagery for static restaurants so Discover/Tonight cards never appear blank.
+  // Pizza-specific photo (avoid mismatched cuisine imagery in Feed/Discover).
+  rest_1: { name: "Lou Malnati's", address: 'River North, IL', city: 'Chicago', neighborhood: 'River North', lat: 41.8902, lng: -87.6369, websiteUrl: 'https://www.loumalnatis.com', phone: '+1-312-828-9800' },
+  rest_2: { name: 'Girl & the Goat', address: 'West Loop, IL', city: 'Chicago', neighborhood: 'West Loop', lat: 41.8815, lng: -87.6472, websiteUrl: 'https://www.girlandthegoat.com', googleMapsUrl: 'https://maps.google.com/?cid=123' },
+  rest_3: { name: "Portillo's", address: 'River North, IL', city: 'Chicago', neighborhood: 'River North', lat: 41.8902, lng: -87.6369, websiteUrl: 'https://www.portillos.com' },
+  rest_4: { name: 'The Purple Pig', address: 'Magnificent Mile, IL', city: 'Chicago', neighborhood: 'Magnificent Mile', lat: 41.8904, lng: -87.6242, websiteUrl: 'https://www.thepurplepigchicago.com' },
+  rest_5: { name: 'Au Cheval', address: 'West Loop, IL', city: 'Chicago', neighborhood: 'West Loop', lat: 41.8815, lng: -87.6472, websiteUrl: 'https://www.aucheval.com' },
 };
 
 function getRestaurantInfo(restaurantId) {
   // rest_1..rest_5 are always the static Chicago list (Lou Malnati's, etc.). Prefer static over DB so Reserve/labels stay correct.
   const stat = STATIC_RESTAURANTS[restaurantId];
   if (stat) {
+    const dbRow = findRestaurantById(restaurantId);
     return {
       restaurantId,
       ...stat,
+      placeId: dbRow?.placeId ?? null,
       websiteUrl: stat.websiteUrl || null,
       googleMapsUrl: stat.googleMapsUrl || null,
       phone: stat.phone || null,
       reservationUrl: stat.reservationUrl || stat.websiteUrl || null,
     };
   }
-  const fromDb = findRestaurantById(restaurantId);
+  let fromDb = findRestaurantById(restaurantId);
+  if (!fromDb && restaurantId && String(restaurantId).startsWith('ChIJ')) {
+    fromDb = findRestaurantByPlaceId(restaurantId);
+  }
   if (fromDb) {
     return {
       restaurantId: fromDb.restaurantId,
+      placeId: fromDb.placeId || null,
       name: fromDb.name,
       address: fromDb.address || '',
       city: fromDb.city || 'Chicago',
@@ -108,6 +120,52 @@ function findRestaurantByPlaceId(placeId) {
 function findRestaurantById(id) {
   return restaurants.find((r) => r.restaurantId === id);
 }
+
+const fs = require('fs');
+const path = require('path');
+const {
+  googleFindPlaceFromText,
+  buildEnrichmentQuery,
+  logRestaurantImageResolution,
+} = require('./restaurantEnrichment');
+
+let loadedRestaurantEnrichment = {};
+try {
+  loadedRestaurantEnrichment = JSON.parse(
+    fs.readFileSync(path.join(__dirname, 'data', 'restaurantEnrichment.json'), 'utf8'),
+  );
+} catch (_e) {
+  /* optional file */
+}
+
+function seedStaticRestaurantsIntoDb() {
+  for (const restaurantId of Object.keys(STATIC_RESTAURANTS)) {
+    if (findRestaurantById(restaurantId)) continue;
+    const stat = STATIC_RESTAURANTS[restaurantId];
+    const enc = loadedRestaurantEnrichment[restaurantId] || {};
+    const placeId = enc.placeId || enc.googlePlaceId || null;
+    restaurants.push({
+      restaurantId,
+      placeId,
+      name: stat.name,
+      address: stat.address || '',
+      city: stat.city || 'Chicago',
+      neighborhood: stat.neighborhood || null,
+      lat: stat.lat,
+      lng: stat.lng,
+      websiteUrl: stat.websiteUrl,
+      googleMapsUrl: stat.googleMapsUrl,
+      phone: stat.phone,
+      reservationUrl: stat.reservationUrl || stat.websiteUrl,
+      createdAt: new Date().toISOString(),
+    });
+  }
+}
+
+seedStaticRestaurantsIntoDb();
+
+/** Skip repeated Find Place calls for ids that already failed. */
+const lazyEnrichFailedIds = new Set();
 
 // --- Google Places helpers ---------------------------------------------------
 
@@ -166,6 +224,210 @@ async function googlePlaceDetails(placeId) {
   return data.result;
 }
 
+async function googlePlacesNearbyRestaurants(lat, lng, radiusMeters, keyword) {
+  if (!GOOGLE_PLACES_API_KEY) return [];
+  const url = 'https://maps.googleapis.com/maps/api/place/nearbysearch/json';
+  const params = {
+    location: `${lat},${lng}`,
+    radius: Math.max(500, Math.min(50000, Math.round(radiusMeters))),
+    type: 'restaurant',
+    key: GOOGLE_PLACES_API_KEY,
+  };
+  const kw = typeof keyword === 'string' && keyword.trim() ? keyword.trim() : '';
+  if (kw) params.keyword = kw;
+  const { data } = await axios.get(url, { params });
+  if (data.status !== 'OK' && data.status !== 'ZERO_RESULTS') {
+    console.warn('[BiteRight] Nearby search status:', data.status, data.error_message || '');
+    return [];
+  }
+  const list = Array.isArray(data.results) ? data.results : [];
+  return list.map((r) => ({
+    placeId: r.place_id,
+    name: r.name || '',
+    address: r.vicinity || r.formatted_address || '',
+    lat: r.geometry?.location?.lat ?? null,
+    lng: r.geometry?.location?.lng ?? null,
+    rating: typeof r.rating === 'number' ? r.rating : null,
+    priceLevel: typeof r.price_level === 'number' ? r.price_level : null,
+    types: Array.isArray(r.types) ? r.types : [],
+    photoRef: r.photos?.[0]?.photo_reference || null,
+  }));
+}
+
+const FOOD_TYPE_ALLOWLIST = new Set([
+  'restaurant',
+  'meal_takeaway',
+  'meal_delivery',
+  'cafe',
+  'bakery',
+  'food',
+  'bar',
+  'coffee_shop',
+  'ice_cream_shop',
+]);
+
+const FOOD_TYPE_BLOCKLIST = new Set([
+  'lodging',
+  'night_club',
+  'tourist_attraction',
+  'shopping_mall',
+  'clothing_store',
+  'department_store',
+  'gym',
+  'museum',
+  'park',
+  'beauty_salon',
+  'spa',
+  'car_dealer',
+  'hospital',
+  'school',
+  'bank',
+]);
+
+function isFoodPlace(types) {
+  const t = Array.isArray(types) ? types : [];
+  if (!t.length) return false;
+  if (t.some((x) => FOOD_TYPE_BLOCKLIST.has(x))) return false;
+  return t.some((x) => FOOD_TYPE_ALLOWLIST.has(x));
+}
+
+const CUISINE_TYPE_MAP = [
+  { key: 'italian_restaurant', label: 'Italian' },
+  { key: 'mexican_restaurant', label: 'Mexican' },
+  { key: 'chinese_restaurant', label: 'Chinese' },
+  { key: 'indian_restaurant', label: 'Indian' },
+  { key: 'thai_restaurant', label: 'Thai' },
+  { key: 'japanese_restaurant', label: 'Japanese' },
+  { key: 'korean_restaurant', label: 'Korean' },
+  { key: 'mediterranean_restaurant', label: 'Mediterranean' },
+  { key: 'american_restaurant', label: 'American' },
+  { key: 'seafood_restaurant', label: 'Seafood' },
+  { key: 'steak_house', label: 'American' },
+  { key: 'barbecue_restaurant', label: 'BBQ' },
+  { key: 'pizza_restaurant', label: 'Pizza' },
+  { key: 'hamburger_restaurant', label: 'Burgers' },
+  { key: 'sushi_restaurant', label: 'Sushi' },
+  { key: 'vegan_restaurant', label: 'Vegan' },
+  { key: 'vegetarian_restaurant', label: 'Vegetarian' },
+  { key: 'breakfast_restaurant', label: 'Brunch' },
+  { key: 'brunch_restaurant', label: 'Brunch' },
+  { key: 'cafe', label: 'Coffee' },
+  { key: 'coffee_shop', label: 'Coffee' },
+  { key: 'bakery', label: 'Bakery' },
+  { key: 'ice_cream_shop', label: 'Dessert' },
+  { key: 'dessert_shop', label: 'Dessert' },
+];
+
+const CUISINE_NAME_KEYWORDS = [
+  { re: /\bitalian|pasta|trattoria\b/i, label: 'Italian' },
+  { re: /\bmexican|taco|taqueria|burrito\b/i, label: 'Mexican' },
+  { re: /\bchinese|dim\s*sum|szechuan|sichuan\b/i, label: 'Chinese' },
+  { re: /\bindian|curry\b/i, label: 'Indian' },
+  { re: /\bthai\b/i, label: 'Thai' },
+  { re: /\bjapanese|ramen|izakaya\b/i, label: 'Japanese' },
+  { re: /\bkorean|kimchi|korean bbq\b/i, label: 'Korean' },
+  { re: /\bmediterranean|greek|falafel\b/i, label: 'Mediterranean' },
+  { re: /\bpizza|pizzeria\b/i, label: 'Pizza' },
+  { re: /\bburger|hamburger\b/i, label: 'Burgers' },
+  { re: /\bsushi|omakase\b/i, label: 'Sushi' },
+  { re: /\bvegan\b/i, label: 'Vegan' },
+  { re: /\bvegetarian\b/i, label: 'Vegetarian' },
+  { re: /\bbrunch|breakfast\b/i, label: 'Brunch' },
+  { re: /\bseafood|oyster|fish\b/i, label: 'Seafood' },
+  { re: /\bbbq|barbecue|smokehouse\b/i, label: 'BBQ' },
+  { re: /\bbakery|boulangerie\b/i, label: 'Bakery' },
+  { re: /\bdessert|gelato|ice cream|boba|tea|juice\b/i, label: 'Dessert' },
+  { re: /\bcafe|coffee|espresso\b/i, label: 'Coffee' },
+];
+
+function mapFoodCategory(types, name) {
+  const t = Array.isArray(types) ? types : [];
+  const tSet = new Set(t);
+
+  // 1) Prefer cuisine-specific Google types when available.
+  for (const entry of CUISINE_TYPE_MAP) {
+    if (tSet.has(entry.key)) return entry.label;
+  }
+
+  // 2) Then infer from place name keywords.
+  const n = typeof name === 'string' ? name : '';
+  for (const entry of CUISINE_NAME_KEYWORDS) {
+    if (entry.re.test(n)) return entry.label;
+  }
+
+  // 3) Fallback to generic food categories only if no cuisine match exists.
+  if (tSet.has('bakery')) return 'Bakery';
+  if (tSet.has('cafe') || tSet.has('coffee_shop')) return 'Coffee';
+  if (tSet.has('ice_cream_shop') || tSet.has('dessert_shop')) return 'Dessert';
+  if (tSet.has('meal_takeaway') || tSet.has('meal_delivery')) return 'Takeout';
+  if (tSet.has('restaurant') || tSet.has('food')) return 'Restaurant';
+  return '';
+}
+
+/** All cuisine-like labels we can attach to a place (for filtering + cards). */
+function deriveCuisinesFromPlace(types, name, cuisineHint) {
+  const labels = new Set();
+  const t = Array.isArray(types) ? types : [];
+  const tSet = new Set(t);
+  const n = `${typeof name === 'string' ? name : ''} ${typeof cuisineHint === 'string' ? cuisineHint : ''}`;
+
+  for (const entry of CUISINE_TYPE_MAP) {
+    if (tSet.has(entry.key)) labels.add(entry.label);
+  }
+  for (const entry of CUISINE_NAME_KEYWORDS) {
+    if (entry.re.test(n)) labels.add(entry.label);
+  }
+  const mapped = mapFoodCategory(types, name);
+  if (mapped && mapped !== 'Restaurant' && mapped !== 'Takeout') labels.add(mapped);
+
+  if (labels.has('Bakery')) labels.add('Dessert');
+
+  return Array.from(labels);
+}
+
+/** Maps Discover cuisine chip labels to Google Nearby Search keyword hints. */
+function cuisineChipToNearbyKeyword(chip) {
+  const c = (chip || '').trim();
+  const table = {
+    Italian: 'italian',
+    Mexican: 'mexican',
+    Chinese: 'chinese',
+    Indian: 'indian',
+    Thai: 'thai',
+    Japanese: 'japanese',
+    Korean: 'korean',
+    Mediterranean: 'mediterranean',
+    American: 'american',
+    Pizza: 'pizza',
+    Burgers: 'burger',
+    Sushi: 'sushi',
+    Bakery: 'bakery',
+    Dessert: 'dessert',
+    Coffee: 'coffee',
+    Vegetarian: 'vegetarian',
+    Vegan: 'vegan',
+    Brunch: 'brunch',
+    Seafood: 'seafood',
+    BBQ: 'barbecue',
+  };
+  return table[c] || c.toLowerCase() || '';
+}
+
+function restaurantMatchesCuisineFilter(derivedLabels, selectedChip) {
+  if (!selectedChip || !selectedChip.trim()) return true;
+  const chip = selectedChip.trim();
+  const related = {
+    Italian: ['Italian', 'Pizza'],
+    Japanese: ['Japanese', 'Sushi'],
+    American: ['American', 'Burgers', 'BBQ', 'Brunch'],
+    Dessert: ['Dessert', 'Bakery', 'Coffee'],
+    Vegan: ['Vegan', 'Vegetarian'],
+    Vegetarian: ['Vegetarian', 'Vegan'],
+  };
+  const want = new Set([chip, ...(related[chip] || [])]);
+  return derivedLabels.some((l) => want.has(l));
+}
+
 // We store photo_reference and a relative proxy URL so the frontend never sees the Google API key.
 function buildPhotoProxyUrl(restaurantId) {
   return `/api/restaurants/${restaurantId}/photo`;
@@ -181,38 +443,211 @@ function toAbsoluteImageUrl(url) {
 }
 
 /** Source of resolved image for dev logging. */
-const IMAGE_SOURCE = { USER_PHOTO: 'USER_PHOTO', LOG_PHOTO: 'LOG_PHOTO', PLACES: 'PLACES', STATIC: 'STATIC', PLACEHOLDER: 'PLACEHOLDER' };
+const IMAGE_SOURCE = {
+  USER_PHOTO: 'USER_PHOTO',
+  LOG_PHOTO: 'LOG_PHOTO',
+  PLACES: 'PLACES',
+  WEBSITE: 'WEBSITE',
+  PLACEHOLDER: 'PLACEHOLDER',
+};
+
+function isValidImageUrl(url) {
+  if (!url || typeof url !== 'string') return false;
+  const trimmed = url.trim();
+  if (!trimmed) return false;
+  // Allow http(s) and relative paths (served by this API, e.g. /api/restaurants/:id/photo)
+  return (
+    trimmed.startsWith('http://') ||
+    trimmed.startsWith('https://') ||
+    trimmed.startsWith('/')
+  );
+}
+
+const websiteImageCache = {};
 
 /**
- * Resolve the image URL for a restaurant card. Used by both Feed and Discover.
- * Priority: 1) logPreviewPhotoUrl 2) first log photo 3) restaurant.bestFoodPhotoUrl
- * 4) fetch Place Details photos → pick best → cache 5) static preview or NEUTRAL_PLACEHOLDER_URL.
- * @returns {Promise<{ url: string; source: string }>} Always returns url; source is for dev logging.
+ * Try to resolve an image from a restaurant's official website.
+ * Looks for og:image / twitter:image meta tags and returns an absolute URL
+ * on the same domain as the website.
+ */
+async function resolveWebsiteImage(websiteUrl) {
+  if (!websiteUrl || typeof websiteUrl !== 'string') return null;
+  const key = websiteUrl.trim().toLowerCase();
+  if (websiteImageCache[key] !== undefined) {
+    return websiteImageCache[key];
+  }
+
+  let base;
+  try {
+    base = new URL(websiteUrl);
+  } catch {
+    websiteImageCache[key] = null;
+    return null;
+  }
+
+  try {
+    const res = await axios.get(websiteUrl, { timeout: 7000 });
+    const html = typeof res.data === 'string' ? res.data : String(res.data || '');
+
+    const candidates = [];
+    const metaTagRegex = /<meta[^>]+(property|name)=['\"]([^'\"]+)['\"][^>]*>/gi;
+    let match;
+    while ((match = metaTagRegex.exec(html))) {
+      const propName = (match[2] || '').toLowerCase();
+      if (
+        propName === 'og:image' ||
+        propName === 'og:image:secure_url' ||
+        propName === 'twitter:image'
+      ) {
+        const tag = match[0];
+        const contentMatch = tag.match(/content=['\"]([^'\"]+)['\"]/i);
+        if (contentMatch && contentMatch[1]) {
+          candidates.push(contentMatch[1]);
+        }
+      }
+    }
+
+    for (const raw of candidates) {
+      try {
+        const url = new URL(raw, base.href);
+        // Only accept images hosted on the same registrable domain (ignore random CDNs/third-parties)
+        const baseHost = base.hostname.replace(/^www\./, '');
+        const candidateHost = url.hostname.replace(/^www\./, '');
+        if (baseHost !== candidateHost) continue;
+        if (isValidImageUrl(url.href)) {
+          websiteImageCache[key] = url.href;
+          return url.href;
+        }
+      } catch {
+        // ignore bad candidate
+      }
+    }
+  } catch (err) {
+    console.warn('[BiteRight] Website image fetch failed for %s: %s', websiteUrl, err.message);
+  }
+
+  websiteImageCache[key] = null;
+  return null;
+}
+
+function logImageResolve(restaurantId, extra) {
+  if (process.env.NODE_ENV === 'production' && !process.env.BITERIGHT_LOG_IMAGES) return;
+  const row = findRestaurantById(restaurantId);
+  const stat = STATIC_RESTAURANTS[restaurantId];
+  logRestaurantImageResolution({
+    internalId: restaurantId,
+    restaurantName: row?.name || stat?.name || restaurantId,
+    googlePlaceId: row?.placeId || extra?.effectivePlaceId || null,
+    googlePlaceIdFound: !!(row?.placeId || extra?.effectivePlaceId),
+    ...extra,
+  });
+}
+
+/**
+ * Lazy attach place_id + Places photo ref for seeded / pool rows (no stock food imagery).
+ */
+async function lazyEnrichPlaceId(restaurantId) {
+  if (!GOOGLE_PLACES_API_KEY || lazyEnrichFailedIds.has(restaurantId)) return null;
+  const row = findRestaurantById(restaurantId);
+  if (!row || row.placeId) return row?.placeId || null;
+  const stat = STATIC_RESTAURANTS[restaurantId];
+  const query = stat
+    ? buildEnrichmentQuery({
+        name: stat.name,
+        neighborhood: stat.neighborhood,
+        city: stat.city,
+        address: stat.address,
+      })
+    : `${row.name || ''} ${row.address || ''}`.trim();
+  if (!query) {
+    lazyEnrichFailedIds.add(restaurantId);
+    return null;
+  }
+  const pid = await googleFindPlaceFromText(axios, GOOGLE_PLACES_API_KEY, query, row.lat, row.lng);
+  if (!pid) {
+    lazyEnrichFailedIds.add(restaurantId);
+    logImageResolve(restaurantId, {
+      chosenImageSourceType: 'ENRICH_FAILED',
+      placeholderUsed: false,
+      effectivePlaceId: null,
+    });
+    return null;
+  }
+  row.placeId = pid;
+  const details = await googlePlaceDetails(pid);
+  const photoRefs = details?.photos?.slice(0, 10)?.map((p) => p.photo_reference).filter(Boolean) || [];
+  if (photoRefs.length > 0) {
+    row.bestFoodPhotoRef = photoRefs[0];
+    row.bestFoodPhotoUrl = buildPhotoProxyUrl(restaurantId);
+    row.bestFoodPhotoUpdatedAt = new Date().toISOString();
+  }
+  return pid;
+}
+
+/**
+ * Resolve the image URL for a restaurant card. Used by Feed, Discover, Tonight, and logs.
+ * Priority:
+ * 1) User-uploaded photo (logPreviewPhotoUrl)
+ * 2) First stored log photo for that restaurant
+ * 3) Google Places photo (cached proxy URL)
+ * 4) Lazy enrich → Google Places photo (Find Place + Details)
+ * 5) Google Places Details when placeId already known
+ * 6) Discover nearby fallbackPhoto proxy
+ * 7) Official website hero (same-domain og:image only)
+ * 8) Neutral placeholder — no cuisine stock photos
+ * @returns {Promise<{ url: string; source: string }>}
  */
 async function resolveRestaurantCardImageWithSource(restaurantId, placeId, logPreviewPhotoUrl) {
-  if (logPreviewPhotoUrl && typeof logPreviewPhotoUrl === 'string' && logPreviewPhotoUrl.trim()) {
+  const staticInfo = STATIC_RESTAURANTS[restaurantId];
+
+  if (isValidImageUrl(logPreviewPhotoUrl)) {
+    logImageResolve(restaurantId, {
+      chosenImageSourceType: 'USER_PHOTO',
+      placeholderUsed: false,
+      effectivePlaceId: placeId || findRestaurantById(restaurantId)?.placeId,
+    });
     return { url: logPreviewPhotoUrl.trim(), source: IMAGE_SOURCE.USER_PHOTO };
   }
   const logForRestaurant = logs.find((l) => l.restaurantId === restaurantId);
   const firstLogPhoto = Array.isArray(logForRestaurant?.photos) && logForRestaurant.photos.length > 0
     ? logForRestaurant.photos[0]
     : undefined;
-  if (firstLogPhoto && typeof firstLogPhoto === 'string' && firstLogPhoto.trim()) {
+  if (isValidImageUrl(firstLogPhoto)) {
+    logImageResolve(restaurantId, {
+      chosenImageSourceType: 'LOG_PHOTO',
+      placeholderUsed: false,
+      effectivePlaceId: placeId || findRestaurantById(restaurantId)?.placeId,
+    });
     return { url: firstLogPhoto.trim(), source: IMAGE_SOURCE.LOG_PHOTO };
   }
 
   const fromDb = findRestaurantById(restaurantId);
-  const staticInfo = STATIC_RESTAURANTS[restaurantId];
+  let effectivePlaceId = placeId || fromDb?.placeId || null;
 
-  if (fromDb?.bestFoodPhotoUrl) {
+  if (isValidImageUrl(fromDb?.bestFoodPhotoUrl)) {
+    logImageResolve(restaurantId, {
+      chosenImageSourceType: 'PLACES',
+      placeholderUsed: false,
+      effectivePlaceId,
+    });
     return { url: fromDb.bestFoodPhotoUrl, source: IMAGE_SOURCE.PLACES };
   }
-  if (staticInfo?.previewPhotoUrl) {
-    return { url: staticInfo.previewPhotoUrl, source: IMAGE_SOURCE.STATIC };
+
+  if (!effectivePlaceId && fromDb && GOOGLE_PLACES_API_KEY) {
+    effectivePlaceId = await lazyEnrichPlaceId(restaurantId);
   }
 
-  if (placeId && GOOGLE_PLACES_API_KEY) {
-    const details = await googlePlaceDetails(placeId);
+  if (isValidImageUrl(fromDb?.bestFoodPhotoUrl)) {
+    logImageResolve(restaurantId, {
+      chosenImageSourceType: 'PLACES',
+      placeholderUsed: false,
+      effectivePlaceId: effectivePlaceId || fromDb?.placeId,
+    });
+    return { url: fromDb.bestFoodPhotoUrl, source: IMAGE_SOURCE.PLACES };
+  }
+
+  if (effectivePlaceId && GOOGLE_PLACES_API_KEY) {
+    const details = await googlePlaceDetails(effectivePlaceId);
     const photoRefs = details?.photos?.slice(0, 10)?.map((p) => p.photo_reference).filter(Boolean) || [];
     if (photoRefs.length > 0) {
       const chosenRef = photoRefs[0];
@@ -221,19 +656,56 @@ async function resolveRestaurantCardImageWithSource(restaurantId, placeId, logPr
         fromDb.bestFoodPhotoUrl = buildPhotoProxyUrl(restaurantId);
         fromDb.bestFoodPhotoUpdatedAt = new Date().toISOString();
       }
-      const url = fromDb ? fromDb.bestFoodPhotoUrl : buildPhotoProxyUrl(restaurantId);
-      return { url, source: IMAGE_SOURCE.PLACES };
+      const url = fromDb?.bestFoodPhotoUrl || buildPhotoProxyUrl(restaurantId);
+      if (isValidImageUrl(url)) {
+        logImageResolve(restaurantId, {
+          chosenImageSourceType: 'PLACES',
+          placeholderUsed: false,
+          effectivePlaceId,
+        });
+        return { url, source: IMAGE_SOURCE.PLACES };
+      }
     }
   }
 
-  if (fromDb?.fallbackPhotoUrl) {
+  if (isValidImageUrl(fromDb?.fallbackPhotoUrl)) {
+    logImageResolve(restaurantId, {
+      chosenImageSourceType: 'PLACES',
+      placeholderUsed: false,
+      effectivePlaceId,
+    });
     return { url: fromDb.fallbackPhotoUrl, source: IMAGE_SOURCE.PLACES };
   }
   if (fromDb?.fallbackPhotoRef && !fromDb.fallbackPhotoUrl) {
     fromDb.fallbackPhotoUrl = buildPhotoProxyUrl(restaurantId);
-    return { url: fromDb.fallbackPhotoUrl, source: IMAGE_SOURCE.PLACES };
+    if (isValidImageUrl(fromDb.fallbackPhotoUrl)) {
+      logImageResolve(restaurantId, {
+        chosenImageSourceType: 'PLACES',
+        placeholderUsed: false,
+        effectivePlaceId,
+      });
+      return { url: fromDb.fallbackPhotoUrl, source: IMAGE_SOURCE.PLACES };
+    }
   }
 
+  const websiteUrl = fromDb?.websiteUrl || staticInfo?.websiteUrl;
+  if (websiteUrl) {
+    const siteImage = await resolveWebsiteImage(websiteUrl);
+    if (isValidImageUrl(siteImage)) {
+      logImageResolve(restaurantId, {
+        chosenImageSourceType: 'WEBSITE',
+        placeholderUsed: false,
+        effectivePlaceId,
+      });
+      return { url: siteImage, source: IMAGE_SOURCE.WEBSITE };
+    }
+  }
+
+  logImageResolve(restaurantId, {
+    chosenImageSourceType: 'PLACEHOLDER',
+    placeholderUsed: true,
+    effectivePlaceId,
+  });
   return { url: NEUTRAL_PLACEHOLDER_URL, source: IMAGE_SOURCE.PLACEHOLDER };
 }
 
@@ -339,7 +811,7 @@ app.post('/api/restaurants/select', async (req, res) => {
 
 // 3) Logging a restaurant visit
 app.post('/api/logs', async (req, res) => {
-  const { restaurantId, rating, notes, photos } = req.body || {};
+  const { restaurantId, rating, notes, photos, userId } = req.body || {};
 
   if (!restaurantId || typeof rating !== 'number') {
     return res.status(400).json({ error: 'restaurantId and numeric rating are required' });
@@ -370,6 +842,7 @@ app.post('/api/logs', async (req, res) => {
   const log = {
     id,
     restaurantId,
+    userId: typeof userId === 'string' ? userId : 'default',
     rating,
     notes,
     photos,
@@ -400,17 +873,40 @@ app.get('/api/restaurants/:restaurantId', (req, res) => {
   if (!info) {
     return res.status(404).json({ error: 'Restaurant not found' });
   }
-  res.json({
-    name: info.name,
-    address: info.address || '',
-    lat: info.lat ?? null,
-    lng: info.lng ?? null,
-    websiteUrl: info.websiteUrl || null,
-    googleMapsUrl: info.googleMapsUrl || null,
-    phone: info.phone || null,
-    reservationUrl: info.reservationUrl || null,
-    imageUrl: toAbsoluteImageUrl(info.previewPhotoUrl) || null,
-  });
+  const fromDb = findRestaurantById(restaurantId);
+  const placeId = fromDb?.placeId ?? info.placeId ?? null;
+  const debug = String(req.query.debug || '') === '1';
+  resolveRestaurantCardImageWithSource(restaurantId, placeId, undefined)
+    .then(({ url, source }) => {
+      const imageUrl = url && url.trim() ? toAbsoluteImageUrl(url.trim()) : null;
+      res.json({
+        name: info.name,
+        address: info.address || '',
+        lat: info.lat ?? null,
+        lng: info.lng ?? null,
+        websiteUrl: info.websiteUrl || null,
+        googleMapsUrl: info.googleMapsUrl || null,
+        phone: info.phone || null,
+        reservationUrl: info.reservationUrl || null,
+        placeId: placeId || null,
+        imageUrl,
+        ...(debug ? { imageSource: source } : {}),
+      });
+    })
+    .catch((err) => {
+      console.error('[BiteRight] restaurant detail image resolution error', err.message);
+      res.json({
+        name: info.name,
+        address: info.address || '',
+        lat: info.lat ?? null,
+        lng: info.lng ?? null,
+        websiteUrl: info.websiteUrl || null,
+        googleMapsUrl: info.googleMapsUrl || null,
+        phone: info.phone || null,
+        reservationUrl: info.reservationUrl || null,
+        imageUrl: null,
+      });
+    });
 });
 
 // 5) Photo proxy (frontend can use /api/restaurants/:id/photo as an Image source)
@@ -455,14 +951,63 @@ const groupSessions = [];
 /** @type {Array<{ id: string; sessionId: string; participantId: string; restaurantId: string; action: 'LIKE'|'PASS'; createdAt: string }>} */
 const tonightSwipes = [];
 
-// Static pool for MVP — 5 Chicago restaurants (matches app data). lat/lng for distance filter.
-const TONIGHT_POOL = [
-  { restaurantId: 'rest_1', name: "Lou Malnati's", address: 'River North, IL', lat: 41.8902, lng: -87.6369, previewPhotoUrl: 'https://placehold.co/800x600/e5e7eb/6b7280?text=No+photo' },
-  { restaurantId: 'rest_2', name: 'Girl & the Goat', address: 'West Loop, IL', lat: 41.8815, lng: -87.6472, previewPhotoUrl: 'https://images.pexels.com/photos/262978/pexels-photo-262978.jpeg?auto=compress&cs=tinysrgb&w=800' },
-  { restaurantId: 'rest_3', name: "Portillo's", address: 'River North, IL', lat: 41.8902, lng: -87.6369, previewPhotoUrl: 'https://images.pexels.com/photos/461198/pexels-photo-461198.jpeg?auto=compress&cs=tinysrgb&w=800' },
-  { restaurantId: 'rest_4', name: 'The Purple Pig', address: 'Magnificent Mile, IL', lat: 41.8904, lng: -87.6242, previewPhotoUrl: 'https://images.pexels.com/photos/4194626/pexels-photo-4194626.jpeg?auto=compress&cs=tinysrgb&w=800' },
-  { restaurantId: 'rest_5', name: 'Au Cheval', address: 'West Loop, IL', lat: 41.8815, lng: -87.6472, previewPhotoUrl: 'https://images.pexels.com/photos/1639557/pexels-photo-1639557.jpeg?auto=compress&cs=tinysrgb&w=800' },
+/** Friend relationships: { userId, friendId }. Optional userDisplayNames: { [userId]: 'Sarah' } for badge text. */
+const friends = [];
+const userDisplayNames = {};
+
+// Large Tonight pool (100–300 target). Each item: restaurantId, name, address, lat, lng, previewPhotoUrl, rating, cuisine, neighborhood, priceLevel.
+const TONIGHT_POOL_BASE = [
+  { restaurantId: 'rest_1', name: "Lou Malnati's", address: 'River North, IL', lat: 41.8902, lng: -87.6369, rating: 4.5, cuisine: 'Pizza · Deep dish', neighborhood: 'River North', priceLevel: 2 },
+  { restaurantId: 'rest_2', name: 'Girl & the Goat', address: 'West Loop, IL', lat: 41.8815, lng: -87.6472, rating: 4.7, cuisine: 'American · Small plates', neighborhood: 'West Loop', priceLevel: 3 },
+  { restaurantId: 'rest_3', name: "Portillo's", address: 'River North, IL', lat: 41.8902, lng: -87.6369, rating: 4.2, cuisine: 'Hot dogs · Chicago classics', neighborhood: 'River North', priceLevel: 1 },
+  { restaurantId: 'rest_4', name: 'The Purple Pig', address: 'Magnificent Mile, IL', lat: 41.8904, lng: -87.6242, rating: 4.6, cuisine: 'Mediterranean · Shared plates', neighborhood: 'Magnificent Mile', priceLevel: 3 },
+  { restaurantId: 'rest_5', name: 'Au Cheval', address: 'West Loop, IL', lat: 41.8815, lng: -87.6472, rating: 4.5, cuisine: 'Burgers · American', neighborhood: 'West Loop', priceLevel: 2 },
 ];
+
+const TONIGHT_EXPANDED_NAMES = [
+  'Sushi San', 'Taco Joint', 'Green Leaf Salad', 'Brickhouse BBQ', 'Noodle Bar', 'The French Press', 'Spice Route', 'Coastal Catch', 'Garden Bistro', 'Smoke & Fire',
+  'Pasta Place', 'Curry House', 'Pho King', 'Diner 24', 'Tapas Bar', 'Poke Bowl', 'Pizza Napoletana', 'Steak & Co', 'Ramen Spot', 'Brunch Cafe',
+  'Soul Kitchen', 'Vegan Table', 'Fish Market', 'Burrito Bros', 'Thai Orchid', 'Dim Sum Palace', 'Bakery & Brew', 'Oyster Bar', 'Comfort Kitchen', 'Fusion Lab',
+];
+const TONIGHT_CUISINES = [
+  'Sushi · Japanese', 'Mexican · Tacos', 'Salads · Healthy', 'BBQ · American', 'Noodles · Asian', 'French · Cafe', 'Indian · Curry', 'Seafood', 'Vegetarian', 'BBQ · Southern',
+  'Italian · Pasta', 'Indian · Curry', 'Vietnamese · Pho', 'American · Diner', 'Spanish · Tapas', 'Hawaiian · Poke', 'Pizza · Neapolitan', 'Steakhouse', 'Ramen · Japanese', 'Brunch · American',
+  'Soul · Southern', 'Vegan', 'Seafood · Fresh', 'Mexican · Burritos', 'Thai', 'Chinese · Dim Sum', 'Bakery · Coffee', 'Seafood · Oysters', 'American · Comfort', 'Fusion',
+];
+const TONIGHT_NEIGHBORHOODS = [
+  'River North', 'West Loop', 'Magnificent Mile', 'Lincoln Park', 'Wicker Park', 'Logan Square', 'Lakeview', 'Wrigleyville', 'Hyde Park', 'Pilsen',
+  'Andersonville', 'Bucktown', 'Gold Coast', 'South Loop', 'Ukrainian Village', 'Rogers Park', 'Lincoln Square', 'Edgewater', 'Bridgeport', 'Chinatown',
+];
+function buildExpandedTonightPool() {
+  const out = [...TONIGHT_POOL_BASE];
+  const centerLat = 41.88;
+  const centerLng = -87.63;
+  const mileToDeg = 1 / 69;
+  for (let i = 6; i <= 100; i++) {
+    const j = (i - 6) % TONIGHT_EXPANDED_NAMES.length;
+    const k = (i - 6) % TONIGHT_CUISINES.length;
+    const n = (i - 6) % TONIGHT_NEIGHBORHOODS.length;
+    const lat = centerLat + (Math.sin(i * 0.7) * 4 * mileToDeg);
+    const lng = centerLng + (Math.cos(i * 0.5) * 5 * mileToDeg);
+    out.push({
+      restaurantId: 'rest_' + i,
+      name: TONIGHT_EXPANDED_NAMES[j] + (i > 20 ? ' ' + (i % 10) : ''),
+      address: TONIGHT_NEIGHBORHOODS[n] + ', IL',
+      lat,
+      lng,
+      rating: 4 + Math.floor((i % 10) * 0.09 * 10) / 10,
+      cuisine: TONIGHT_CUISINES[k],
+      neighborhood: TONIGHT_NEIGHBORHOODS[n],
+      priceLevel: (i % 3) + 1,
+    });
+  }
+  return out;
+}
+
+const TONIGHT_POOL = buildExpandedTonightPool();
+
+const { getTonightPoolRanked } = require('./tonightPool');
+const { getSocialProofBadge } = require('./socialProof');
 
 const geocodeCache = {};
 const MILES_TO_DEG = 1 / 69; // approx
@@ -600,7 +1145,7 @@ app.post('/api/tonight/sessions/:code/join', (req, res) => {
   });
 });
 
-// GET /api/tonight/sessions/:code/pool
+// GET /api/tonight/sessions/:code/pool — ranked, variety-constrained, paginated. Optional participantId for personalization.
 app.get('/api/tonight/sessions/:code/pool', async (req, res) => {
   const session = findSessionByCode(req.params.code);
   if (!session) {
@@ -611,25 +1156,71 @@ app.get('/api/tonight/sessions/:code/pool', async (req, res) => {
   }
   const page = Math.max(0, parseInt(req.query.page, 10) || 0);
   const pageSize = Math.min(50, Math.max(1, parseInt(req.query.pageSize, 10) || 20));
+  const participantId = req.query.participantId || session.participants?.[0]?.participantId || null;
+  const participant = session.participants?.find((p) => p.participantId === participantId);
+  const userId = participant?.userId || 'default';
+  const lat = 41.88;
+  const lng = -87.63;
+  const ranked = getTonightPoolRanked({
+    pool: TONIGHT_POOL,
+    lat,
+    lng,
+    radiusMiles: 10,
+    participantId,
+    sessionId: session.id,
+    tonightSwipes,
+    savedRestaurants,
+    groupSessions,
+    negativeFeedback,
+    distanceMiles,
+  });
   const start = page * pageSize;
-  const slice = TONIGHT_POOL.slice(start, start + pageSize);
+  const slice = ranked.slice(start, start + pageSize);
+  const tonightCtx = { savedRestaurants, tonightSwipes, logs, friends, groupSessions, userDisplayNames };
   const pool = await Promise.all(
     slice.map(async (r) => {
-      const fromDb = findRestaurantById(r.restaurantId);
-      const rawUrl = await resolveRestaurantCardImage(r.restaurantId, fromDb?.placeId ?? null, r.previewPhotoUrl);
+      const totalParticipants = session.participants?.length || 0;
+      const likeCount = (tonightSwipes || []).filter(
+        (s) => s.sessionId === session.id && s.restaurantId === r.restaurantId && s.action === 'LIKE',
+      ).length;
+      const groupSignal = totalParticipants > 0 ? `${likeCount}/${totalParticipants} liked this` : null;
+
+      let fromDb = findRestaurantById(r.restaurantId);
+      if (!fromDb) {
+        restaurants.push({
+          restaurantId: r.restaurantId,
+          placeId: null,
+          name: r.name,
+          address: r.address || '',
+          lat: r.lat,
+          lng: r.lng,
+          createdAt: new Date().toISOString(),
+        });
+        fromDb = findRestaurantById(r.restaurantId);
+      }
+      const rawUrl = await resolveRestaurantCardImage(r.restaurantId, fromDb?.placeId ?? null, null);
+      const abs = toAbsoluteImageUrl(rawUrl);
+      const socialProofBadge =
+        getSocialProofBadge(r.restaurantId, userId, {
+          ...tonightCtx,
+          similarTasteSignal: r.similarTasteSignal,
+          cuisine: r.cuisine,
+        }) || null;
       return {
         restaurantId: r.restaurantId,
         name: r.name,
         address: r.address,
         placeId: fromDb?.placeId ?? null,
-        previewPhotoUrl: toAbsoluteImageUrl(r.previewPhotoUrl),
-        imageUrl: toAbsoluteImageUrl(rawUrl),
+        previewPhotoUrl: abs,
+        imageUrl: abs,
+        socialProofBadge,
+        groupSignal,
       };
     }),
   );
   res.json({
     pool,
-    total: TONIGHT_POOL.length,
+    total: ranked.length,
     page,
     pageSize,
   });
@@ -704,17 +1295,30 @@ app.get('/api/users/:userId/saved', (req, res) => {
   const withInfo = saved
     .map((s) => {
       const info = getRestaurantInfo(s.restaurantId);
-      if (!info) return null;
+      const snap = s.snapshot || null;
+      if (!info && !snap) return null;
+      const name = info?.name || snap?.name || 'Saved place';
+      const address = info?.address ?? snap?.address ?? null;
+      const city = info?.city ?? snap?.city ?? null;
+      const neighborhood = info?.neighborhood ?? snap?.neighborhood ?? null;
+      const lat = info?.lat ?? snap?.lat ?? null;
+      const lng = info?.lng ?? snap?.lng ?? null;
+      const previewPhotoUrl =
+        toAbsoluteImageUrl(info?.previewPhotoUrl || snap?.previewPhotoUrl || null) || null;
+      const canonicalId = info?.restaurantId || s.restaurantId;
+      const placeId = info?.placeId || (String(s.restaurantId).startsWith('ChIJ') ? s.restaurantId : null);
       return {
-        restaurantId: s.restaurantId,
-        name: info.name,
-        address: info.address,
-        city: info.city || null,
-        neighborhood: info.neighborhood || null,
-        lat: info.lat,
-        lng: info.lng,
-        previewPhotoUrl: toAbsoluteImageUrl(info.previewPhotoUrl) || null,
+        restaurantId: canonicalId,
+        place_id: placeId || canonicalId,
+        name,
+        address,
+        city,
+        neighborhood,
+        lat,
+        lng,
+        previewPhotoUrl,
         savedAt: s.savedAt,
+        source: (s.source === 'swipe' || s.source === 'TONIGHT') ? 'swipe' : 'manual',
       };
     })
     .filter(Boolean);
@@ -738,6 +1342,151 @@ app.get('/api/users/:userId/saved', (req, res) => {
   }
 
   res.json(withInfo);
+});
+
+// POST /api/users/:userId/saved — add saved restaurant (manual or any source)
+app.post('/api/users/:userId/saved', (req, res) => {
+  const userId = req.params.userId;
+  const body = req.body || {};
+  const { restaurantId, source, name, photo, cuisine, neighborhood, address, lat, lng, cuisines } = body;
+  if (!restaurantId || typeof restaurantId !== 'string') {
+    return res.status(400).json({ error: 'restaurantId required' });
+  }
+  if (process.env.NODE_ENV !== 'production' || process.env.BITERIGHT_DEBUG_SAVED) {
+    console.log('[BiteRight][Saved] POST /saved received', {
+      userId,
+      restaurantId,
+      source,
+      name: name || null,
+      hasPhoto: !!photo,
+      cuisine: cuisine || null,
+      neighborhood: neighborhood || null,
+    });
+  }
+  let canonicalId = restaurantId;
+  const byPlace = String(restaurantId).startsWith('ChIJ') ? findRestaurantByPlaceId(restaurantId) : null;
+  if (byPlace) canonicalId = byPlace.restaurantId;
+
+  const existing = savedRestaurants.find(
+    (s) => s.userId === userId && (s.restaurantId === restaurantId || s.restaurantId === canonicalId),
+  );
+  if (existing) {
+    if (name && typeof name === 'string') {
+      existing.snapshot = {
+        ...(existing.snapshot || {}),
+        name,
+        previewPhotoUrl: photo || existing.snapshot?.previewPhotoUrl,
+        neighborhood: neighborhood ?? existing.snapshot?.neighborhood,
+        address: address ?? existing.snapshot?.address,
+      };
+    }
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('[BiteRight][Saved] POST result alreadySaved', { userId, restaurantId: canonicalId });
+    }
+    return res.json({ ok: true, saved: false, alreadySaved: true, restaurantId: canonicalId });
+  }
+
+  const snap = {
+    name: typeof name === 'string' ? name : undefined,
+    previewPhotoUrl: typeof photo === 'string' ? photo : null,
+    address: typeof address === 'string' ? address : null,
+    neighborhood: typeof neighborhood === 'string' ? neighborhood : null,
+    lat: typeof lat === 'number' && Number.isFinite(lat) ? lat : null,
+    lng: typeof lng === 'number' && Number.isFinite(lng) ? lng : null,
+    cuisines: Array.isArray(cuisines) ? cuisines.filter((x) => typeof x === 'string') : undefined,
+  };
+  const hasSnap = snap.name || snap.previewPhotoUrl || snap.neighborhood || snap.address || snap.cuisines?.length;
+  savedRestaurants.push({
+    id: 'saved_' + Date.now(),
+    userId,
+    restaurantId: canonicalId,
+    savedAt: new Date().toISOString(),
+    source: source === 'swipe' || source === 'manual' ? source : 'manual',
+    snapshot: hasSnap ? snap : undefined,
+  });
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('[BiteRight][Saved] POST result saved', { userId, restaurantId: canonicalId });
+  }
+  res.status(201).json({ ok: true, saved: true, restaurantId: canonicalId });
+});
+
+// Negative feedback on recommendations: hide / suggest_less
+app.post('/api/users/:userId/negative-feedback', (req, res) => {
+  const userId = req.params.userId;
+  const { restaurantId, actionType } = req.body || {};
+  if (!restaurantId || (actionType !== 'hide' && actionType !== 'suggest_less')) {
+    return res.status(400).json({ error: 'restaurantId and valid actionType required' });
+  }
+  const info = getRestaurantInfo(restaurantId);
+  if (!info) {
+    return res.status(404).json({ error: 'Restaurant not found' });
+  }
+  const id = 'neg_' + Date.now();
+  const createdAt = new Date().toISOString();
+  negativeFeedback.push({
+    id,
+    userId,
+    restaurantId,
+    actionType,
+    createdAt,
+    relatedFeatures: {
+      cuisine: null,
+      neighborhood: info.neighborhood || null,
+      priceLevel: null,
+    },
+  });
+  res.status(201).json({ ok: true });
+});
+
+// DELETE /api/users/:userId/saved/:restaurantId — remove saved restaurant
+app.delete('/api/users/:userId/saved/:restaurantId', (req, res) => {
+  const userId = req.params.userId;
+  const rawId = req.params.restaurantId;
+  let canonical = rawId;
+  const byPlace = String(rawId).startsWith('ChIJ') ? findRestaurantByPlaceId(rawId) : null;
+  if (byPlace) canonical = byPlace.restaurantId;
+  const index = savedRestaurants.findIndex(
+    (s) => s.userId === userId && (s.restaurantId === rawId || s.restaurantId === canonical),
+  );
+  if (index === -1) {
+    return res.status(404).json({ error: 'Saved restaurant not found' });
+  }
+  savedRestaurants.splice(index, 1);
+  res.json({ ok: true, removed: true });
+});
+
+// --- Friends (for social proof badges) ---------------------------------------
+
+// GET /api/users/:userId/friends
+app.get('/api/users/:userId/friends', (req, res) => {
+  const userId = req.params.userId;
+  const list = friends
+    .filter((f) => f.userId === userId || f.friendId === userId)
+    .map((f) => (f.userId === userId ? f.friendId : f.userId))
+    .filter((id, i, arr) => arr.indexOf(id) === i);
+  res.json({
+    friends: list.map((friendId) => ({ friendId, displayName: userDisplayNames[friendId] || null })),
+  });
+});
+
+// POST /api/users/:userId/friends — add a friend (idempotent). body: { friendId, displayName? }
+app.post('/api/users/:userId/friends', (req, res) => {
+  const userId = req.params.userId;
+  const { friendId, displayName } = req.body || {};
+  if (!friendId || typeof friendId !== 'string') {
+    return res.status(400).json({ error: 'friendId required' });
+  }
+  if (userId === friendId) {
+    return res.status(400).json({ error: 'Cannot add self as friend' });
+  }
+  const exists = friends.some((f) => (f.userId === userId && f.friendId === friendId) || (f.userId === friendId && f.friendId === userId));
+  if (!exists) {
+    friends.push({ userId, friendId });
+  }
+  if (typeof displayName === 'string' && displayName.trim()) {
+    userDisplayNames[friendId] = displayName.trim();
+  }
+  res.status(201).json({ ok: true, friendId });
 });
 
 // --- Geocoding (backend only; cached by query) -------------------------------
@@ -816,69 +1565,349 @@ app.get('/api/tonight/sessions/:code/matches', (req, res) => {
   });
 });
 
-// --- Discover (location filter) ---------------------------------------------
+// --- Discover (recommendation pipeline + location filter) --------------------
 
-// GET /api/discover?mode=nearby&lat=&lng=&radiusMiles=10  OR  mode=location&query=Chicago%20Loop&radiusMiles=10
+const { getDiscoverRecommendations } = require('./recommendation');
+
+async function attachImageAndPlaceId(rec, userId, ctx) {
+  const placeId = findRestaurantById(rec.restaurantId)?.placeId ?? null;
+  const derivedCuisines = deriveCuisinesFromPlace(rec.types || [], rec.name, rec.cuisine);
+  const mappedCat = mapFoodCategory(rec.types || [], rec.name);
+  const displayCuisine =
+    (derivedCuisines.length && derivedCuisines[0]) ||
+    (rec.cuisine && String(rec.cuisine).trim() && rec.cuisine !== 'Restaurant' ? rec.cuisine : '') ||
+    mappedCat ||
+    '';
+  const rawUrl = await resolveRestaurantCardImage(rec.restaurantId, placeId, undefined);
+  const finalImageUrl = toAbsoluteImageUrl(rawUrl || NEUTRAL_PLACEHOLDER_URL);
+  const socialProofBadge =
+    getSocialProofBadge(rec.restaurantId, userId, {
+      savedRestaurants: ctx?.savedRestaurants,
+      tonightSwipes: ctx?.tonightSwipes,
+      logs: ctx?.logs,
+      friends: ctx?.friends,
+      groupSessions: ctx?.groupSessions,
+      userDisplayNames: ctx?.userDisplayNames,
+      similarTasteSignal: rec.similarTasteSignal,
+      cuisine: rec.cuisine,
+    }) || null;
+  return {
+    restaurant: {
+      id: rec.restaurantId,
+      name: rec.name,
+      address: rec.address,
+      neighborhood: rec.neighborhood ?? (rec.address && rec.address.split(',')[0]) ?? null,
+      cuisine: displayCuisine,
+      cuisines: derivedCuisines.length ? derivedCuisines : mappedCat ? [mappedCat] : [],
+      priceLevel: rec.priceLevel ?? 2,
+      placeId,
+      // Normalize with Feed's successful field name.
+      previewPhotoUrl: finalImageUrl,
+      // Keep backward-compatible alias for existing Discover consumers.
+      imageUrl: finalImageUrl,
+    },
+    percentMatch: rec.percentMatch,
+    explanations: rec.explanations || ['Recommended for you'],
+    socialProofBadge,
+  };
+}
+
+/**
+ * Discover from Google Nearby (optionally biased with cuisine keyword + post-filter).
+ * @returns {Promise<{ isColdStart: boolean; discoverMode: string; sections: object; recommendations: any[]; location: object; radiusMiles: number }>}
+ */
+async function buildGooglePlaceDiscover(lat, lng, radiusMiles, userId, cuisineFilter, meta) {
+  const keyword = cuisineFilter ? cuisineChipToNearbyKeyword(cuisineFilter) : '';
+  console.log('[BiteRight][Discover] Google Places discover', {
+    ...meta,
+    cuisineReceived: cuisineFilter || null,
+    nearbyKeyword: keyword || null,
+  });
+
+  const nearbyRaw = await googlePlacesNearbyRestaurants(
+    lat,
+    lng,
+    radiusMiles * 1609.34,
+    keyword || undefined,
+  );
+  let nearby = nearbyRaw.filter((p) => isFoodPlace(p.types));
+  const discoverCtx = { savedRestaurants, tonightSwipes, logs, friends, groupSessions, userDisplayNames };
+
+  let recs = nearby.map((p, idx) => {
+    let restaurant = findRestaurantByPlaceId(p.placeId);
+    if (!restaurant) {
+      const restaurantId = `g_${String(p.placeId || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 18) || `${Date.now()}_${idx}`}`;
+      restaurant = {
+        restaurantId,
+        placeId: p.placeId,
+        name: p.name,
+        address: p.address,
+        lat: p.lat ?? lat,
+        lng: p.lng ?? lng,
+        fallbackPhotoRef: p.photoRef || undefined,
+        fallbackPhotoUrl: p.photoRef ? buildPhotoProxyUrl(restaurantId) : undefined,
+        bestFoodPhotoRef: p.photoRef || undefined,
+        bestFoodPhotoUrl: p.photoRef ? buildPhotoProxyUrl(restaurantId) : undefined,
+        createdAt: new Date().toISOString(),
+      };
+      restaurants.push(restaurant);
+    }
+
+    const score = p.rating != null ? Math.min(99, Math.round((p.rating / 5) * 100)) : Math.max(55, 88 - idx);
+    return {
+      restaurantId: restaurant.restaurantId,
+      name: p.name,
+      address: p.address,
+      neighborhood: p.address ? String(p.address).split(',')[0].trim() : null,
+      cuisine: mapFoodCategory(p.types, p.name),
+      types: p.types,
+      priceLevel: p.priceLevel ?? 2,
+      percentMatch: score,
+      explanations: ['Recommended nearby'],
+      distance: 0,
+      inRadius: true,
+      similarTasteSignal: false,
+    };
+  });
+
+  if (cuisineFilter) {
+    recs = recs.filter((rec) => {
+      const derived = deriveCuisinesFromPlace(rec.types || [], rec.name, rec.cuisine);
+      const included = restaurantMatchesCuisineFilter(derived, cuisineFilter);
+      console.log('[BiteRight][Discover] inclusion', {
+        name: rec.name,
+        derivedCuisines: derived,
+        selectedCuisine: cuisineFilter,
+        included,
+        reason: included ? 'cuisine-match' : 'filtered-out',
+      });
+      return included;
+    });
+  }
+
+  recs = recs.slice(0, 30);
+
+  const sections = {
+    topPicksForYou: recs.slice(0, 8),
+    becauseYouLiked: [],
+    trendingWithSimilarUsers: recs.slice(8, 16),
+    allNearby: recs,
+  };
+
+  const topPicksForYou = await Promise.all(
+    (sections.topPicksForYou || []).map((rec) => attachImageAndPlaceId(rec, userId, discoverCtx)),
+  );
+  const becauseYouLiked = await Promise.all(
+    (sections.becauseYouLiked || []).map((rec) => attachImageAndPlaceId(rec, userId, discoverCtx)),
+  );
+  const trendingWithSimilarUsers = await Promise.all(
+    (sections.trendingWithSimilarUsers || []).map((rec) => attachImageAndPlaceId(rec, userId, discoverCtx)),
+  );
+  const allNearby = await Promise.all((sections.allNearby || []).map((rec) => attachImageAndPlaceId(rec, userId, discoverCtx)));
+
+  console.log('[BiteRight][Discover] Google response summary', {
+    ...meta,
+    cuisineFilter: cuisineFilter || null,
+    nearbyCountRaw: nearbyRaw.length,
+    nearbyCountFood: nearby.length,
+    recsAfterFilter: recs.length,
+    returnedCount: allNearby.length,
+  });
+
+  return {
+    isColdStart: true,
+    discoverMode: 'trending',
+    sections: { topPicksForYou, becauseYouLiked, trendingWithSimilarUsers, allNearby },
+    recommendations: allNearby,
+    location: { lat, lng },
+    radiusMiles,
+  };
+}
+
+function filterRecommendationSectionsByCuisine(sections, cuisineFilter) {
+  if (!cuisineFilter || !sections) return sections;
+  function filterRecList(list) {
+    return (list || []).filter((rec) => {
+      const derived = deriveCuisinesFromPlace(rec.types || [], rec.name, rec.cuisine);
+      const included = restaurantMatchesCuisineFilter(derived, cuisineFilter);
+      console.log('[BiteRight][Discover] pool inclusion', {
+        name: rec.name,
+        derivedCuisines: derived,
+        selectedCuisine: cuisineFilter,
+        included,
+        reason: included ? 'cuisine-match' : 'filtered-out',
+      });
+      return included;
+    });
+  }
+  return {
+    topPicksForYou: filterRecList(sections.topPicksForYou),
+    becauseYouLiked: filterRecList(sections.becauseYouLiked),
+    trendingWithSimilarUsers: filterRecList(sections.trendingWithSimilarUsers),
+    allNearby: filterRecList(sections.allNearby),
+  };
+}
+
+// GET /api/discover?mode=nearby&lat=&lng=&radiusMiles=10&userId=default  OR  mode=location&query=Chicago%20Loop
 app.get('/api/discover', async (req, res) => {
   const mode = (req.query.mode || 'nearby').toLowerCase();
   const radiusMiles = Math.min(50, Math.max(0.5, parseFloat(req.query.radiusMiles) || 10));
+  const userId = (req.query.userId || 'default').trim() || 'default';
+  const cuisineQuery = (req.query.cuisine || '').trim() || null;
   let lat = parseFloat(req.query.lat);
   let lng = parseFloat(req.query.lng);
 
   if (mode === 'location') {
     const query = (req.query.query || '').trim();
-    if (!query) {
-      return res.status(400).json({ error: 'query required when mode=location' });
+    const hasCoords = Number.isFinite(lat) && Number.isFinite(lng);
+
+    // Prefer explicitly provided coords (from the client) to avoid backend geocoding.
+    if (!hasCoords) {
+      if (!query) {
+        return res.status(400).json({ error: 'query required when mode=location (or provide lat/lng)' });
+      }
+      const geo = await geocodeQuery(query);
+      if (!geo) {
+        return res.status(400).json({ error: 'Could not geocode location' });
+      }
+      lat = geo.lat;
+      lng = geo.lng;
     }
-    const geo = await geocodeQuery(query);
-    if (!geo) {
-      return res.status(400).json({ error: 'Could not geocode location' });
-    }
-    lat = geo.lat;
-    lng = geo.lng;
   }
 
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
     return res.status(400).json({ error: 'lat and lng required for mode=nearby, or use mode=location with query' });
   }
 
-  const withScores = TONIGHT_POOL.map((r) => {
-    const dist = distanceMiles(lat, lng, r.lat || 41.88, r.lng || -87.63);
-    const inRadius = dist <= radiusMiles;
-    const percentMatch = inRadius ? Math.round(100 - Math.min(90, dist * 2)) : 0;
-    return {
-      restaurantId: r.restaurantId,
-      name: r.name,
-      address: r.address,
-      percentMatch: Math.max(10, percentMatch),
-      inRadius,
-    };
-  })
-    .filter((r) => r.percentMatch > 0)
-    .sort((a, b) => b.percentMatch - a.percentMatch);
+  if (mode === 'location') {
+    console.log('[BiteRight][Discover] location request params', {
+      mode,
+      userId,
+      query: (req.query.query || '').trim() || null,
+      cuisine: cuisineQuery,
+      lat,
+      lng,
+      radiusMiles,
+    });
+  } else if (cuisineQuery) {
+    console.log('[BiteRight][Discover] nearby request params', {
+      mode,
+      userId,
+      cuisine: cuisineQuery,
+      lat,
+      lng,
+      radiusMiles,
+    });
+  }
 
-  const recommendations = await Promise.all(
-    withScores.map(async (r) => {
-      const rawUrl = await resolveRestaurantCardImage(r.restaurantId, null, undefined);
-      return {
-        restaurant: {
-          id: r.restaurantId,
-          name: r.name,
-          address: r.address,
-          neighborhood: r.address?.split(',')[0] || null,
-          cuisine: '',
-          priceLevel: 2,
-          placeId: findRestaurantById(r.restaurantId)?.placeId ?? null,
-          imageUrl: toAbsoluteImageUrl(rawUrl),
-        },
-        percentMatch: r.percentMatch,
-        explanations: r.inRadius ? ['Nearby'] : [],
-      };
-    }),
-  );
+  // Location mode: use real nearby places for the selected coordinates.
+  // This avoids returning Chicago-only pool entries for non-Chicago cities.
+  if (mode === 'location' && GOOGLE_PLACES_API_KEY) {
+    try {
+      const payload = await buildGooglePlaceDiscover(lat, lng, radiusMiles, userId, cuisineQuery, {
+        mode,
+        query: (req.query.query || '').trim() || null,
+      });
+      return res.json(payload);
+    } catch (err) {
+      console.error('[BiteRight][Discover] location nearby search error', err.message);
+      return res.status(502).json({ error: 'Failed to load location-based restaurants' });
+    }
+  }
+
+  // Nearby + cuisine: use Google keyword search so lists differ by chip (when API key is set).
+  if (mode === 'nearby' && cuisineQuery && GOOGLE_PLACES_API_KEY) {
+    try {
+      const payload = await buildGooglePlaceDiscover(lat, lng, radiusMiles, userId, cuisineQuery, {
+        mode: 'nearby',
+      });
+      return res.json(payload);
+    } catch (err) {
+      console.error('[BiteRight][Discover] nearby+cuisine search error', err.message);
+      return res.status(502).json({ error: 'Failed to load cuisine-filtered restaurants' });
+    }
+  }
+
+  const result = getDiscoverRecommendations({
+    userId,
+    lat,
+    lng,
+    radiusMiles,
+    savedRestaurants,
+    tonightSwipes,
+    groupSessions,
+    negativeFeedback,
+    pool: TONIGHT_POOL,
+    getRestaurantInfo,
+    distanceMiles,
+  });
+
+  const discoverCtx = { savedRestaurants, tonightSwipes, logs, friends, groupSessions, userDisplayNames };
+  let sections = result.sections;
+
+  // Defensive fallback only for nearby mode.
+  // In location mode, we should surface empty/error states rather than silently returning Chicago pool items.
+  if (
+    mode !== 'location' &&
+    (
+      !sections ||
+      (!sections.topPicksForYou?.length &&
+        !sections.becauseYouLiked?.length &&
+        !sections.trendingWithSimilarUsers?.length &&
+        !sections.allNearby?.length)
+    )
+  ) {
+    sections = {
+      topPicksForYou: TONIGHT_POOL.slice(0, 8).map((r) => ({
+        restaurantId: r.restaurantId,
+        name: r.name,
+        address: r.address,
+        neighborhood: r.neighborhood || (r.address && r.address.split(',')[0]) || null,
+        cuisine: r.cuisine || '',
+        priceLevel: r.priceLevel ?? 2,
+        percentMatch: 80,
+        explanations: ['Recommended nearby'],
+        distance: 0,
+        inRadius: true,
+        similarTasteSignal: false,
+      })),
+      becauseYouLiked: [],
+      trendingWithSimilarUsers: [],
+      allNearby: TONIGHT_POOL.slice(0, 20).map((r) => ({
+        restaurantId: r.restaurantId,
+        name: r.name,
+        address: r.address,
+        neighborhood: r.neighborhood || (r.address && r.address.split(',')[0]) || null,
+        cuisine: r.cuisine || '',
+        priceLevel: r.priceLevel ?? 2,
+        percentMatch: 70,
+        explanations: ['Recommended nearby'],
+        distance: 0,
+        inRadius: true,
+        similarTasteSignal: false,
+      })),
+    };
+  }
+
+  if (mode === 'nearby' && cuisineQuery) {
+    sections = filterRecommendationSectionsByCuisine(sections, cuisineQuery);
+  }
+
+  const topPicksForYou = await Promise.all((sections.topPicksForYou || []).map((rec) => attachImageAndPlaceId(rec, userId, discoverCtx)));
+  const becauseYouLiked = await Promise.all((sections.becauseYouLiked || []).map((rec) => attachImageAndPlaceId(rec, userId, discoverCtx)));
+  const trendingWithSimilarUsers = await Promise.all((sections.trendingWithSimilarUsers || []).map((rec) => attachImageAndPlaceId(rec, userId, discoverCtx)));
+  const allNearby = await Promise.all((sections.allNearby || []).map((rec) => attachImageAndPlaceId(rec, userId, discoverCtx)));
 
   res.json({
-    recommendations,
+    isColdStart: result.isColdStart,
+    discoverMode: result.discoverMode || 'trending',
+    sections: {
+      topPicksForYou,
+      becauseYouLiked,
+      trendingWithSimilarUsers,
+      allNearby,
+    },
+    recommendations: allNearby,
     location: { lat, lng },
     radiusMiles,
   });

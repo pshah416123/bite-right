@@ -7,15 +7,19 @@
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "backfill:places": "cd server && node scripts/backfill-restaurant-places.mjs"
   },
   "dependencies": {
     "@expo/vector-icons": "latest",
+    "@react-native-async-storage/async-storage": "2.2.0",
     "axios": "latest",
     "expo": "latest",
+    "expo-clipboard": "^55.0.8",
     "expo-constants": "~55.0.7",
     "expo-font": "~55.0.4",
     "expo-image-picker": "~55.0.10",
+    "expo-linear-gradient": "~55.0.8",
     "expo-linking": "~55.0.7",
     "expo-location": "~55.0.7",
     "expo-router": "latest",
@@ -25,11 +29,11 @@
     "react-native-deck-swiper": "^2.0.19",
     "react-native-gesture-handler": "latest",
     "react-native-safe-area-context": "~5.6.2",
-    "react-native-screens": "~4.23.0",
-    "@react-native-async-storage/async-storage": "2.2.0"
+    "react-native-screens": "~4.23.0"
   },
   "devDependencies": {
     "@types/react": "latest",
+    "babel-plugin-module-resolver": "^5.0.2",
     "babel-preset-expo": "^55.0.10",
     "typescript": "latest"
   }

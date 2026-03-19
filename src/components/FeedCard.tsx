@@ -1,8 +1,10 @@
 import { useState } from 'react';
 import { Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { Link } from 'expo-router';
+import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../theme/colors';
+import { resolveRestaurantDisplayImage } from '../utils/restaurantImage';
+import { NEUTRAL_RESTAURANT_PLACEHOLDER_URI } from '../constants/restaurantMedia';
 
 export type VibeTag =
   | 'date_night'
@@ -19,6 +21,8 @@ export interface FeedLog {
   restaurantName: string;
   restaurantId: string;
   score: number; // 0–10 overall rating
+  /** ISO date string for when the log was created. */
+  createdAt?: string;
   cuisine: string;
   neighborhood?: string;
   state?: string;
@@ -27,7 +31,16 @@ export interface FeedLog {
   note?: string;
   /** Image URL for the card (from log photo or resolved restaurant photo). Use this single field for display. */
   previewPhotoUrl?: string;
+  /**
+   * Backward-compatible legacy field.
+   * Prefer `standoutDish` for structured rendering/filtering.
+   */
   dishHighlight?: string;
+  /**
+   * Structured standout dish for UI and future filtering.
+   * Example: { label: 'Standout', name: 'Chicago-style deep dish' }
+   */
+  standoutDish?: { label: string; name: string };
   // Optional details: shown on restaurant detail only
   foodRating?: number;
   serviceRating?: number;
@@ -43,15 +56,14 @@ interface Props {
 
 const CAPTION_MAX_LINES = 2;
 
-/** Neutral placeholder when log has no image (must match server NEUTRAL_PLACEHOLDER_URL). */
-const FEED_PLACEHOLDER_URI = 'https://placehold.co/800x600/e5e7eb/6b7280?text=No+photo';
-
 export function FeedCard({ log }: Props) {
+  const router = useRouter();
   const [liked, setLiked] = useState(false);
   const [likeCount, setLikeCount] = useState(0);
   const [commentCount] = useState(0);
   const [captionExpanded, setCaptionExpanded] = useState(false);
   const [captionTruncated, setCaptionTruncated] = useState(false);
+   const [imageBroken, setImageBroken] = useState(false);
 
   const onLike = () => {
     setLiked((prev) => !prev);
@@ -61,67 +73,101 @@ export function FeedCard({ log }: Props) {
   const noteText = log.note ? `"${log.note}"` : '';
   const showSeeMore = noteText.length > 0 && captionTruncated && !captionExpanded;
 
+  const photoUri = (() => {
+    if (imageBroken) return NEUTRAL_RESTAURANT_PLACEHOLDER_URI;
+    return resolveRestaurantDisplayImage({ userOrLogPhotoUrl: log.previewPhotoUrl }).url;
+  })();
+
+  const standout =
+    log.standoutDish ??
+    (log.dishHighlight
+      ? { label: 'Standout', name: log.dishHighlight }
+      : undefined);
+
   return (
     <View style={styles.card}>
-      <Link href={`/restaurant/${log.restaurantId}?logId=${log.id}`} asChild>
-        <TouchableOpacity activeOpacity={1} style={styles.tappableArea}>
-          <View style={styles.topRow}>
-            <View style={styles.avatarPlaceholder}>
-              <Text style={styles.avatarInitial}>{log.userName[0] ?? '·'}</Text>
-            </View>
-            <View style={styles.meta}>
-              <Text style={styles.userName}>{log.userName}</Text>
-              <Text style={styles.restaurantName}>{log.restaurantName}</Text>
-            </View>
-            <View style={styles.ratingPill}>
-              <Text style={styles.ratingValue}>{log.score.toFixed(1)}</Text>
-            </View>
+      <View style={styles.topRow}>
+        <TouchableOpacity
+          onPress={() => router.push(`/(tabs)/profile?userName=${encodeURIComponent(log.userName)}`)}
+          activeOpacity={0.85}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <View style={styles.avatarPlaceholder}>
+            <Text style={styles.avatarInitial}>{log.userName[0] ?? '·'}</Text>
           </View>
-
-          {log.dishHighlight ? (
-            <Text style={styles.dishHighlight}>{log.dishHighlight}</Text>
-          ) : null}
-
-          {(() => {
-            const imageUrl =
-              log.previewPhotoUrl && (log.previewPhotoUrl.startsWith('http') || log.previewPhotoUrl.startsWith('https'))
-                ? log.previewPhotoUrl
-                : FEED_PLACEHOLDER_URI;
-            return <Image source={{ uri: imageUrl }} style={styles.photo} />;
-          })()}
-
-          {log.note ? (
-            <View style={styles.captionWrap}>
-              <Text
-                style={styles.note}
-                numberOfLines={captionExpanded ? undefined : CAPTION_MAX_LINES}
-                onTextLayout={
-                  captionExpanded
-                    ? undefined
-                    : (e) => {
-                        const { lines } = e.nativeEvent;
-                        if (lines.length > CAPTION_MAX_LINES) setCaptionTruncated(true);
-                      }
-                }
-              >
-                {noteText}
-              </Text>
-              {showSeeMore ? (
-                <TouchableOpacity
-                  onPress={(e) => {
-                    e.preventDefault();
-                    setCaptionExpanded(true);
-                  }}
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  style={styles.seeMoreWrap}
-                >
-                  <Text style={styles.seeMore}>See more</Text>
-                </TouchableOpacity>
-              ) : null}
-            </View>
-          ) : null}
         </TouchableOpacity>
-      </Link>
+        <View style={styles.meta}>
+          <TouchableOpacity
+            onPress={() => router.push(`/(tabs)/profile?userName=${encodeURIComponent(log.userName)}`)}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.userName}>{log.userName}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => router.push(`/restaurant/${log.restaurantId}?logId=${log.id}`)}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.restaurantName}>{log.restaurantName}</Text>
+          </TouchableOpacity>
+        </View>
+        <View style={styles.ratingPill}>
+          <Text style={styles.ratingValue}>{log.score.toFixed(1)}</Text>
+        </View>
+      </View>
+
+      <TouchableOpacity
+        activeOpacity={1}
+        style={styles.tappableArea}
+        onPress={() => router.push(`/restaurant/${log.restaurantId}?logId=${log.id}`)}
+      >
+        {standout?.name ? (
+          <View style={styles.standoutRow}>
+            <View style={styles.standoutBadge}>
+              <Text style={styles.standoutBadgeText}>{standout.label}</Text>
+            </View>
+            <Text style={styles.standoutName} numberOfLines={1} ellipsizeMode="tail">
+              {standout.name}
+            </Text>
+          </View>
+        ) : null}
+
+        <Image
+          source={{ uri: photoUri }}
+          style={styles.photo}
+          onError={() => setImageBroken(true)}
+        />
+      </TouchableOpacity>
+
+      {log.note ? (
+        <View style={styles.captionWrap}>
+          <Text
+            style={styles.note}
+            numberOfLines={captionExpanded ? undefined : CAPTION_MAX_LINES}
+            onTextLayout={
+              captionExpanded
+                ? undefined
+                : (e) => {
+                    const { lines } = e.nativeEvent;
+                    if (lines.length > CAPTION_MAX_LINES) setCaptionTruncated(true);
+                  }
+            }
+          >
+            {noteText}
+          </Text>
+          {showSeeMore ? (
+            <TouchableOpacity
+              onPress={(e) => {
+                e.preventDefault();
+                setCaptionExpanded(true);
+              }}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              style={styles.seeMoreWrap}
+            >
+              <Text style={styles.seeMore}>See more</Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
+      ) : null}
 
       <View style={styles.actions}>
         <TouchableOpacity style={styles.actionBtn} onPress={onLike} activeOpacity={0.7}>
@@ -205,13 +251,32 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: colors.text,
   },
-  dishHighlight: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: colors.accent,
-    marginTop: 2,
+  standoutRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 6,
     marginBottom: 8,
-    letterSpacing: 0.2,
+  },
+  standoutBadge: {
+    backgroundColor: colors.bgSoft,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    marginRight: 8,
+    borderWidth: 1,
+    borderColor: colors.accentSoft,
+  },
+  standoutBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.accent,
+  },
+  standoutName: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.text,
+    lineHeight: 18,
   },
   photo: {
     width: '100%',

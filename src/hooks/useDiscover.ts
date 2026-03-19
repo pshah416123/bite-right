@@ -3,7 +3,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
 import type { DiscoverItem } from '../components/RestaurantCard';
 import { getDiscover } from '../api/discover';
-import type { DiscoverMode } from '../api/discover';
+import type { DiscoverMode, DiscoverModeApi } from '../api/discover';
+import type { DiscoverSections } from '../api/discover';
 import { getDiscoverRecommendations } from '../recommendation/discoverMock';
 import { apiClient } from '../api/client';
 
@@ -20,17 +21,40 @@ export interface DiscoverFilterState {
   locationQuery: string;
 }
 
+export interface DiscoverSectionItems {
+  topPicksForYou: DiscoverItem[];
+  becauseYouLiked: DiscoverItem[];
+  trendingWithSimilarUsers: DiscoverItem[];
+  allNearby: DiscoverItem[];
+}
+
 interface UseDiscoverResult {
   items: DiscoverItem[];
+  sections: DiscoverSectionItems;
   isColdStart: boolean;
+  discoverMode: DiscoverModeApi;
   filterMode: DiscoverMode;
   setFilterMode: (mode: DiscoverMode) => void;
   locationQuery: string;
   setLocationQuery: (q: string) => void;
   applyLocationQuery: () => void;
+  /** The currently applied/selected location (empty until user selects/commits). */
+  selectedLocation: string;
   locationPermissionDenied: boolean;
   loading: boolean;
   error: string | null;
+}
+
+function sectionsToItems(sections: DiscoverSections | undefined): DiscoverSectionItems {
+  if (!sections) {
+    return { topPicksForYou: [], becauseYouLiked: [], trendingWithSimilarUsers: [], allNearby: [] };
+  }
+  return {
+    topPicksForYou: (sections.topPicksForYou || []).map(recToItem),
+    becauseYouLiked: (sections.becauseYouLiked || []).map(recToItem),
+    trendingWithSimilarUsers: (sections.trendingWithSimilarUsers || []).map(recToItem),
+    allNearby: (sections.allNearby || []).map(recToItem),
+  };
 }
 
 function recToItem(rec: {
@@ -38,36 +62,54 @@ function recToItem(rec: {
     id: string;
     name: string;
     cuisine?: string;
+    cuisines?: string[];
     neighborhood?: string;
     priceLevel?: number;
     placeId?: string | null;
     imageUrl?: string;
+    previewPhotoUrl?: string;
   };
   percentMatch: number;
   explanations: string[];
+  socialProofBadge?: string | null;
 }): DiscoverItem {
   return {
     restaurant: {
       id: rec.restaurant.id,
       name: rec.restaurant.name,
       cuisine: rec.restaurant.cuisine ?? '',
+      cuisines: rec.restaurant.cuisines,
       neighborhood: rec.restaurant.neighborhood,
       priceLevel: rec.restaurant.priceLevel,
       placeId: rec.restaurant.placeId,
-      imageUrl: ensureAbsoluteImageUrl(rec.restaurant.imageUrl),
+      previewPhotoUrl: ensureAbsoluteImageUrl(rec.restaurant.previewPhotoUrl),
+      imageUrl: ensureAbsoluteImageUrl(rec.restaurant.imageUrl ?? rec.restaurant.previewPhotoUrl),
     },
     matchScore: rec.percentMatch / 100,
     reasonTags: rec.explanations,
+    socialProofBadge: rec.socialProofBadge ?? null,
   };
 }
 
-export function useDiscover(userId = 'you'): UseDiscoverResult {
+export function useDiscover(
+  userId = 'you',
+  opts: { cuisine?: string | null } = {},
+): UseDiscoverResult {
+  const cuisine = opts.cuisine ?? null;
   const [filterMode, setFilterModeState] = useState<DiscoverMode>('nearby');
   const [locationQuery, setLocationQuery] = useState('');
   const [appliedQuery, setAppliedQuery] = useState('');
   const [userCoords, setUserCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [locationPermissionDenied, setLocationPermissionDenied] = useState(false);
   const [items, setItems] = useState<DiscoverItem[]>([]);
+  const [sections, setSections] = useState<DiscoverSectionItems>({
+    topPicksForYou: [],
+    becauseYouLiked: [],
+    trendingWithSimilarUsers: [],
+    allNearby: [],
+  });
+  const [isColdStartState, setIsColdStartState] = useState(true);
+  const [discoverMode, setDiscoverMode] = useState<DiscoverModeApi>('trending');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -108,23 +150,24 @@ export function useDiscover(userId = 'you'): UseDiscoverResult {
     if (filterMode === 'nearby') {
       let cancelled = false;
       (async () => {
-        const { status } = await Location.getForegroundPermissionsAsync();
-        if (cancelled) return;
-        if (status !== 'granted') {
-          setLocationPermissionDenied(true);
-          setUserCoords(null);
-          setFilterModeState('location');
-          return;
-        }
-        setLocationPermissionDenied(false);
         try {
-          const loc = await Location.getCurrentPositionAsync({});
+          const { status } = await Location.getForegroundPermissionsAsync();
           if (cancelled) return;
-          setUserCoords({ lat: loc.coords.latitude, lng: loc.coords.longitude });
+          if (status === 'granted') {
+            setLocationPermissionDenied(false);
+            const loc = await Location.getCurrentPositionAsync({});
+            if (cancelled) return;
+            setUserCoords({ lat: loc.coords.latitude, lng: loc.coords.longitude });
+          } else {
+            // Graceful fallback: remember that permission was denied, but still use a default city center
+            // so Nearby mode continues to show recommendations.
+            setLocationPermissionDenied(true);
+            setUserCoords({ lat: 41.88, lng: -87.63 }); // Chicago downtown default
+          }
         } catch {
           if (!cancelled) {
-            setUserCoords(null);
             setLocationPermissionDenied(true);
+            setUserCoords({ lat: 41.88, lng: -87.63 });
           }
         }
       })();
@@ -150,25 +193,44 @@ export function useDiscover(userId = 'you'): UseDiscoverResult {
     setError(null);
 
     if (filterMode === 'nearby' && userCoords) {
-      getDiscover({ mode: 'nearby', lat: userCoords.lat, lng: userCoords.lng, radiusMiles: 10 })
+      if (__DEV__) {
+        console.log('[useDiscover] fetch nearby', {
+          lat: userCoords.lat,
+          lng: userCoords.lng,
+          cuisine: cuisine || null,
+        });
+      }
+      getDiscover({
+        mode: 'nearby',
+        userId: 'default',
+        lat: userCoords.lat,
+        lng: userCoords.lng,
+        radiusMiles: 10,
+        cuisine,
+      })
         .then((res) => {
           if (cancelled) return;
-          const items = res.recommendations.map(recToItem);
-          setItems(items);
-          if (__DEV__ && items.length > 0) {
-            const first = res.recommendations[0]?.restaurant;
-            if (first) {
-              const imageUrl = first.imageUrl ?? '(none)';
-              const isHttps = typeof imageUrl === 'string' && imageUrl.startsWith('https');
-              console.log('[Discover] First result:', { name: first.name, placeId: first.placeId ?? null, imageUrl, isHttpsUrl: isHttps });
-            }
-          }
+          const list = res.recommendations?.map(recToItem) ?? [];
+          setItems(list);
+          setSections(sectionsToItems(res.sections));
+          setIsColdStartState(res.isColdStart ?? true);
+          setDiscoverMode(res.discoverMode ?? 'trending');
+          setError(null);
         })
         .catch((e) => {
           if (cancelled) return;
           setError(e.response?.data?.error || e.message || 'Discover failed');
           const mock = getDiscoverRecommendations(userId);
-          setItems(mock.recommendations.map(recToItem));
+          const list = mock.recommendations.map(recToItem);
+          setItems(list);
+          setSections({
+            topPicksForYou: list.slice(0, 4),
+            becauseYouLiked: [],
+            trendingWithSimilarUsers: list.slice(4, 8),
+            allNearby: list,
+          });
+          setIsColdStartState(mock.isColdStart);
+          setDiscoverMode('trending');
         })
         .finally(() => {
           if (!cancelled) setLoading(false);
@@ -177,25 +239,36 @@ export function useDiscover(userId = 'you'): UseDiscoverResult {
     }
 
     if (filterMode === 'location' && appliedQuery) {
-      getDiscover({ mode: 'location', query: appliedQuery, radiusMiles: 10 })
+      getDiscover({
+        mode: 'location',
+        userId: 'default',
+        query: appliedQuery,
+        radiusMiles: 10,
+        cuisine,
+      })
         .then((res) => {
           if (cancelled) return;
-          const items = res.recommendations.map(recToItem);
-          setItems(items);
-          if (__DEV__ && items.length > 0) {
-            const first = res.recommendations[0]?.restaurant;
-            if (first) {
-              const imageUrl = first.imageUrl ?? '(none)';
-              const isHttps = typeof imageUrl === 'string' && imageUrl.startsWith('https');
-              console.log('[Discover] First result:', { name: first.name, placeId: first.placeId ?? null, imageUrl, isHttpsUrl: isHttps });
-            }
-          }
+          const list = res.recommendations?.map(recToItem) ?? [];
+          setItems(list);
+          setSections(sectionsToItems(res.sections));
+          setIsColdStartState(res.isColdStart ?? true);
+          setDiscoverMode(res.discoverMode ?? 'trending');
+          setError(null);
         })
         .catch((e) => {
           if (cancelled) return;
           setError(e.response?.data?.error || e.message || 'Discover failed');
           const mock = getDiscoverRecommendations(userId);
-          setItems(mock.recommendations.map(recToItem));
+          const list = mock.recommendations.map(recToItem);
+          setItems(list);
+          setSections({
+            topPicksForYou: list.slice(0, 4),
+            becauseYouLiked: [],
+            trendingWithSimilarUsers: list.slice(4, 8),
+            allNearby: list,
+          });
+          setIsColdStartState(mock.isColdStart);
+          setDiscoverMode('trending');
         })
         .finally(() => {
           if (!cancelled) setLoading(false);
@@ -206,25 +279,33 @@ export function useDiscover(userId = 'you'): UseDiscoverResult {
     setLoading(false);
     if (filterMode === 'location' && !appliedQuery) {
       setItems([]);
+      setSections({ topPicksForYou: [], becauseYouLiked: [], trendingWithSimilarUsers: [], allNearby: [] });
       return;
     }
     const mock = getDiscoverRecommendations(userId);
-    setItems(mock.recommendations.map(recToItem));
-  }, [filterMode, userCoords, appliedQuery, locationPermissionDenied, userId]);
-
-  const isColdStart = useMemo(() => {
-    const mock = getDiscoverRecommendations(userId);
-    return mock.isColdStart;
-  }, [userId]);
+    const list = mock.recommendations.map(recToItem);
+    setItems(list);
+    setSections({
+      topPicksForYou: list.slice(0, 4),
+      becauseYouLiked: [],
+      trendingWithSimilarUsers: list.slice(4, 8),
+      allNearby: list,
+    });
+    setIsColdStartState(mock.isColdStart);
+    setDiscoverMode('trending');
+  }, [filterMode, userCoords, appliedQuery, locationPermissionDenied, userId, cuisine]);
 
   return {
     items,
-    isColdStart,
+    sections,
+    isColdStart: isColdStartState,
+    discoverMode,
     filterMode,
     setFilterMode,
     locationQuery,
     setLocationQuery,
     applyLocationQuery,
+    selectedLocation: appliedQuery,
     locationPermissionDenied,
     loading,
     error,

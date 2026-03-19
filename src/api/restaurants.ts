@@ -67,10 +67,32 @@ export async function fetchAutocomplete(query: string): Promise<AutocompleteSugg
       { params: { query: query.trim() } },
     );
     const list = Array.isArray(data) ? data : [];
-    if (list.length > 0) return list;
     const mock = getMockSuggestions(query);
-    if (mock.length > 0) return mock;
-    return getSampleSuggestions();
+    const sample = getSampleSuggestions();
+    const seen = new Set<string>();
+    const combined: AutocompleteSuggestion[] = [];
+
+    // Prefer real Google results first, but always merge mock restaurants too
+    // so Discover and Log Visit stay consistent.
+    for (const item of list) {
+      if (!item?.placeId || seen.has(item.placeId)) continue;
+      seen.add(item.placeId);
+      combined.push(item);
+    }
+    for (const item of mock) {
+      if (!item?.placeId || seen.has(item.placeId)) continue;
+      seen.add(item.placeId);
+      combined.push(item);
+    }
+    for (const item of sample) {
+      if (!item?.placeId || seen.has(item.placeId)) continue;
+      seen.add(item.placeId);
+      combined.push(item);
+    }
+
+    // If Google returned nothing, we still fall back to mock/sample suggestions.
+    if (combined.length > 0) return combined;
+    return [];
   } catch {
     const mock = getMockSuggestions(query);
     if (mock.length > 0) return mock;
@@ -94,8 +116,12 @@ export interface RestaurantDetail {
   googleMapsUrl: string | null;
   phone: string | null;
   reservationUrl: string | null;
+  /** Google Places place_id when known (enriched). */
+  placeId?: string | null;
   /** Resolved card/feed image (relative proxy path or full URL). Use for feed when user doesn't add photos. */
   imageUrl: string | null;
+  /** Present when `?debug=1` on GET /api/restaurants/:id */
+  imageSource?: string;
 }
 
 /** Fetch restaurant detail for Reserve and detail view. Returns null on 404 or error. */
