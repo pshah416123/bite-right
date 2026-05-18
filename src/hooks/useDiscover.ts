@@ -1,24 +1,18 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useEffect, useRef, useState } from 'react';
 import * as Location from 'expo-location';
 import type { DiscoverItem } from '../components/RestaurantCard';
 import { getDiscover } from '../api/discover';
-import type { DiscoverMode, DiscoverModeApi } from '../api/discover';
+import type { DiscoverModeApi } from '../api/discover';
 import type { DiscoverSections } from '../api/discover';
 import { getDiscoverRecommendations } from '../recommendation/discoverMock';
 import { apiClient } from '../api/client';
+import { useTestMode } from '../context/TestModeContext';
+import { TEST_DISCOVER_ITEMS } from '../data/testMockData';
 
 function ensureAbsoluteImageUrl(url: string | undefined): string | undefined {
   if (!url || url.startsWith('http')) return url;
   const base = apiClient.defaults.baseURL || '';
   return base ? `${base.replace(/\/$/, '')}${url.startsWith('/') ? url : `/${url}`}` : url;
-}
-
-const DISCOVER_STORAGE_KEY = 'biteright_discover_filter';
-
-export interface DiscoverFilterState {
-  mode: DiscoverMode;
-  locationQuery: string;
 }
 
 export interface DiscoverSectionItems {
@@ -28,27 +22,25 @@ export interface DiscoverSectionItems {
   allNearby: DiscoverItem[];
 }
 
+const EMPTY_SECTIONS: DiscoverSectionItems = {
+  topPicksForYou: [],
+  becauseYouLiked: [],
+  trendingWithSimilarUsers: [],
+  allNearby: [],
+};
+
 interface UseDiscoverResult {
-  items: DiscoverItem[];
   sections: DiscoverSectionItems;
   isColdStart: boolean;
   discoverMode: DiscoverModeApi;
-  filterMode: DiscoverMode;
-  setFilterMode: (mode: DiscoverMode) => void;
-  locationQuery: string;
-  setLocationQuery: (q: string) => void;
-  applyLocationQuery: () => void;
-  /** The currently applied/selected location (empty until user selects/commits). */
-  selectedLocation: string;
-  locationPermissionDenied: boolean;
+  /** User's GPS coordinates (falls back to Chicago if denied). */
+  userCoords: { lat: number; lng: number } | null;
   loading: boolean;
   error: string | null;
 }
 
 function sectionsToItems(sections: DiscoverSections | undefined): DiscoverSectionItems {
-  if (!sections) {
-    return { topPicksForYou: [], becauseYouLiked: [], trendingWithSimilarUsers: [], allNearby: [] };
-  }
+  if (!sections) return EMPTY_SECTIONS;
   return {
     topPicksForYou: (sections.topPicksForYou || []).map(recToItem),
     becauseYouLiked: (sections.becauseYouLiked || []).map(recToItem),
@@ -65,12 +57,20 @@ function recToItem(rec: {
     cuisines?: string[];
     neighborhood?: string;
     priceLevel?: number;
+    lat?: number | null;
+    lng?: number | null;
     placeId?: string | null;
+    googlePlaceId?: string | null;
+    displayImageUrl?: string | null;
+    displayImageSourceType?: 'override' | 'user' | 'google' | 'placeholder' | null;
+    displayImageLastResolvedAt?: string | null;
     imageUrl?: string;
     previewPhotoUrl?: string;
   };
   percentMatch: number;
   explanations: string[];
+  heroLabel?: string | null;
+  cardTags?: string[];
   socialProofBadge?: string | null;
 }): DiscoverItem {
   return {
@@ -81,234 +81,130 @@ function recToItem(rec: {
       cuisines: rec.restaurant.cuisines,
       neighborhood: rec.restaurant.neighborhood,
       priceLevel: rec.restaurant.priceLevel,
+      lat: rec.restaurant.lat ?? null,
+      lng: rec.restaurant.lng ?? null,
       placeId: rec.restaurant.placeId,
+      googlePlaceId: rec.restaurant.googlePlaceId,
+      displayImageUrl: ensureAbsoluteImageUrl(
+        rec.restaurant.displayImageUrl ?? rec.restaurant.imageUrl ?? rec.restaurant.previewPhotoUrl,
+      ),
+      displayImageSourceType: rec.restaurant.displayImageSourceType ?? null,
+      displayImageLastResolvedAt: rec.restaurant.displayImageLastResolvedAt ?? null,
       previewPhotoUrl: ensureAbsoluteImageUrl(rec.restaurant.previewPhotoUrl),
       imageUrl: ensureAbsoluteImageUrl(rec.restaurant.imageUrl ?? rec.restaurant.previewPhotoUrl),
     },
     matchScore: rec.percentMatch / 100,
     reasonTags: rec.explanations,
+    heroLabel: rec.heroLabel ?? null,
+    cardTags: rec.cardTags ?? [],
     socialProofBadge: rec.socialProofBadge ?? null,
   };
 }
 
+/**
+ * Resolves GPS location and fetches nearby discover results.
+ * No mode switching — always uses user's GPS coordinates.
+ */
 export function useDiscover(
   userId = 'you',
   opts: { cuisine?: string | null } = {},
 ): UseDiscoverResult {
+  const { isTestMode } = useTestMode();
   const cuisine = opts.cuisine ?? null;
-  const [filterMode, setFilterModeState] = useState<DiscoverMode>('nearby');
-  const [locationQuery, setLocationQuery] = useState('');
-  const [appliedQuery, setAppliedQuery] = useState('');
   const [userCoords, setUserCoords] = useState<{ lat: number; lng: number } | null>(null);
-  const [locationPermissionDenied, setLocationPermissionDenied] = useState(false);
-  const [items, setItems] = useState<DiscoverItem[]>([]);
-  const [sections, setSections] = useState<DiscoverSectionItems>({
-    topPicksForYou: [],
-    becauseYouLiked: [],
-    trendingWithSimilarUsers: [],
-    allNearby: [],
-  });
+  const [sections, setSections] = useState<DiscoverSectionItems>(EMPTY_SECTIONS);
   const [isColdStartState, setIsColdStartState] = useState(true);
   const [discoverMode, setDiscoverMode] = useState<DiscoverModeApi>('trending');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const setFilterMode = useCallback((mode: DiscoverMode) => {
-    setFilterModeState(mode);
-    if (mode === 'location') setLocationPermissionDenied(false);
-  }, []);
-
-  const applyLocationQuery = useCallback(() => {
-    setAppliedQuery(locationQuery.trim());
-  }, [locationQuery]);
-
+  // Resolve GPS on mount
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       try {
-        const raw = await AsyncStorage.getItem(DISCOVER_STORAGE_KEY);
-        if (raw) {
-          const parsed = JSON.parse(raw) as DiscoverFilterState;
-          setFilterModeState(parsed.mode ?? 'nearby');
-          setLocationQuery(parsed.locationQuery ?? '');
-          setAppliedQuery(parsed.locationQuery ?? '');
+        const { status } = await Location.getForegroundPermissionsAsync();
+        if (cancelled) return;
+        if (status === 'granted') {
+          const loc = await Location.getCurrentPositionAsync({});
+          if (cancelled) return;
+          setUserCoords({ lat: loc.coords.latitude, lng: loc.coords.longitude });
+        } else {
+          setUserCoords({ lat: 41.88, lng: -87.63 }); // Chicago default
         }
       } catch {
-        // ignore
+        if (!cancelled) setUserCoords({ lat: 41.88, lng: -87.63 });
       }
     })();
+    return () => { cancelled = true; };
   }, []);
 
+  // Fetch nearby results when coords resolve
   useEffect(() => {
-    AsyncStorage.setItem(
-      DISCOVER_STORAGE_KEY,
-      JSON.stringify({ mode: filterMode, locationQuery: filterMode === 'location' ? (appliedQuery || locationQuery) : '' }),
-    ).catch(() => {});
-  }, [filterMode, locationQuery, appliedQuery]);
-
-  useEffect(() => {
-    if (filterMode === 'nearby') {
-      let cancelled = false;
-      (async () => {
-        try {
-          const { status } = await Location.getForegroundPermissionsAsync();
-          if (cancelled) return;
-          if (status === 'granted') {
-            setLocationPermissionDenied(false);
-            const loc = await Location.getCurrentPositionAsync({});
-            if (cancelled) return;
-            setUserCoords({ lat: loc.coords.latitude, lng: loc.coords.longitude });
-          } else {
-            // Graceful fallback: remember that permission was denied, but still use a default city center
-            // so Nearby mode continues to show recommendations.
-            setLocationPermissionDenied(true);
-            setUserCoords({ lat: 41.88, lng: -87.63 }); // Chicago downtown default
-          }
-        } catch {
-          if (!cancelled) {
-            setLocationPermissionDenied(true);
-            setUserCoords({ lat: 41.88, lng: -87.63 });
-          }
-        }
-      })();
-      return () => { cancelled = true; };
-    } else {
-      setLocationPermissionDenied(false);
-    }
-  }, [filterMode]);
-
-  useEffect(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    if (filterMode !== 'location') return;
-    const q = locationQuery.trim();
-    debounceRef.current = setTimeout(() => setAppliedQuery((prev) => (prev !== q ? q : prev)), 300);
-    return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-    };
-  }, [filterMode, locationQuery]);
-
-  useEffect(() => {
+    if (!userCoords) return;
     let cancelled = false;
     setLoading(true);
     setError(null);
 
-    if (filterMode === 'nearby' && userCoords) {
-      if (__DEV__) {
-        console.log('[useDiscover] fetch nearby', {
-          lat: userCoords.lat,
-          lng: userCoords.lng,
-          cuisine: cuisine || null,
-        });
-      }
-      getDiscover({
-        mode: 'nearby',
-        userId: 'default',
-        lat: userCoords.lat,
-        lng: userCoords.lng,
-        radiusMiles: 10,
-        cuisine,
+    getDiscover({
+      mode: 'nearby',
+      userId: 'default',
+      lat: userCoords.lat,
+      lng: userCoords.lng,
+      radiusMiles: 10,
+      cuisine,
+    })
+      .then((res) => {
+        if (cancelled) return;
+        setSections(sectionsToItems(res.sections));
+        setIsColdStartState(res.isColdStart ?? true);
+        setDiscoverMode(res.discoverMode ?? 'trending');
+        setError(null);
       })
-        .then((res) => {
-          if (cancelled) return;
-          const list = res.recommendations?.map(recToItem) ?? [];
-          setItems(list);
-          setSections(sectionsToItems(res.sections));
-          setIsColdStartState(res.isColdStart ?? true);
-          setDiscoverMode(res.discoverMode ?? 'trending');
-          setError(null);
-        })
-        .catch((e) => {
-          if (cancelled) return;
-          setError(e.response?.data?.error || e.message || 'Discover failed');
-          const mock = getDiscoverRecommendations(userId);
-          const list = mock.recommendations.map(recToItem);
-          setItems(list);
-          setSections({
-            topPicksForYou: list.slice(0, 4),
-            becauseYouLiked: [],
-            trendingWithSimilarUsers: list.slice(4, 8),
-            allNearby: list,
-          });
-          setIsColdStartState(mock.isColdStart);
-          setDiscoverMode('trending');
-        })
-        .finally(() => {
-          if (!cancelled) setLoading(false);
+      .catch((e) => {
+        if (cancelled) return;
+        setError(e.response?.data?.error || e.message || 'Discover failed');
+        const mock = getDiscoverRecommendations(userId);
+        const list = mock.recommendations.map(recToItem);
+        setSections({
+          topPicksForYou: list.slice(0, 4),
+          becauseYouLiked: [],
+          trendingWithSimilarUsers: list.slice(4, 8),
+          allNearby: list,
         });
-      return;
-    }
-
-    if (filterMode === 'location' && appliedQuery) {
-      getDiscover({
-        mode: 'location',
-        userId: 'default',
-        query: appliedQuery,
-        radiusMiles: 10,
-        cuisine,
+        setIsColdStartState(mock.isColdStart);
+        setDiscoverMode('trending');
       })
-        .then((res) => {
-          if (cancelled) return;
-          const list = res.recommendations?.map(recToItem) ?? [];
-          setItems(list);
-          setSections(sectionsToItems(res.sections));
-          setIsColdStartState(res.isColdStart ?? true);
-          setDiscoverMode(res.discoverMode ?? 'trending');
-          setError(null);
-        })
-        .catch((e) => {
-          if (cancelled) return;
-          setError(e.response?.data?.error || e.message || 'Discover failed');
-          const mock = getDiscoverRecommendations(userId);
-          const list = mock.recommendations.map(recToItem);
-          setItems(list);
-          setSections({
-            topPicksForYou: list.slice(0, 4),
-            becauseYouLiked: [],
-            trendingWithSimilarUsers: list.slice(4, 8),
-            allNearby: list,
-          });
-          setIsColdStartState(mock.isColdStart);
-          setDiscoverMode('trending');
-        })
-        .finally(() => {
-          if (!cancelled) setLoading(false);
-        });
-      return;
-    }
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
 
-    setLoading(false);
-    if (filterMode === 'location' && !appliedQuery) {
-      setItems([]);
-      setSections({ topPicksForYou: [], becauseYouLiked: [], trendingWithSimilarUsers: [], allNearby: [] });
-      return;
-    }
-    const mock = getDiscoverRecommendations(userId);
-    const list = mock.recommendations.map(recToItem);
-    setItems(list);
-    setSections({
-      topPicksForYou: list.slice(0, 4),
-      becauseYouLiked: [],
-      trendingWithSimilarUsers: list.slice(4, 8),
-      allNearby: list,
-    });
-    setIsColdStartState(mock.isColdStart);
-    setDiscoverMode('trending');
-  }, [filterMode, userCoords, appliedQuery, locationPermissionDenied, userId, cuisine]);
+    return () => { cancelled = true; };
+  }, [userCoords, userId, cuisine]);
+
+  // In test mode, return mock data without GPS or API calls
+  if (isTestMode) {
+    return {
+      sections: {
+        topPicksForYou: TEST_DISCOVER_ITEMS,
+        becauseYouLiked: TEST_DISCOVER_ITEMS.slice(0, 2),
+        trendingWithSimilarUsers: TEST_DISCOVER_ITEMS.slice(2, 4),
+        allNearby: TEST_DISCOVER_ITEMS,
+      },
+      isColdStart: false,
+      discoverMode: 'nearby' as DiscoverModeApi,
+      userCoords: { lat: 41.88, lng: -87.63 },
+      loading: false,
+      error: null,
+    };
+  }
 
   return {
-    items,
     sections,
     isColdStart: isColdStartState,
     discoverMode,
-    filterMode,
-    setFilterMode,
-    locationQuery,
-    setLocationQuery,
-    applyLocationQuery,
-    selectedLocation: appliedQuery,
-    locationPermissionDenied,
+    userCoords,
     loading,
     error,
   };
 }
-

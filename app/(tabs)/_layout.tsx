@@ -1,3 +1,4 @@
+import { StyleSheet } from 'react-native';
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -6,12 +7,12 @@ export default function TabsLayout() {
     <Tabs
       screenOptions={{
         headerShown: false,
-        tabBarActiveTintColor: '#f97316',
-        tabBarInactiveTintColor: 'rgba(0, 0, 0, 0.45)',
+        tabBarActiveTintColor: '#E8692A',
+        tabBarInactiveTintColor: 'rgba(0, 0, 0, 0.28)',
         tabBarStyle: {
           backgroundColor: '#fff7ed',
-          borderTopWidth: 1,
-          borderTopColor: 'rgba(0, 0, 0, 0.08)',
+          borderTopWidth: StyleSheet.hairlineWidth,
+          borderTopColor: 'rgba(0, 0, 0, 0.05)',
           height: 70,
           paddingBottom: 12,
         },
@@ -58,11 +59,14 @@ export default function TabsLayout() {
       <Tabs.Screen name="profile/settings" options={{ href: null }} />
       <Tabs.Screen name="profile/followers" options={{ href: null }} />
       <Tabs.Screen name="profile/following" options={{ href: null }} />
+      <Tabs.Screen name="profile/taste-preferences" options={{ href: null }} />
+      <Tabs.Screen name="profile/test-preview" options={{ href: null }} />
       <Tabs.Screen name="restaurant/[id]" options={{ href: null }} />
       <Tabs.Screen name="log-visit" options={{ href: null }} />
       <Tabs.Screen name="tonight/join" options={{ href: null }} />
       <Tabs.Screen name="tonight/swipe" options={{ href: null }} />
       <Tabs.Screen name="tonight/matches" options={{ href: null }} />
+      <Tabs.Screen name="tonight/setup" options={{ href: null }} />
     </Tabs>
   );
 }

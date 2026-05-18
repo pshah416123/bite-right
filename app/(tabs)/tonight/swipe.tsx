@@ -2,17 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import Swiper from 'react-native-deck-swiper';
-import { TonightCard } from '~/src/components/TonightCard';
-import { getTonightPool, postTonightSwipe } from '~/src/api/tonight';
+import SwipeDeck from '~/src/components/SwipeDeck';
+import { getTonightPool, postTonightSwipe, getSessionState, markDoneSwiping } from '~/src/api/tonight';
+import type { ParticipantProgress, PoolItem } from '~/src/api/tonight';
 import { apiClient } from '~/src/api/client';
 import { useSavedRestaurants } from '~/src/context/SavedRestaurantsContext';
 import { useTonightSession } from '~/src/context/TonightContext';
 import { colors } from '~/src/theme/colors';
 import type { TonightCardModel } from '~/src/components/TonightCard';
-
-/** Subtle feedback only after a more committed drag (keep small drags calm). */
-const SUBTLE_FEEDBACK_THRESHOLD = 60;
 
 function ensureAbsolutePhotoUrl(url: string | undefined): string | undefined {
   if (!url || url.startsWith('http')) return url;
@@ -20,29 +17,32 @@ function ensureAbsolutePhotoUrl(url: string | undefined): string | undefined {
   return base ? `${base.replace(/\/$/, '')}${url.startsWith('/') ? url : `/${url}`}` : url;
 }
 
-function poolItemToCard(item: {
-  restaurantId: string;
-  name: string;
-  address: string;
-  placeId?: string | null;
-  previewPhotoUrl?: string;
-  imageUrl?: string;
-  socialProofBadge?: string | null;
-  groupSignal?: string | null;
-}): TonightCardModel {
-  const resolved = ensureAbsolutePhotoUrl(item.imageUrl ?? item.previewPhotoUrl);
+function poolItemToCard(item: PoolItem): TonightCardModel {
+  const resolved = ensureAbsolutePhotoUrl(
+    item.displayImageUrl ?? item.imageUrl ?? item.previewPhotoUrl,
+  );
   return {
     restaurant: {
       id: item.restaurantId,
       name: item.name,
-      cuisine: '',
-      neighborhood: item.address,
+      cuisine: item.cuisine ?? '',
+      neighborhood: item.neighborhood ?? item.address,
+      priceLevel: item.priceLevel ?? undefined,
+      googlePlaceId: item.googlePlaceId ?? item.placeId ?? null,
+      displayImageUrl: resolved,
+      displayImageSourceType: item.displayImageSourceType ?? null,
+      displayImageLastResolvedAt: item.displayImageLastResolvedAt ?? null,
     },
     matchScore: 0,
+    rating: item.rating ?? null,
     imageUrl: resolved,
     reasonTags: [],
     socialProofBadge: item.socialProofBadge ?? null,
     groupSignal: item.groupSignal ?? null,
+    distanceMi: item.distanceMi ?? null,
+    whyLine: item.whyLine ?? null,
+    recommendedDishes: item.recommendedDishes ?? null,
+    isOpenNow: item.isOpenNow ?? null,
   };
 }
 
@@ -53,43 +53,27 @@ export default function TonightSwipeScreen() {
   const [cards, setCards] = useState<TonightCardModel[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const swiperRef = useRef<Swiper<TonightCardModel> | null>(null);
-  const [swipeIntent, setSwipeIntent] = useState<'left' | 'right' | 'up' | null>(null);
+  const [participants, setParticipants] = useState<ParticipantProgress[]>([]);
   const nextPageRef = useRef(1);
   const prefetchingRef = useRef(false);
+  const seenIdsRef = useRef(new Set<string>());
 
-  const handleSwiping = () => {
-    // Keep swipe feedback minimal: no extra overlays or icon changes while dragging.
-    if (swipeIntent !== null) setSwipeIntent(null);
-  };
-
-  const clearSwipeIntent = () => setSwipeIntent(null);
-
+  // ── Load initial pool ──────────────────────────────────────────────────
   useEffect(() => {
     if (!session?.code || !session?.participantId) {
-      router.replace('/(tabs)/tonight');
+      router.navigate('/(tabs)/tonight');
       return;
     }
     let cancelled = false;
     nextPageRef.current = 1;
+    seenIdsRef.current = new Set();
     getTonightPool(session.code, 0, 20, session.participantId)
       .then((res) => {
         if (cancelled) return;
         const nextCards = res.pool.map(poolItemToCard);
+        nextCards.forEach((c) => seenIdsRef.current.add(c.restaurant.id));
         setCards(nextCards);
         setError(null);
-        if (__DEV__ && nextCards.length > 0) {
-          const first = nextCards[0];
-          const firstItem = res.pool[0];
-          const imageUrl = first.imageUrl ?? firstItem?.imageUrl ?? '(placeholder)';
-          const isHttps = typeof imageUrl === 'string' && imageUrl.startsWith('https');
-          console.log('[TonightSwipe] First Discover card:', {
-            name: first.restaurant.name,
-            placeId: firstItem?.placeId ?? null,
-            imageUrl,
-            isHttpsUrl: isHttps,
-          });
-        }
       })
       .catch((err) => {
         if (cancelled) return;
@@ -101,33 +85,51 @@ export default function TonightSwipeScreen() {
     return () => { cancelled = true; };
   }, [session?.code, session?.participantId, router]);
 
-  // Prefetch next page when remaining cards drop below 10 so the stack rarely runs out.
-  useEffect(() => {
-    if (!session?.code || !session?.participantId || loading || cards.length >= 10) return;
-    if (prefetchingRef.current) return;
+  // ── Endless prefetch — triggered by SwipeDeck's onRunningLow callback ───
+  const handleRunningLow = useCallback(async () => {
+    if (!session?.code || !session?.participantId || prefetchingRef.current) return;
     prefetchingRef.current = true;
     const page = nextPageRef.current;
-    getTonightPool(session.code, page, 20, session.participantId)
-      .then((res) => {
-        if (res.pool.length === 0) {
-          nextPageRef.current = page + 1;
-          prefetchingRef.current = false;
-          return;
-        }
-        nextPageRef.current = page + 1;
-        const newCards = res.pool.map(poolItemToCard);
-        setCards((prev) => {
-          const existingIds = new Set(prev.map((c) => c.restaurant.id));
-          const toAdd = newCards.filter((c) => !existingIds.has(c.restaurant.id));
-          return toAdd.length > 0 ? [...prev, ...toAdd] : prev;
-        });
-      })
-      .catch(() => {})
-      .finally(() => {
-        prefetchingRef.current = false;
-      });
-  }, [session?.code, session?.participantId, loading, cards.length]);
+    try {
+      const res = await getTonightPool(session.code, page, 20, session.participantId);
+      nextPageRef.current = page + 1;
+      const seen = seenIdsRef.current;
+      const newCards = res.pool.map(poolItemToCard).filter((c) => !seen.has(c.restaurant.id));
+      newCards.forEach((c) => seen.add(c.restaurant.id));
+      if (newCards.length > 0) {
+        setCards((prev) => [...prev, ...newCards]);
+      }
+    } catch {
+      // Silently fail
+    } finally {
+      prefetchingRef.current = false;
+    }
+  }, [session?.code, session?.participantId]);
 
+  // ── Poll participant progress (only while still swiping) ──────────────
+  const sessionGoneRef = useRef(false);
+  const doneSwiping = cards.length === 0 && !loading;
+  useEffect(() => {
+    if (!session?.code || doneSwiping) return;
+    const poll = () => {
+      if (sessionGoneRef.current) return;
+      getSessionState(session.code).then((state) => {
+        setParticipants(state.participants);
+      }).catch((err: any) => {
+        const status = err?.response?.status;
+        if ((status === 404 || status === 410) && !sessionGoneRef.current) {
+          sessionGoneRef.current = true;
+          // Silently navigate back instead of blocking with Alert
+          router.navigate('/(tabs)/tonight');
+        }
+      });
+    };
+    poll();
+    const id = setInterval(poll, 5000);
+    return () => clearInterval(id);
+  }, [session?.code, doneSwiping, router]);
+
+  // ── Swipe handlers ─────────────────────────────────────────────────────
   const handleSwipe = useCallback(
     (card: TonightCardModel, action: 'LIKE' | 'PASS') => {
       if (!session?.code || !session?.participantId) return;
@@ -159,16 +161,41 @@ export default function TonightSwipeScreen() {
     [session?.code, session?.participantId, saveRestaurant],
   );
 
-  if (!session) {
-    return null;
-  }
+  const onSwipedRight = useCallback(
+    (card: TonightCardModel) => handleSwipe(card, 'LIKE'),
+    [handleSwipe],
+  );
+  const onSwipedLeft = useCallback(
+    (card: TonightCardModel) => handleSwipe(card, 'PASS'),
+    [handleSwipe],
+  );
+  const onSwipedTop = useCallback(
+    (card: TonightCardModel) => handleSwipe(card, 'LIKE'),
+    [handleSwipe],
+  );
+  const onAllSwiped = useCallback(() => {
+    if (__DEV__) console.log('[TonightSwipe] All cards swiped');
+    // Auto-mark done swiping on the server when deck runs out
+    if (session?.code && session?.participantId) {
+      markDoneSwiping(session.code, session.participantId).catch(() => {});
+    }
+  }, [session?.code, session?.participantId]);
+
+  const isSavedCheck = useCallback(
+    (id: string) => isSaved(id),
+    [isSaved],
+  );
+
+  // ── Render ─────────────────────────────────────────────────────────────
+
+  if (!session) return null;
 
   if (loading) {
     return (
       <SafeAreaView style={styles.safe}>
         <View style={styles.center}>
           <ActivityIndicator size="large" color={colors.accent} />
-          <Text style={styles.helper}>Loading restaurants…</Text>
+          <Text style={styles.helper}>Loading restaurants\u2026</Text>
         </View>
       </SafeAreaView>
     );
@@ -179,7 +206,7 @@ export default function TonightSwipeScreen() {
       <SafeAreaView style={styles.safe}>
         <View style={styles.center}>
           <Text style={styles.errorText}>{error}</Text>
-          <TouchableOpacity onPress={() => router.replace('/(tabs)/tonight')} style={styles.button}>
+          <TouchableOpacity onPress={() => router.navigate('/(tabs)/tonight')} style={styles.button}>
             <Text style={styles.buttonText}>Back to Tonight</Text>
           </TouchableOpacity>
         </View>
@@ -191,11 +218,11 @@ export default function TonightSwipeScreen() {
     return (
       <SafeAreaView style={styles.safe}>
         <View style={styles.center}>
-          <Text style={styles.emptyTitle}>You’re done swiping</Text>
+          <Text style={styles.emptyTitle}>You're done swiping</Text>
           <Text style={styles.helper}>Check matches to see where the group can eat.</Text>
           <TouchableOpacity
             style={styles.button}
-            onPress={() => router.replace('/(tabs)/tonight/matches')}
+            onPress={() => router.navigate('/(tabs)/tonight/matches')}
           >
             <Text style={styles.buttonText}>See matches</Text>
           </TouchableOpacity>
@@ -206,71 +233,51 @@ export default function TonightSwipeScreen() {
 
   return (
     <SafeAreaView style={styles.safe}>
+      {/* ── Header ──────────────────────────────────────────────────── */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.replace('/(tabs)/tonight')}>
-          <Text style={styles.backText}>← Back</Text>
-        </TouchableOpacity>
-        <Text style={styles.title}>Swipe right to like, left to pass</Text>
-      </View>
-      <View style={styles.swipeBody}>
-        <View style={styles.deckClipZone}>
-          <Swiper
-            ref={swiperRef}
-            key={cards[0]?.restaurant?.id ?? 'empty'}
-            cards={cards}
-            renderCard={(card) => {
-              if (__DEV__ && cards[0]?.restaurant?.id === card.restaurant.id) {
-                console.log('[TonightSwipe] Rendering card image:', card.heroPhotoUrl ?? '(placeholder)');
-              }
-              return (
-                <TonightCard
-                  card={card}
-                  saved={isSaved(card.restaurant.id)}
-                  swipeIntent={swipeIntent}
-                />
-              );
-            }}
-            backgroundColor={colors.bg}
-            containerStyle={styles.swiperContainer}
-            cardStyle={styles.swiperCardShell}
-            stackSize={3}
-            onSwiping={handleSwiping}
-            onSwipedAborted={clearSwipeIntent}
-            onSwipedRight={(index) => {
-              clearSwipeIntent();
-              handleSwipe(cards[index], 'LIKE');
-            }}
-            onSwipedLeft={(index) => {
-              clearSwipeIntent();
-              handleSwipe(cards[index], 'PASS');
-            }}
-            onSwipedAll={() => {
-              if (__DEV__) console.log('[TonightSwipe] All cards swiped');
-            }}
-          />
-        </View>
-        <View style={styles.swipeFooter}>
-          <View style={styles.buttonRow}>
-            <TouchableOpacity
-              style={[styles.actionButton, styles.passButton]}
-              onPress={() => swiperRef.current?.swipeLeft()}
-            >
-              <Text style={styles.actionButtonText}>Pass</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.actionButton, styles.likeButton]}
-              onPress={() => swiperRef.current?.swipeRight()}
-            >
-              <Text style={[styles.actionButtonText, styles.likeButtonText]}>Like</Text>
-            </TouchableOpacity>
-          </View>
+        <View style={styles.headerRow}>
+          <TouchableOpacity onPress={() => router.navigate('/(tabs)/tonight')}>
+            <Text style={styles.backText}>{'\u2190'} Back</Text>
+          </TouchableOpacity>
           <TouchableOpacity
-            style={styles.matchesButton}
-            onPress={() => router.replace('/(tabs)/tonight/matches')}
+            onPress={async () => {
+              if (!session?.code || !session?.participantId) return;
+              await markDoneSwiping(session.code, session.participantId).catch(() => {});
+              router.navigate('/(tabs)/tonight/matches');
+            }}
+            activeOpacity={0.7}
           >
-            <Text style={styles.buttonText}>See matches</Text>
+            <Text style={styles.doneLink}>Done swiping</Text>
           </TouchableOpacity>
         </View>
+        {/* Participant status */}
+        {participants.length > 1 && (
+          <View style={styles.participantRow}>
+            {participants.map((p) => (
+              <View key={p.participantId} style={styles.participantPill}>
+                <View style={[styles.participantStatusDot, p.doneSwiping && styles.participantDone]} />
+                <Text style={styles.participantLabel} numberOfLines={1}>
+                  {p.displayName}
+                  {p.doneSwiping ? ' \u2713' : p.swipeCount > 0 ? ` (${p.swipeCount})` : ''}
+                </Text>
+              </View>
+            ))}
+          </View>
+        )}
+      </View>
+
+      {/* ── Swipe deck (same component as group mode) ─────────────── */}
+      <View style={styles.deckArea}>
+        <SwipeDeck
+          cards={cards}
+          onSwipedLeft={onSwipedLeft}
+          onSwipedRight={onSwipedRight}
+          onSwipedTop={onSwipedTop}
+          onAllSwiped={onAllSwiped}
+          onRunningLow={handleRunningLow}
+          runningLowThreshold={5}
+          isSaved={isSavedCheck}
+        />
       </View>
     </SafeAreaView>
   );
@@ -288,56 +295,72 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
   },
   header: {
-    paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 8,
+    paddingHorizontal: 14,
+    paddingTop: 4,
+    paddingBottom: 2,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
   },
   backText: {
-    fontSize: 16,
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  doneLink: {
+    fontSize: 13,
+    fontWeight: '600',
     color: colors.accent,
+  },
+  participantRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
     marginBottom: 4,
   },
-  title: {
-    fontSize: 14,
+  participantPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: colors.surfaceSoft,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  participantStatusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.border,
+  },
+  participantDone: {
+    backgroundColor: '#22c55e',
+  },
+  participantLabel: {
+    fontSize: 11,
+    fontWeight: '600',
     color: colors.textMuted,
+    maxWidth: 80,
   },
-  swipeBody: {
+  deckArea: {
     flex: 1,
-    minHeight: 0,
-    backgroundColor: colors.bg,
-  },
-  deckClipZone: {
-    flex: 1,
-    minHeight: 0,
-    zIndex: 2,
-    elevation: 4,
-    overflow: 'hidden',
-    backgroundColor: colors.bg,
-    paddingHorizontal: 16,
-    paddingTop: 16,
-  },
-  swiperContainer: {
-    overflow: 'hidden',
-    backgroundColor: colors.bg,
-  },
-  swiperCardShell: {
-    backgroundColor: colors.bg,
-  },
-  swipeFooter: {
-    flexShrink: 0,
-    zIndex: 1,
-    backgroundColor: colors.bg,
-    paddingBottom: 16,
+    alignItems: 'center',
+    paddingTop: 2,
   },
   helper: {
     marginTop: 8,
     fontSize: 13,
-    color: colors.textMuted,
+    color: colors.textFaint,
     textAlign: 'center',
   },
   errorText: {
     fontSize: 14,
-    color: colors.text,
+    color: colors.textMuted,
     textAlign: 'center',
   },
   emptyTitle: {
@@ -357,42 +380,5 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#fff',
-  },
-  buttonRow: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 24,
-    marginBottom: 16,
-  },
-  actionButton: {
-    paddingVertical: 14,
-    paddingHorizontal: 28,
-    borderRadius: 12,
-    minWidth: 100,
-    alignItems: 'center',
-  },
-  passButton: {
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  likeButton: {
-    backgroundColor: colors.accent,
-  },
-  actionButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: colors.text,
-  },
-  likeButtonText: {
-    color: '#111827',
-  },
-  matchesButton: {
-    marginHorizontal: 24,
-    marginBottom: 24,
-    paddingVertical: 14,
-    backgroundColor: colors.accent,
-    borderRadius: 12,
-    alignItems: 'center',
   },
 });

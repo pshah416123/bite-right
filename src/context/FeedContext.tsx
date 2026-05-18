@@ -1,8 +1,10 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { FeedLog } from '../components/FeedCard';
-import { RESTAURANTS, getFallbackRestaurantPhoto } from '../data/restaurants';
-import { getNeutralRestaurantPlaceholderUri } from '../utils/restaurantImage';
-import { getRestaurantDetail } from '../api/restaurants';
+import { getRestaurantDetail, searchRestaurantImageByName } from '../api/restaurants';
+import { setRestaurantPhotoCache } from '../utils/restaurantPhoto';
+import { normalizeRestaurantName } from '../utils/nameNormalize';
+import { useTestMode } from './TestModeContext';
+import { TEST_FEED_LOGS } from '../data/testMockData';
 
 export interface NewLogInput {
   userName: string;
@@ -10,6 +12,7 @@ export interface NewLogInput {
   restaurantName: string;
   cuisine: string;
   neighborhood?: string;
+  city?: string;
   state?: string;
   address?: string;
   rating: number;
@@ -21,18 +24,49 @@ export interface NewLogInput {
   previewPhotoUrl?: string;
   /** Profile image URL for Discover / social surfaces */
   userAvatar?: string;
-  foodRating?: number;
-  serviceRating?: number;
-  ambienceRating?: number;
-  valueRating?: number;
+  highlight?: 'food' | 'vibe' | 'service' | 'value' | null;
   dishes?: string[];
+  standoutDishes?: string[];
   vibeTags?: import('../components/FeedCard').VibeTag[];
+  quickTip?: string;
+  bestTime?: string;
 }
+
+// ── Restaurant Log (canonical per-user-per-restaurant record) ───────────────
+
+export interface RestaurantLog {
+  restaurantId: string;
+  userId: string;
+  rating: number;
+  standoutDish?: string;
+  tags?: import('../components/FeedCard').VibeTag[];
+  visitCount: number;
+}
+
+// ── Visit (one per trip) ────────────────────────────────────────────────────
+
+export interface Visit {
+  id: string;
+  restaurantLogId: string;
+  timestamp: string;
+  note?: string;
+  photo?: string;
+  ratingSnapshot: number;
+}
+
+// ── Context value ───────────────────────────────────────────────────────────
 
 interface FeedContextValue {
   items: FeedLog[];
   addLog: (input: NewLogInput) => void;
+  updateLog: (id: string, input: NewLogInput) => void;
+  /** Look up the canonical restaurant_log for a given restaurantId (current user only). */
+  getRestaurantLog: (restaurantId: string) => RestaurantLog | undefined;
+  /** Get all visits for a given restaurantId (current user only), newest first. */
+  getVisits: (restaurantId: string) => Visit[];
 }
+
+const CURRENT_USER = 'You';
 
 const FeedContext = createContext<FeedContextValue | undefined>(undefined);
 
@@ -45,12 +79,15 @@ const INITIAL_LOGS: FeedLog[] = [
     score: 9.2,
     cuisine: 'Pizza · Deep dish',
     neighborhood: 'River North',
+    city: 'Chicago',
     state: 'IL',
     dishHighlight: 'Chicago-style deep dish',
     standoutDish: { label: 'Standout', name: 'Chicago-style deep dish' },
     note: 'Buttery crust and that sausage layer. Worth the wait.',
-    previewPhotoUrl: getFallbackRestaurantPhoto('rest_1'),
+    dishes: ['Deep dish', 'Caesar salad', 'Garlic bread'],
     createdAt: '2024-01-12T18:00:00.000Z',
+    visitNumber: 1,
+    visitCount: 1,
   },
   {
     id: '2',
@@ -61,11 +98,14 @@ const INITIAL_LOGS: FeedLog[] = [
     score: 8.7,
     cuisine: 'American · Small plates',
     neighborhood: 'West Loop',
+    city: 'Chicago',
     state: 'IL',
     dishHighlight: 'Goat belly & lobster',
     standoutDish: { label: 'Standout', name: 'Goat belly & lobster' },
     note: 'Everything we ordered was great. Make a res.',
-    previewPhotoUrl: getFallbackRestaurantPhoto('rest_2'),
+    dishes: ['Goat empanadas', 'Goat belly', 'Wood oven pig face'],
+    quickTip: 'Sit at the bar for the best view of the kitchen',
+    bestTime: 'Date night',
     createdAt: '2024-01-08T18:00:00.000Z',
   },
   {
@@ -77,11 +117,11 @@ const INITIAL_LOGS: FeedLog[] = [
     score: 9.4,
     cuisine: 'Hot dogs · Chicago classics',
     neighborhood: 'River North',
+    city: 'Chicago',
     state: 'IL',
     dishHighlight: 'Chicago dog & chocolate cake',
     standoutDish: { label: 'Standout', name: 'Chicago dog & chocolate cake' },
     note: 'Iconic. The cake shake is a must.',
-    previewPhotoUrl: getFallbackRestaurantPhoto('rest_3'),
     createdAt: '2023-12-20T18:00:00.000Z',
   },
   {
@@ -93,11 +133,14 @@ const INITIAL_LOGS: FeedLog[] = [
     score: 8.9,
     cuisine: 'Pizza · Deep dish',
     neighborhood: 'River North',
+    city: 'Chicago',
     state: 'IL',
     dishHighlight: 'Classic deep dish',
     standoutDish: { label: 'Standout', name: 'Classic deep dish' },
-    note: 'Solid as always.',
-    previewPhotoUrl: getFallbackRestaurantPhoto('rest_1'),
+    note: 'Solid as always. Crisp edges and great sauce balance.',
+    dishes: ['Classic deep dish', 'Chopped salad'],
+    quickTip: 'Ask for extra crispy edges',
+    bestTime: 'Weekday lunch',
     createdAt: '2024-01-05T18:00:00.000Z',
   },
   {
@@ -109,8 +152,9 @@ const INITIAL_LOGS: FeedLog[] = [
     score: 9.0,
     cuisine: 'Pizza · Deep dish',
     neighborhood: 'River North',
+    city: 'Chicago',
     state: 'IL',
-    previewPhotoUrl: getFallbackRestaurantPhoto('rest_1'),
+    note: 'Best bite after a long night out.',
     createdAt: '2024-01-03T18:00:00.000Z',
   },
   {
@@ -122,8 +166,8 @@ const INITIAL_LOGS: FeedLog[] = [
     score: 8.5,
     cuisine: 'Pizza · Deep dish',
     neighborhood: 'River North',
+    city: 'Chicago',
     state: 'IL',
-    previewPhotoUrl: getFallbackRestaurantPhoto('rest_1'),
     createdAt: '2024-01-02T18:00:00.000Z',
   },
   {
@@ -135,8 +179,8 @@ const INITIAL_LOGS: FeedLog[] = [
     score: 9.1,
     cuisine: 'Pizza · Deep dish',
     neighborhood: 'River North',
+    city: 'Chicago',
     state: 'IL',
-    previewPhotoUrl: getFallbackRestaurantPhoto('rest_1'),
     createdAt: '2024-01-01T18:00:00.000Z',
   },
   {
@@ -148,55 +192,61 @@ const INITIAL_LOGS: FeedLog[] = [
     score: 8.8,
     cuisine: 'Pizza · Deep dish',
     neighborhood: 'River North',
+    city: 'Chicago',
     state: 'IL',
-    previewPhotoUrl: getFallbackRestaurantPhoto('rest_1'),
     createdAt: '2023-12-28T18:00:00.000Z',
   },
 ];
 
+// Build initial restaurantLogs from seed data (current user only)
+function buildInitialRestaurantLogs(logs: FeedLog[]): Map<string, RestaurantLog> {
+  const map = new Map<string, RestaurantLog>();
+  const userLogs = logs.filter((l) => l.userName === CURRENT_USER);
+  for (const log of userLogs) {
+    map.set(log.restaurantId, {
+      restaurantId: log.restaurantId,
+      userId: CURRENT_USER,
+      rating: log.score,
+      standoutDish: log.standoutDish?.name ?? log.dishHighlight,
+      tags: log.vibeTags,
+      visitCount: log.visitCount ?? 1,
+    });
+  }
+  return map;
+}
+
+function buildInitialVisits(logs: FeedLog[]): Visit[] {
+  return logs
+    .filter((l) => l.userName === CURRENT_USER)
+    .map((l) => ({
+      id: l.id,
+      restaurantLogId: l.restaurantId,
+      timestamp: l.createdAt ?? new Date().toISOString(),
+      note: l.note,
+      photo: l.photo_url ?? l.previewPhotoUrl ?? undefined,
+      ratingSnapshot: l.score,
+    }));
+}
+
 export function FeedProvider({ children }: { children: ReactNode }) {
+  const { isTestMode } = useTestMode();
   const [items, setItems] = useState<FeedLog[]>(INITIAL_LOGS);
+  const restaurantLogsRef = useRef<Map<string, RestaurantLog>>(buildInitialRestaurantLogs(INITIAL_LOGS));
+  const visitsRef = useRef<Visit[]>(buildInitialVisits(INITIAL_LOGS));
 
-  // Hydrate seeded logs with real restaurant images (Places / website) when available.
+  // Swap feed data when test mode toggles
   useEffect(() => {
-    let cancelled = false;
-    async function hydrateSeedImages() {
-      const ids = Array.from(new Set(items.map((l) => l.restaurantId)));
-      const updates: Record<string, string> = {};
-      await Promise.all(
-        ids.map(async (restaurantId) => {
-          const detail = await getRestaurantDetail(restaurantId).catch(() => null);
-          if (detail?.imageUrl && detail.imageUrl.trim()) {
-            updates[restaurantId] = detail.imageUrl.trim();
-          }
-        }),
-      );
-      if (cancelled || Object.keys(updates).length === 0) return;
-      setItems((prev) =>
-        prev.map((log) => {
-          const updated = updates[log.restaurantId];
-          if (!updated) return log;
-          const seedNeutral = getNeutralRestaurantPlaceholderUri();
-          const isSeedFallback =
-            log.previewPhotoUrl === seedNeutral || log.previewPhotoUrl === getFallbackRestaurantPhoto(log.restaurantId);
-          if (!isSeedFallback) return log;
-          return { ...log, previewPhotoUrl: updated };
-        }),
-      );
-    }
-    hydrateSeedImages();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    setItems(isTestMode ? TEST_FEED_LOGS : INITIAL_LOGS);
+  }, [isTestMode]);
 
-  const addLog = (input: NewLogInput) => {
+  const buildLog = (input: NewLogInput, existing?: FeedLog): FeedLog => {
     const {
       userName,
       restaurantId,
       restaurantName,
       cuisine,
       neighborhood,
+      city,
       state,
       address,
       rating,
@@ -206,29 +256,27 @@ export function FeedProvider({ children }: { children: ReactNode }) {
       primaryPhotoIndex,
       previewPhotoUrl: inputPreviewPhotoUrl,
       userAvatar,
-      foodRating,
-      serviceRating,
-      ambienceRating,
-      valueRating,
+      highlight,
       dishes,
       vibeTags,
     } = input;
 
-    // Single source of truth: log.previewPhotoUrl. Order: user photo → API-resolved (inputPreviewPhotoUrl) → last-resort static fallback (rest_1–5 only).
-    const chosenPhoto =
+    const userSelectedPhoto =
       photoUris && photoUris.length
-        ? photoUris[Math.max(0, primaryPhotoIndex ?? 0)]
-        : inputPreviewPhotoUrl ?? getFallbackRestaurantPhoto(restaurantId);
+        ? photoUris[Math.max(0, primaryPhotoIndex ?? 0)] ?? photoUris[0]
+        : undefined;
+    // Single source of truth: log.previewPhotoUrl. Order: user photo → API-resolved → existing image → fallback.
+    const chosenPhoto = inputPreviewPhotoUrl ?? existing?.previewPhotoUrl;
 
-    const id = `${Date.now()}`;
-    const createdAt = new Date().toISOString();
+    const id = existing?.id ?? `${Date.now()}`;
+    const createdAt = existing?.createdAt ?? new Date().toISOString();
 
     const standoutDish =
       dishHighlight && dishHighlight.trim()
         ? { label: 'Standout', name: dishHighlight.trim() }
         : undefined;
 
-    const newLog: FeedLog = {
+    return {
       id,
       userName,
       restaurantId,
@@ -236,31 +284,267 @@ export function FeedProvider({ children }: { children: ReactNode }) {
       score: rating,
       cuisine,
       neighborhood,
+      city,
       state,
       address,
       note,
       dishHighlight,
       standoutDish,
+      photo_url: userSelectedPhoto ?? existing?.photo_url,
       previewPhotoUrl: chosenPhoto,
       createdAt,
       userAvatar,
-      foodRating,
-      serviceRating,
-      ambienceRating,
-      valueRating,
+      highlight,
       dishes,
+      standoutDishes: input.standoutDishes ?? existing?.standoutDishes,
       vibeTags,
+      quickTip: input.quickTip ?? existing?.quickTip ?? null,
+      bestTime: input.bestTime ?? existing?.bestTime ?? null,
+    };
+  };
+
+  const addLog = useCallback((input: NewLogInput) => {
+    const isCurrentUser = input.userName === CURRENT_USER;
+    const existingRL = isCurrentUser ? restaurantLogsRef.current.get(input.restaurantId) : undefined;
+
+    const newVisitCount = existingRL ? existingRL.visitCount + 1 : 1;
+    const previousRating = existingRL ? existingRL.rating : undefined;
+    const visitNumber = newVisitCount;
+
+    // Build the feed log
+    const base = buildLog(input);
+    const newLog: FeedLog = {
+      ...base,
+      visitNumber,
+      visitCount: newVisitCount,
+      previousRating,
     };
 
-    setItems((prev) => [newLog, ...prev]);
-  };
+    // Update restaurant_log (canonical record)
+    if (isCurrentUser) {
+      restaurantLogsRef.current.set(input.restaurantId, {
+        restaurantId: input.restaurantId,
+        userId: CURRENT_USER,
+        rating: input.rating,
+        standoutDish: input.dishHighlight?.trim() || existingRL?.standoutDish,
+        tags: input.vibeTags ?? existingRL?.tags,
+        visitCount: newVisitCount,
+      });
+
+      // Create visit record
+      const visit: Visit = {
+        id: newLog.id,
+        restaurantLogId: input.restaurantId,
+        timestamp: newLog.createdAt ?? new Date().toISOString(),
+        note: input.note,
+        photo: newLog.photo_url ?? newLog.previewPhotoUrl ?? undefined,
+        ratingSnapshot: input.rating,
+      };
+      visitsRef.current = [visit, ...visitsRef.current];
+
+      // Backfill visitCount on older feed items for this restaurant
+      setItems((prev) => {
+        const updated = prev.map((log) => {
+          if (log.userName === CURRENT_USER && log.restaurantId === input.restaurantId) {
+            return { ...log, visitCount: newVisitCount };
+          }
+          return log;
+        });
+        return [newLog, ...updated];
+      });
+    } else {
+      setItems((prev) => [newLog, ...prev]);
+    }
+  }, []);
+
+  const updateLog = useCallback((id: string, input: NewLogInput) => {
+    setItems((prev) => {
+      const existing = prev.find((log) => log.id === id);
+      if (!existing) return prev;
+      const updated = buildLog(input, existing);
+      // Preserve visit metadata on edit
+      const patched: FeedLog = {
+        ...updated,
+        visitNumber: existing.visitNumber,
+        visitCount: existing.visitCount,
+        previousRating: existing.previousRating,
+      };
+
+      // Update canonical restaurant_log rating if current user
+      if (input.userName === CURRENT_USER) {
+        const rl = restaurantLogsRef.current.get(input.restaurantId);
+        if (rl) {
+          restaurantLogsRef.current.set(input.restaurantId, {
+            ...rl,
+            rating: input.rating,
+            standoutDish: input.dishHighlight?.trim() || rl.standoutDish,
+            tags: input.vibeTags ?? rl.tags,
+          });
+        }
+        // Update visit snapshot
+        visitsRef.current = visitsRef.current.map((v) =>
+          v.id === id ? { ...v, ratingSnapshot: input.rating, note: input.note } : v,
+        );
+      }
+
+      return prev.map((log) => (log.id === id ? patched : log));
+    });
+  }, []);
+
+  const getRestaurantLog = useCallback((restaurantId: string): RestaurantLog | undefined => {
+    return restaurantLogsRef.current.get(restaurantId);
+  }, []);
+
+  const getVisits = useCallback((restaurantId: string): Visit[] => {
+    return visitsRef.current
+      .filter((v) => v.restaurantLogId === restaurantId)
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  }, []);
+
+  // ── Image enrichment: two-stage pipeline with retry ──────────────────────
+  // Stage 1: getRestaurantDetail by ID (fast, works for known restaurants)
+  // Stage 2: searchRestaurantImageByName (fallback for unmatched restaurants)
+  // Retries after RETRY_DELAY_MS if items still missing images.
+  const enrichRetryRef = useRef(0);
+  const MAX_ENRICHMENT_RETRIES = 3;
+  const RETRY_DELAY_MS = 15_000;
+
+  useEffect(() => {
+    if (isTestMode) return; // Skip enrichment in test mode
+    let cancelled = false;
+
+    const enrichMissing = async () => {
+      const missing = items.filter(
+        (log) => !log.photo_url && !log.previewPhotoUrl && log.restaurantId,
+      );
+      if (missing.length === 0) return;
+
+      // Deduplicate by restaurantId, keep name + location for fallback search
+      const uniqueMap = new Map<string, { id: string; name: string; neighborhood?: string; city?: string; state?: string }>();
+      for (const log of missing) {
+        if (!uniqueMap.has(log.restaurantId)) {
+          uniqueMap.set(log.restaurantId, {
+            id: log.restaurantId,
+            name: log.restaurantName,
+            neighborhood: log.neighborhood,
+            city: log.city,
+            state: log.state,
+          });
+        }
+      }
+
+      const urlMap = new Map<string, string>();
+
+      // Also build a normalized-name → url map so we can match across name variants
+      const nameUrlMap = new Map<string, string>();
+
+      for (const [rid, info] of uniqueMap) {
+        if (cancelled) return;
+
+        // ── Stage 1: detail lookup by ID ──
+        const detail = await getRestaurantDetail(rid).catch(() => null);
+        const detailUrl = detail?.displayImageUrl ?? detail?.imageUrl ?? null;
+        if (detailUrl) {
+          urlMap.set(rid, detailUrl);
+          nameUrlMap.set(normalizeRestaurantName(info.name), detailUrl);
+          if (__DEV__) console.log('[BiteRight][Enrich] stage1-hit', rid, info.name);
+          continue;
+        }
+
+        if (__DEV__) console.log('[BiteRight][Enrich] stage1-miss, trying name search', rid, info.name);
+
+        // ── Stage 1.5: check if another feed item with normalized-matching name already resolved ──
+        const normName = normalizeRestaurantName(info.name);
+        const cachedByName = nameUrlMap.get(normName);
+        if (cachedByName) {
+          urlMap.set(rid, cachedByName);
+          if (__DEV__) console.log('[BiteRight][Enrich] name-cache-hit', rid, info.name);
+          continue;
+        }
+
+        // ── Stage 2: search by restaurant name via autocomplete + select ──
+        const searchResult = await searchRestaurantImageByName(
+          info.name,
+          null, // no coords for now; autocomplete still works without them
+        ).catch(() => ({ imageUrl: null, placeId: null }));
+
+        if (searchResult.imageUrl) {
+          urlMap.set(rid, searchResult.imageUrl);
+          nameUrlMap.set(normName, searchResult.imageUrl);
+          // Prime the photo cache so RestaurantImage component picks it up too
+          setRestaurantPhotoCache({ id: rid, name: info.name }, searchResult.imageUrl);
+          if (__DEV__) console.log('[BiteRight][Enrich] stage2-hit', rid, info.name, searchResult.imageUrl);
+          continue;
+        }
+
+        if (__DEV__) console.log('[BiteRight][Enrich] all-stages-failed', rid, info.name);
+      }
+
+      if (cancelled || urlMap.size === 0) {
+        // Schedule retry if we still have unresolved items and haven't exceeded max retries
+        if (!cancelled && urlMap.size === 0 && enrichRetryRef.current < MAX_ENRICHMENT_RETRIES) {
+          enrichRetryRef.current += 1;
+          if (__DEV__) console.log('[BiteRight][Enrich] scheduling retry', enrichRetryRef.current);
+          retryTimer = setTimeout(enrichMissing, RETRY_DELAY_MS);
+        }
+        return;
+      }
+
+      setItems((prev) =>
+        prev.map((log) => {
+          if (log.photo_url || log.previewPhotoUrl) return log;
+          const resolved = urlMap.get(log.restaurantId);
+          if (!resolved) return log;
+          return { ...log, previewPhotoUrl: resolved };
+        }),
+      );
+
+      // Check if there are still unresolved items after this pass
+      if (!cancelled && enrichRetryRef.current < MAX_ENRICHMENT_RETRIES) {
+        const stillMissing = items.filter(
+          (log) =>
+            !log.photo_url &&
+            !log.previewPhotoUrl &&
+            log.restaurantId &&
+            !urlMap.has(log.restaurantId),
+        );
+        if (stillMissing.length > 0) {
+          enrichRetryRef.current += 1;
+          if (__DEV__) console.log('[BiteRight][Enrich] scheduling retry for remaining', stillMissing.length);
+          retryTimer = setTimeout(enrichMissing, RETRY_DELAY_MS);
+        }
+      }
+    };
+
+    // Initial delay to let health check and first render finish
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const initialTimer = setTimeout(enrichMissing, 2000);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(initialTimer);
+      if (retryTimer) clearTimeout(retryTimer);
+    };
+  }, [items]); // Re-run when items change (e.g., new log added)
+
+  const deduplicatedItems = useMemo(() => {
+    const seen = new Set<string>();
+    return items.filter((log) => {
+      if (seen.has(log.id)) return false;
+      seen.add(log.id);
+      return true;
+    });
+  }, [items]);
 
   const value = useMemo(
     () => ({
-      items,
+      items: deduplicatedItems,
       addLog,
+      updateLog,
+      getRestaurantLog,
+      getVisits,
     }),
-    [items],
+    [deduplicatedItems, addLog, updateLog, getRestaurantLog, getVisits],
   );
 
   return <FeedContext.Provider value={value}>{children}</FeedContext.Provider>;
@@ -273,4 +557,3 @@ export function useFeedContext(): FeedContextValue {
   }
   return ctx;
 }
-

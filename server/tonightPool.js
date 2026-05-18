@@ -178,6 +178,9 @@ function applyVariety(ordered) {
  * @param {Array} opts.groupSessions
  * @param {Array} [opts.negativeFeedback]
  * @param {Function} opts.distanceMiles
+ * @param {string[]} [opts.cuisines] - session cuisine preferences (empty = any)
+ * @param {number[]} [opts.priceRange] - session price range filter (empty = any)
+ * @param {number} [opts.deckSize] - max cards to return (10/15/20)
  * @returns {Array} ordered pool items (excluding swiped for this participant in this session)
  */
 function getTonightPoolRanked(opts) {
@@ -193,7 +196,16 @@ function getTonightPoolRanked(opts) {
     groupSessions,
     negativeFeedback = [],
     distanceMiles: distFn,
+    cuisines = [],
+    priceRange = [],
+    deckSize = 0,
   } = opts;
+
+  // Normalize cuisine filter for case-insensitive matching
+  const cuisineFilter = cuisines
+    .filter((c) => typeof c === 'string' && c.trim())
+    .map((c) => c.trim().toLowerCase());
+  const priceFilter = priceRange.filter((p) => typeof p === 'number');
   if (!pool || !distFn) return [];
 
   const session = groupSessions.find((s) => s.id === sessionId);
@@ -251,6 +263,22 @@ function getTonightPoolRanked(opts) {
     if (distance > radiusMiles) continue;
     const rating = typeof r.rating === 'number' ? r.rating : parseFloat(r.rating) || 4;
     if (rating < 4) continue;
+
+    // Cuisine filter: skip if user selected cuisines and this restaurant doesn't match any
+    if (cuisineFilter.length > 0) {
+      const itemCuisine = (r.cuisine || '').toLowerCase();
+      const itemCuisines = Array.isArray(r.cuisines) ? r.cuisines.map((c) => c.toLowerCase()) : [];
+      const matchesCuisine = cuisineFilter.some(
+        (c) => itemCuisine.includes(c) || itemCuisines.some((ic) => ic.includes(c)),
+      );
+      if (!matchesCuisine) continue;
+    }
+
+    // Price range filter: skip if user selected price levels and this restaurant isn't in range
+    if (priceFilter.length > 0) {
+      const itemPrice = r.priceLevel != null ? r.priceLevel : null;
+      if (itemPrice != null && !priceFilter.includes(itemPrice)) continue;
+    }
 
     const distanceScore = Math.max(0, 1 - distance / radiusMiles);
     const ratingNorm = Math.min(1, Math.max(0, (rating - 4) / 1));
@@ -313,7 +341,12 @@ function getTonightPoolRanked(opts) {
 
   candidates.sort((a, b) => b._score - a._score);
   const ordered = candidates.map(({ _score, similarTasteSignal, ...r }) => ({ ...r, similarTasteSignal }));
-  return applyVariety(ordered);
+  const varied = applyVariety(ordered);
+  // Apply deck size limit if set (10/15/20)
+  if (deckSize > 0 && varied.length > deckSize) {
+    return varied.slice(0, deckSize);
+  }
+  return varied;
 }
 
 module.exports = { getTonightPoolRanked, applyVariety };

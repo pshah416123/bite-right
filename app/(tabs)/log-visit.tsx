@@ -1,24 +1,27 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import {
+  ActivityIndicator,
   Image,
   Platform,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
-  View,
   TouchableOpacity,
-  ActivityIndicator,
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import * as Location from 'expo-location';
+import Slider from '@react-native-community/slider';
 import { colors } from '~/src/theme/colors';
 import {
   fetchAutocomplete,
-  getSearchHealth,
   getRestaurantDetail,
-  getSampleSuggestions,
+  getSearchHealth,
   selectRestaurant,
   type AutocompleteSuggestion,
   type SearchHealth,
@@ -27,15 +30,17 @@ import {
 import { apiClient } from '~/src/api/client';
 import { RESTAURANTS } from '~/src/data/restaurants';
 import { useFeedContext } from '~/src/context/FeedContext';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
+import { useSavedRestaurants } from '~/src/context/SavedRestaurantsContext';
 import type { VibeTag } from '~/src/components/FeedCard';
 
 const DEBOUNCE_MS = 300;
 const MIN_QUERY_LENGTH = 2;
-const SCORE_MIN = 0;
-const SCORE_MAX = 10;
-const SCORE_STEP = 0.5;
+type PrefilledRestaurant = SelectedRestaurant & {
+  cuisine?: string;
+  neighborhood?: string | null;
+  city?: string | null;
+  state?: string | null;
+};
 
 const VIBE_OPTIONS: { value: VibeTag; label: string }[] = [
   { value: 'date_night', label: 'Date night' },
@@ -44,46 +49,9 @@ const VIBE_OPTIONS: { value: VibeTag; label: string }[] = [
   { value: 'group', label: 'Group dinner' },
   { value: 'celebration', label: 'Celebration' },
   { value: 'quick_bite', label: 'Quick bite' },
+  { value: 'late_night' as VibeTag, label: 'Late night' },
+  { value: 'weekend_brunch' as VibeTag, label: 'Weekend brunch' },
 ];
-
-function clampScore(v: number): number {
-  const steps = Math.round((v - SCORE_MIN) / SCORE_STEP);
-  const clamped = SCORE_MIN + steps * SCORE_STEP;
-  return Math.max(SCORE_MIN, Math.min(SCORE_MAX, clamped));
-}
-
-function ScoreStepper({
-  value,
-  onChange,
-  label,
-}: {
-  value: number;
-  onChange: (v: number) => void;
-  label?: string;
-}) {
-  return (
-    <View style={styles.scoreRow}>
-      {label ? <Text style={styles.scoreLabel}>{label}</Text> : <View />}
-      <View style={styles.scoreControls}>
-        <TouchableOpacity
-          style={styles.scoreBtn}
-          onPress={() => onChange(clampScore(value - SCORE_STEP))}
-          disabled={value <= SCORE_MIN}
-        >
-          <Ionicons name="remove" size={18} color={value <= SCORE_MIN ? colors.textMuted : colors.text} />
-        </TouchableOpacity>
-        <Text style={styles.scoreValue}>{value.toFixed(1)}</Text>
-        <TouchableOpacity
-          style={styles.scoreBtn}
-          onPress={() => onChange(clampScore(value + SCORE_STEP))}
-          disabled={value >= SCORE_MAX}
-        >
-          <Ionicons name="add" size={18} color={value >= SCORE_MAX ? colors.textMuted : colors.text} />
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
-}
 
 export default function LogVisitScreen() {
   const [restaurantQuery, setRestaurantQuery] = useState('');
@@ -92,27 +60,29 @@ export default function LogVisitScreen() {
   const [loading, setLoading] = useState(false);
   const [autocompleteError, setAutocompleteError] = useState<string | null>(null);
   const [overallScore, setOverallScore] = useState(7);
-  const [detailsExpanded, setDetailsExpanded] = useState(false);
   const [caption, setCaption] = useState('');
-  const [foodRating, setFoodRating] = useState<number | undefined>(undefined);
-  const [serviceRating, setServiceRating] = useState<number | undefined>(undefined);
-  const [ambienceRating, setAmbienceRating] = useState<number | undefined>(undefined);
-  const [valueRating, setValueRating] = useState<number | undefined>(undefined);
-  const [dishHighlight, setDishHighlight] = useState('');
-  const [dishes, setDishes] = useState<string[]>([]);
+  const [standoutDishes, setStandoutDishes] = useState<string[]>([]);
+  const [orderedDishes, setOrderedDishes] = useState<string[]>([]);
   const [dishInput, setDishInput] = useState('');
   const [vibeTags, setVibeTags] = useState<VibeTag[]>([]);
+  const [quickTip, setQuickTip] = useState('');
+  const [bestTime, setBestTime] = useState<string | null>(null);
   const [photos, setPhotos] = useState<string[]>([]);
   const [primaryIndex, setPrimaryIndex] = useState<number | null>(null);
   const [searchHealth, setSearchHealth] = useState<SearchHealth | null | undefined>(undefined);
   const [restaurantInputFocused, setRestaurantInputFocused] = useState(false);
   const [fallbackSuggestions, setFallbackSuggestions] = useState<AutocompleteSuggestion[]>([]);
+  const [revisitCount, setRevisitCount] = useState<number>(0);
+  const scrollRef = useRef<ScrollView>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const blurDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const { addLog } = useFeedContext();
+  const { items, addLog, updateLog, getRestaurantLog } = useFeedContext();
+  const { savedRestaurants } = useSavedRestaurants();
   const router = useRouter();
   const params = useLocalSearchParams<{ logId?: string; payload?: string }>();
-  const isEditMode = !!(typeof params.logId === 'string' && params.logId.trim());
+  const logIdParam =
+    typeof params.logId === 'string' ? params.logId : Array.isArray(params.logId) ? params.logId[0] : undefined;
+  const isEditMode = !!(logIdParam && logIdParam.trim());
   const payloadRaw =
     typeof params.payload === 'string'
       ? params.payload
@@ -120,7 +90,12 @@ export default function LogVisitScreen() {
         ? params.payload[0]
         : undefined;
 
-  const prefilledRestaurant = useMemo(() => {
+  const editingLog = useMemo(
+    () => (logIdParam ? items.find((item) => item.id === logIdParam) : undefined),
+    [items, logIdParam],
+  );
+
+  const prefilledRestaurant = useMemo<PrefilledRestaurant | null>(() => {
     if (!payloadRaw) return null;
     try {
       const parsed = JSON.parse(payloadRaw) as {
@@ -130,6 +105,8 @@ export default function LogVisitScreen() {
         neighborhood?: string | null;
         state?: string | null;
         placeId?: string | null;
+        googlePlaceId?: string | null;
+        displayImageUrl?: string | null;
         imageUrl?: string | null;
       };
 
@@ -138,15 +115,85 @@ export default function LogVisitScreen() {
       const address = [parsed.neighborhood, parsed.state].filter(Boolean).join(', ');
       return {
         restaurantId: parsed.id,
-        placeId: parsed.placeId ?? null,
+        placeId: parsed.googlePlaceId ?? parsed.placeId ?? parsed.id,
         name: parsed.name,
         address: address || parsed.neighborhood || '',
-        fallbackPhotoUrl: typeof parsed.imageUrl === 'string' ? parsed.imageUrl : undefined,
-      } satisfies SelectedRestaurant;
+        displayImageUrl:
+          typeof parsed.displayImageUrl === 'string'
+            ? parsed.displayImageUrl
+            : typeof parsed.imageUrl === 'string'
+              ? parsed.imageUrl
+              : undefined,
+        fallbackPhotoUrl:
+          typeof parsed.displayImageUrl === 'string'
+            ? parsed.displayImageUrl
+            : typeof parsed.imageUrl === 'string'
+              ? parsed.imageUrl
+              : undefined,
+        cuisine: parsed.cuisine,
+        neighborhood: parsed.neighborhood,
+        state: parsed.state,
+      };
     } catch {
       return null;
     }
   }, [payloadRaw]);
+
+  // Dynamic suggestions: recently logged restaurants, then saved spots not yet logged
+  const dynamicSuggestions = useMemo<AutocompleteSuggestion[]>(() => {
+    const myLogs = items.filter((l) => l.userName === 'You');
+    const seen = new Set<string>();
+    const result: AutocompleteSuggestion[] = [];
+
+    // 1) Recently logged, most recent first (deduplicated by restaurantId)
+    for (const log of myLogs) {
+      if (seen.has(log.restaurantId)) continue;
+      seen.add(log.restaurantId);
+      const seed = RESTAURANTS.find((r) => r.id === log.restaurantId);
+      result.push({
+        placeId: `mock_${log.restaurantId}`,
+        name: log.restaurantName,
+        address: [log.neighborhood ?? seed?.neighborhood, log.city ?? seed?.city ?? log.state ?? seed?.state].filter(Boolean).join(', '),
+      });
+      if (result.length >= 3) return result;
+    }
+
+    // 2) Saved/bookmarked spots not yet logged
+    for (const saved of savedRestaurants) {
+      const id = saved.restaurantId ?? saved.place_id;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      result.push({
+        placeId: saved.place_id ?? `mock_${id}`,
+        name: saved.name,
+        address: [saved.neighborhood, saved.city].filter(Boolean).join(', '),
+      });
+      if (result.length >= 3) break;
+    }
+
+    return result;
+  }, [items, savedRestaurants]);
+
+  // Personal dish history: dishes the user previously logged at this restaurant,
+  // with standouts first. Only shown when meaningful personal data exists.
+  const previousDishes = useMemo<string[]>(() => {
+    const rid = selectedRestaurant?.restaurantId ?? prefilledRestaurant?.restaurantId;
+    if (!rid) return [];
+    const myLogs = items.filter((l) => l.userName === 'You' && l.restaurantId === rid);
+    if (myLogs.length === 0) return [];
+
+    const standouts = new Set<string>();
+    const all = new Set<string>();
+    for (const log of myLogs) {
+      const dh = log.standoutDish?.name ?? log.dishHighlight;
+      if (dh) standouts.add(dh);
+      log.dishes?.forEach((d) => { if (d.trim()) all.add(d); });
+      if (dh) all.add(dh);
+    }
+    // Standouts first, then the rest
+    const sorted = [...standouts, ...[...all].filter((d) => !standouts.has(d))];
+    return sorted.slice(0, 8);
+  }, [items, selectedRestaurant?.restaurantId, prefilledRestaurant?.restaurantId]);
 
   const resetForm = useCallback(() => {
     if (debounceRef.current) {
@@ -163,53 +210,123 @@ export default function LogVisitScreen() {
     setLoading(false);
     setAutocompleteError(null);
     setOverallScore(7);
-    setDetailsExpanded(false);
     setCaption('');
-    setFoodRating(undefined);
-    setServiceRating(undefined);
-    setAmbienceRating(undefined);
-    setValueRating(undefined);
-    setDishHighlight('');
-    setDishes([]);
+    setStandoutDishes([]);
+    setOrderedDishes([]);
     setDishInput('');
     setVibeTags([]);
+    setQuickTip('');
+    setBestTime(null);
     setPhotos([]);
     setPrimaryIndex(null);
     setRestaurantInputFocused(false);
     setFallbackSuggestions([]);
   }, []);
 
-  // Whenever this screen is focused in create mode, start from a clean slate.
   useFocusEffect(
     useCallback(() => {
       if (!isEditMode && !payloadRaw) {
         resetForm();
       }
+      scrollRef.current?.scrollTo({ y: 0, animated: false });
     }, [isEditMode, payloadRaw, resetForm]),
   );
 
   useEffect(() => {
     let cancelled = false;
-    getSearchHealth().then((h) => {
-      if (!cancelled) setSearchHealth(h ?? null);
+    getSearchHealth().then((health) => {
+      if (!cancelled) setSearchHealth(health ?? null);
     });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // GPS location for search bias
+  const [userCoords, setUserCoords] = useState<{ lat: number; lng: number } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted' || cancelled) return;
+      try {
+        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        if (!cancelled) {
+          setUserCoords({ lat: loc.coords.latitude, lng: loc.coords.longitude });
+        }
+      } catch {
+        // Location unavailable — fall back to default search
+      }
+    })();
     return () => { cancelled = true; };
   }, []);
 
-  // If navigated here from Discover/Restaurant Detail, preselect the exact restaurant.
   useEffect(() => {
-    if (!prefilledRestaurant) return;
+    if (!prefilledRestaurant || isEditMode) return;
     setRestaurantQuery(prefilledRestaurant.name);
     setSelectedRestaurant(prefilledRestaurant);
     setSuggestions([]);
     setFallbackSuggestions([]);
     setRestaurantInputFocused(false);
-  }, [prefilledRestaurant]);
+  }, [isEditMode, prefilledRestaurant]);
 
-  // When focused and empty (no selection), show fallback suggestions
+  useEffect(() => {
+    if (!isEditMode || !editingLog) return;
+    setRestaurantQuery(editingLog.restaurantName);
+    setSelectedRestaurant({
+      restaurantId: editingLog.restaurantId,
+      placeId: editingLog.restaurantId,
+      name: editingLog.restaurantName,
+      address:
+        editingLog.address ??
+        [editingLog.neighborhood, editingLog.state].filter(Boolean).join(', '),
+      displayImageUrl: editingLog.photo_url ?? editingLog.previewPhotoUrl,
+      fallbackPhotoUrl: editingLog.previewPhotoUrl,
+    });
+    setSuggestions([]);
+    setLoading(false);
+    setAutocompleteError(null);
+    setOverallScore(editingLog.score);
+    setCaption(editingLog.note ?? '');
+    const existingStandouts: string[] = [];
+    const dh = editingLog.standoutDish?.name ?? editingLog.dishHighlight;
+    if (dh) existingStandouts.push(dh);
+    editingLog.dishes?.forEach((d) => {
+      if (d && !existingStandouts.includes(d) && existingStandouts.length < 2) existingStandouts.push(d);
+    });
+    setStandoutDishes(existingStandouts);
+    setOrderedDishes(editingLog.dishes?.filter((d) => d.trim().length > 0) ?? []);
+    setDishInput('');
+    setVibeTags(editingLog.vibeTags ?? []);
+    setPhotos(editingLog.photo_url ? [editingLog.photo_url] : []);
+    setPrimaryIndex(editingLog.photo_url ? 0 : null);
+    setRestaurantInputFocused(false);
+    setFallbackSuggestions([]);
+  }, [editingLog, isEditMode]);
+
+  // ── Re-visit detection: pre-fill from canonical restaurant_log ────────────
+  useEffect(() => {
+    if (isEditMode) return;
+    const rid = selectedRestaurant?.restaurantId ?? prefilledRestaurant?.restaurantId;
+    if (!rid) {
+      setRevisitCount(0);
+      return;
+    }
+    const rl = getRestaurantLog(rid);
+    if (!rl) {
+      setRevisitCount(0);
+      return;
+    }
+    setRevisitCount(rl.visitCount);
+    // Pre-fill rating from their last canonical rating
+    setOverallScore(rl.rating);
+    if (rl.standoutDish) setStandoutDishes([rl.standoutDish]);
+    if (rl.tags && rl.tags.length > 0) setVibeTags(rl.tags);
+  }, [selectedRestaurant, prefilledRestaurant, isEditMode, getRestaurantLog]);
+
   useEffect(() => {
     if (restaurantInputFocused && !restaurantQuery.trim() && !selectedRestaurant) {
-      setFallbackSuggestions(getSampleSuggestions());
+      setFallbackSuggestions(dynamicSuggestions);
     } else {
       setFallbackSuggestions([]);
     }
@@ -227,13 +344,14 @@ export default function LogVisitScreen() {
       setSuggestions([]);
       return;
     }
+
     setLoading(true);
     debounceRef.current = setTimeout(async () => {
       setAutocompleteError(null);
       try {
-        const list = await fetchAutocomplete(restaurantQuery.trim());
+        const list = await fetchAutocomplete(restaurantQuery.trim(), userCoords);
         setSuggestions(list);
-      } catch (err) {
+      } catch {
         setSuggestions([]);
         setAutocompleteError(
           "Search unavailable. Start the backend (npm run dev in server/) and, on a physical device, set EXPO_PUBLIC_API_URL to your computer's IP (e.g. http://192.168.1.5:4000) in a .env file, then restart Expo.",
@@ -243,6 +361,7 @@ export default function LogVisitScreen() {
         debounceRef.current = null;
       }
     }, DEBOUNCE_MS);
+
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
@@ -251,67 +370,90 @@ export default function LogVisitScreen() {
   const pickPhotos = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') return;
+
     const result = await ImagePicker.launchImageLibraryAsync({
       allowsMultipleSelection: true,
       quality: 0.8,
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
     });
+
     if (!result.canceled) {
-      const uris = result.assets.map((a) => a.uri);
-      setPhotos((prev) => {
-        const next = [...prev, ...uris];
+      const uris = result.assets.map((asset) => asset.uri);
+      setPhotos((previous) => {
+        const next = [...previous, ...uris];
         if (primaryIndex === null && next.length > 0) setPrimaryIndex(0);
         return next;
       });
     }
   };
 
-  const addDish = () => {
-    const t = dishInput.trim();
-    if (t && !dishes.includes(t)) {
-      setDishes((prev) => [...prev, t]);
-      setDishInput('');
-    }
+  const addOrderedDish = (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setOrderedDishes((prev) => {
+      if (prev.some((d) => d.toLowerCase() === trimmed.toLowerCase())) return prev;
+      return [...prev, trimmed];
+    });
+    setDishInput('');
   };
 
-  const removeDish = (index: number) => {
-    setDishes((prev) => prev.filter((_, i) => i !== index));
+  const removeOrderedDish = (name: string) => {
+    setOrderedDishes((prev) => prev.filter((d) => d !== name));
   };
 
-  const toggleVibe = (v: VibeTag) => {
-    setVibeTags((prev) => (prev.includes(v) ? prev.filter((x) => x !== v) : [...prev, v]));
+  const toggleVibe = (value: VibeTag) => {
+    setVibeTags((previous) =>
+      previous.includes(value) ? previous.filter((item) => item !== value) : previous.length < 3 ? [...previous, value] : previous,
+    );
   };
+
+  const primaryPhotoUri =
+    photos.length > 0 ? photos[Math.max(0, primaryIndex ?? 0)] ?? photos[0] : undefined;
 
   const handleSave = async () => {
     const trimmedName = restaurantQuery.trim();
     if (!trimmedName) return;
 
-    const mockRest = selectedRestaurant
-      ? RESTAURANTS.find((r) => r.id === selectedRestaurant.restaurantId)
-      : null;
-    const restaurantId = selectedRestaurant?.restaurantId ?? `custom-${Date.now()}`;
-    const cuisine = mockRest?.cuisine ?? '';
-    const neighborhood = mockRest?.neighborhood;
-    const state = mockRest?.state;
-    const address = selectedRestaurant?.address;
-    const standoutDish = dishHighlight.trim() || (dishes.length > 0 ? dishes[0] : undefined);
+    const restaurantId =
+      selectedRestaurant?.restaurantId ??
+      prefilledRestaurant?.restaurantId ??
+      editingLog?.restaurantId ??
+      `custom-${Date.now()}`;
+    const restaurantSeed = RESTAURANTS.find((restaurant) => restaurant.id === restaurantId);
+    const cuisine = restaurantSeed?.cuisine ?? selectedRestaurant?.cuisine ?? prefilledRestaurant?.cuisine ?? editingLog?.cuisine ?? '';
+    const neighborhood =
+      restaurantSeed?.neighborhood ?? selectedRestaurant?.neighborhood ?? prefilledRestaurant?.neighborhood ?? editingLog?.neighborhood;
+    const city =
+      restaurantSeed?.city ?? prefilledRestaurant?.city ?? editingLog?.city ?? undefined;
+    const state = restaurantSeed?.state ?? prefilledRestaurant?.state ?? editingLog?.state;
+    const address = selectedRestaurant?.address ?? prefilledRestaurant?.address ?? editingLog?.address;
+    const standoutDish = standoutDishes.length > 0 ? standoutDishes[0] : undefined;
 
-    let previewPhotoUrl: string | undefined;
-    if (!photos?.length && restaurantId && !restaurantId.startsWith('custom-')) {
+    let previewPhotoUrl = primaryPhotoUri ?? editingLog?.previewPhotoUrl ?? (() => {
+      const candidateUrl = selectedRestaurant?.displayImageUrl ?? selectedRestaurant?.fallbackPhotoUrl;
+      if (!candidateUrl) return undefined;
+      if (candidateUrl.startsWith('http')) return candidateUrl;
+      const base = (apiClient.defaults.baseURL || '').replace(/\/$/, '');
+      return base ? `${base}${candidateUrl.startsWith('/') ? candidateUrl : `/${candidateUrl}`}` : candidateUrl;
+    })();
+    if (!previewPhotoUrl && restaurantId && !restaurantId.startsWith('custom-')) {
       const detail = await getRestaurantDetail(restaurantId);
-      const raw = detail?.imageUrl;
+      const raw = detail?.displayImageUrl ?? detail?.imageUrl;
       if (raw) {
-        previewPhotoUrl = raw.startsWith('http') ? raw : `${(apiClient.defaults.baseURL || '').replace(/\/$/, '')}${raw.startsWith('/') ? raw : `/${raw}`}`;
+        previewPhotoUrl = raw.startsWith('http')
+          ? raw
+          : `${(apiClient.defaults.baseURL || '').replace(/\/$/, '')}${raw.startsWith('/') ? raw : `/${raw}`}`;
       }
     }
 
-    addLog({
+    const payload = {
       userName: 'You',
       restaurantId,
-      restaurantName: selectedRestaurant?.name ?? trimmedName,
+      restaurantName: selectedRestaurant?.name ?? prefilledRestaurant?.name ?? trimmedName,
       cuisine,
-      neighborhood,
-      state,
+      neighborhood: neighborhood ?? undefined,
+      city: city ?? undefined,
+      state: state ?? undefined,
       address,
       rating: overallScore,
       note: caption.trim() || undefined,
@@ -319,26 +461,31 @@ export default function LogVisitScreen() {
       photoUris: photos,
       primaryPhotoIndex: primaryIndex,
       previewPhotoUrl,
-      foodRating: foodRating !== undefined && foodRating !== null ? foodRating : undefined,
-      serviceRating: serviceRating !== undefined && serviceRating !== null ? serviceRating : undefined,
-      ambienceRating: ambienceRating !== undefined && ambienceRating !== null ? ambienceRating : undefined,
-      valueRating: valueRating !== undefined && valueRating !== null ? valueRating : undefined,
-      dishes: dishes.length > 0 ? dishes : undefined,
+      highlight: undefined,
+      dishes: orderedDishes.length > 0 ? orderedDishes : standoutDishes.length > 0 ? standoutDishes : undefined,
+      standoutDishes: standoutDishes.length > 0 ? standoutDishes : undefined,
       vibeTags: vibeTags.length > 0 ? vibeTags : undefined,
-    });
+      quickTip: quickTip.trim() || undefined,
+      bestTime: bestTime || undefined,
+    };
 
-    // On successful save, reset form so the next visit starts fresh.
-    if (!isEditMode) {
+    if (isEditMode && editingLog) {
+      updateLog(editingLog.id, payload);
+    } else {
+      addLog(payload);
       resetForm();
     }
+
     router.back();
   };
 
   return (
     <SafeAreaView style={styles.safe}>
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <Text style={styles.title}>Log a visit</Text>
-        <Text style={styles.subtitle}>Quickly capture how it was</Text>
+      <ScrollView ref={scrollRef} contentContainerStyle={styles.content} keyboardShouldPersistTaps="always">
+        <Text style={styles.title}>{isEditMode ? 'Edit your visit' : 'Log a visit'}</Text>
+        <Text style={styles.subtitle}>
+          {isEditMode ? 'Give the review a little more personality.' : 'Write a quick personal review.'}
+        </Text>
 
         {searchHealth === null ? (
           <View style={styles.setupBanner}>
@@ -361,15 +508,22 @@ export default function LogVisitScreen() {
         ) : null}
 
         <View style={styles.section}>
-          <Text style={styles.label}>Restaurant</Text>
-          <View style={[styles.restaurantInputWrap, selectedRestaurant && styles.restaurantInputWrapSelected]}>
+          <Text style={styles.label}>Where did you go?</Text>
+          <View
+            style={[
+              styles.restaurantInputWrap,
+              selectedRestaurant && restaurantQuery.trim().toLowerCase() === selectedRestaurant.name.toLowerCase() && styles.restaurantInputWrapSelected,
+            ]}
+          >
             <TextInput
               value={restaurantQuery}
               onChangeText={(text) => {
                 setRestaurantQuery(text);
-                setSelectedRestaurant(null);
+                if (selectedRestaurant && text.trim().toLowerCase() !== selectedRestaurant.name.toLowerCase()) {
+                  setSelectedRestaurant(null);
+                }
                 if (text.trim()) setFallbackSuggestions([]);
-                else if (restaurantInputFocused) setFallbackSuggestions(getSampleSuggestions());
+                else if (restaurantInputFocused) setFallbackSuggestions(dynamicSuggestions);
               }}
               onFocus={() => {
                 if (blurDelayRef.current) {
@@ -382,12 +536,15 @@ export default function LogVisitScreen() {
                 blurDelayRef.current = setTimeout(() => {
                   setRestaurantInputFocused(false);
                   blurDelayRef.current = null;
-                }, 200);
+                }, 400);
               }}
               placeholder="Search or type a restaurant"
               style={[styles.input, styles.restaurantInputInner]}
+              autoCorrect={false}
+              autoComplete="off"
+              spellCheck={false}
             />
-            {selectedRestaurant ? (
+            {selectedRestaurant && restaurantQuery.trim().toLowerCase() === selectedRestaurant.name.toLowerCase() ? (
               <View style={styles.restaurantSelectedBadge}>
                 <Ionicons name="checkmark-circle" size={20} color={colors.accent} />
                 <Text style={styles.restaurantSelectedText}>Selected</Text>
@@ -395,8 +552,13 @@ export default function LogVisitScreen() {
             ) : null}
           </View>
           {autocompleteError ? <Text style={styles.errorText}>{autocompleteError}</Text> : null}
-          {(loading || suggestions.length > 0 || (restaurantInputFocused && !restaurantQuery.trim() && !selectedRestaurant && fallbackSuggestions.length > 0)) &&
-            !autocompleteError && (
+          {(loading ||
+            suggestions.length > 0 ||
+            (restaurantInputFocused &&
+              !restaurantQuery.trim() &&
+              !selectedRestaurant &&
+              fallbackSuggestions.length > 0)) &&
+          !autocompleteError ? (
             <View style={styles.suggestions}>
               {loading ? (
                 <View style={styles.suggestionRow}>
@@ -404,45 +566,57 @@ export default function LogVisitScreen() {
                   <Text style={styles.suggestionMeta}>Searching…</Text>
                 </View>
               ) : (
-                (suggestions.length > 0 ? suggestions : fallbackSuggestions).map((s) => {
+                (suggestions.length > 0 ? suggestions : fallbackSuggestions).map((suggestion) => {
                   const isSelected =
                     selectedRestaurant &&
-                    (s.placeId === selectedRestaurant.placeId ||
-                      (s.placeId.startsWith('mock_') && s.placeId === `mock_${selectedRestaurant.restaurantId}`));
+                    (suggestion.placeId === selectedRestaurant.placeId ||
+                      (suggestion.placeId.startsWith('mock_') &&
+                        suggestion.placeId === `mock_${selectedRestaurant.restaurantId}`));
+
                   return (
                     <TouchableOpacity
-                      key={s.placeId}
-                      style={[styles.suggestionRow, isSelected ? styles.suggestionRowSelected : undefined]}
+                      key={suggestion.placeId}
+                      style={[
+                        styles.suggestionRow,
+                        isSelected ? styles.suggestionRowSelected : undefined,
+                      ]}
                       activeOpacity={0.8}
                       onPress={() => {
-                        // Immediately show selected name, close dropdown, and set optimistic selection
-                        // so the autocomplete effect doesn't kick off another search (loading) while API runs
-                        setRestaurantQuery(s.name);
+                        // Cancel any pending blur so the dropdown stays alive
+                        if (blurDelayRef.current) {
+                          clearTimeout(blurDelayRef.current);
+                          blurDelayRef.current = null;
+                        }
+                        setRestaurantInputFocused(false);
+                        setRestaurantQuery(suggestion.name);
                         setSuggestions([]);
                         setFallbackSuggestions([]);
                         setLoading(false);
-                        if (s.placeId.startsWith('mock_')) {
-                          const id = s.placeId.replace(/^mock_/, '');
-                          const rest = RESTAURANTS.find((r) => r.id === id);
-                          if (rest) {
+
+                        if (suggestion.placeId.startsWith('mock_')) {
+                          const id = suggestion.placeId.replace(/^mock_/, '');
+                          const restaurant = RESTAURANTS.find((item) => item.id === id);
+                          if (restaurant) {
                             setSelectedRestaurant({
-                              restaurantId: rest.id,
-                              placeId: s.placeId,
-                              name: rest.name,
-                              address: rest.neighborhood ?? '',
-                              fallbackPhotoUrl: rest.samplePhotoUrl,
+                              restaurantId: restaurant.id,
+                              placeId: suggestion.placeId,
+                              name: restaurant.name,
+                              address: restaurant.neighborhood ?? '',
+                              googlePlaceId: restaurant.googlePlaceId ?? null,
+                              displayImageUrl: restaurant.displayImageUrl ?? null,
+                              fallbackPhotoUrl: restaurant.displayImageUrl ?? undefined,
                             });
                           }
                           return;
                         }
-                        // Optimistic selection so dropdown stays closed and effect doesn't re-run
+
                         setSelectedRestaurant({
-                          restaurantId: s.placeId,
-                          placeId: s.placeId,
-                          name: s.name,
-                          address: s.address,
+                          restaurantId: suggestion.placeId,
+                          placeId: suggestion.placeId,
+                          name: suggestion.name,
+                          address: suggestion.address,
                         });
-                        selectRestaurant(s.placeId)
+                        selectRestaurant(suggestion.placeId)
                           .then((restaurant) => setSelectedRestaurant(restaurant))
                           .catch(() => {
                             setSelectedRestaurant(null);
@@ -450,171 +624,262 @@ export default function LogVisitScreen() {
                       }}
                     >
                       <View style={styles.suggestionContent}>
-                        <Text style={styles.suggestionName}>{s.name}</Text>
-                        <Text style={styles.suggestionMeta}>{s.address}</Text>
+                        <Text style={styles.suggestionName}>{suggestion.name}</Text>
+                        <Text style={styles.suggestionMeta}>{suggestion.address}</Text>
                       </View>
                       {isSelected ? (
-                        <Ionicons name="checkmark-circle" size={20} color={colors.accent} style={styles.suggestionCheck} />
+                        <Ionicons
+                          name="checkmark-circle"
+                          size={20}
+                          color={colors.accent}
+                          style={styles.suggestionCheck}
+                        />
                       ) : null}
                     </TouchableOpacity>
                   );
                 })
               )}
             </View>
-          )}
+          ) : null}
         </View>
 
-        <View style={styles.section}>
-          <Text style={styles.label}>Overall score</Text>
-          <ScoreStepper value={overallScore} onChange={setOverallScore} label="0–10" />
+        {/* ── 1. Rating ────────────────────────────────────────────── */}
+        <View style={styles.heroSection}>
+          <View style={styles.section}>
+            <Text style={styles.labelMuted}>How was it overall?</Text>
+            <Text style={styles.sliderValue}>{overallScore.toFixed(1)}</Text>
+            <View style={styles.sliderRow}>
+              <Text style={styles.sliderBound}>0</Text>
+              <Slider
+                style={styles.slider}
+                minimumValue={0}
+                maximumValue={10}
+                step={0.5}
+                value={overallScore}
+                onValueChange={(v: number) => setOverallScore(Math.round(v * 2) / 2)}
+                minimumTrackTintColor={colors.accent}
+                maximumTrackTintColor={colors.border}
+                thumbTintColor={colors.accent}
+              />
+              <Text style={styles.sliderBound}>10</Text>
+            </View>
+          </View>
+
+          {/* ── 2. Photo ──────────────────────────────────────────── */}
+          <View style={styles.section}>
+            <TouchableOpacity style={[styles.photoHero, primaryPhotoUri && styles.photoHeroWithImage]} onPress={pickPhotos} activeOpacity={0.86}>
+              {primaryPhotoUri ? (
+                <>
+                  <Image source={{ uri: primaryPhotoUri }} style={styles.photoHeroImage} />
+                  <View style={styles.photoHeroOverlay}>
+                    <Ionicons name="camera-outline" size={18} color="#fff" />
+                    <Text style={styles.photoHeroOverlayText}>Add photos</Text>
+                  </View>
+                </>
+              ) : (
+                <>
+                  <Ionicons name="images-outline" size={26} color={colors.textMuted} />
+                  <Text style={styles.photoHeroSubtitle}>
+                    Tap to add photos
+                  </Text>
+                  <Text style={styles.photoHeroHint}>
+                    The dish, the table, the vibe — anything goes.
+                  </Text>
+                </>
+              )}
+            </TouchableOpacity>
+
+            {photos.length > 0 ? (
+              <>
+                <Text style={styles.photoHelper}>Tap to set cover · long-press to remove</Text>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.photoRow}
+                >
+                  {photos.map((uri, index) => {
+                    const isPrimary = index === primaryIndex;
+                    return (
+                      <TouchableOpacity
+                        key={`${uri}-${index}`}
+                        style={[
+                          styles.photoThumbWrap,
+                          isPrimary && styles.photoThumbPrimary,
+                        ]}
+                        onPress={() => setPrimaryIndex(index)}
+                        onLongPress={() => {
+                          setPhotos((prev) => {
+                            const next = prev.filter((_, i) => i !== index);
+                            if (next.length === 0) { setPrimaryIndex(null); return next; }
+                            if (primaryIndex !== null && primaryIndex >= next.length) setPrimaryIndex(next.length - 1);
+                            else if (primaryIndex === index) setPrimaryIndex(0);
+                            return next;
+                          });
+                        }}
+                        activeOpacity={0.8}
+                      >
+                        <Image source={{ uri }} style={styles.photoThumb} />
+                        {isPrimary ? (
+                          <View style={styles.primaryBadge}>
+                            <Text style={styles.primaryBadgeText}>Cover</Text>
+                          </View>
+                        ) : null}
+                      </TouchableOpacity>
+                    );
+                  })}
+                  <TouchableOpacity style={styles.photoAddMore} onPress={pickPhotos} activeOpacity={0.8}>
+                    <Ionicons name="add" size={22} color={colors.textMuted} />
+                  </TouchableOpacity>
+                </ScrollView>
+              </>
+            ) : null}
+          </View>
+
+          {/* ── 3. What did you order? ─────────────────────────────── */}
+          <View style={styles.section}>
+            <Text style={styles.label}>What did you order?</Text>
+            <Text style={styles.chipHint}>Tap the star to mark your favorites</Text>
+
+            {/* Added dishes as chips with inline star toggle */}
+            {orderedDishes.length > 0 && (
+              <View style={styles.dishChipsRow}>
+                {orderedDishes.map((name) => {
+                  const isStandout = standoutDishes.includes(name);
+                  return (
+                    <View key={name} style={styles.orderedDishChipRow}>
+                      <TouchableOpacity
+                        style={[styles.orderedDishChip, isStandout && styles.orderedDishChipStandout]}
+                        onPress={() => removeOrderedDish(name)}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={styles.orderedDishChipText}>{name}</Text>
+                        <Ionicons name="close" size={14} color={colors.textMuted} />
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={() =>
+                          setStandoutDishes((prev) =>
+                            prev.includes(name) ? prev.filter((d) => d !== name) : [...prev, name],
+                          )
+                        }
+                        hitSlop={{ top: 6, bottom: 6, left: 4, right: 6 }}
+                        activeOpacity={0.7}
+                      >
+                        <Ionicons
+                          name={isStandout ? 'star' : 'star-outline'}
+                          size={16}
+                          color={isStandout ? colors.accent : colors.textFaint}
+                        />
+                      </TouchableOpacity>
+                    </View>
+                  );
+                })}
+              </View>
+            )}
+
+            {/* Free-text input */}
+            <View style={styles.dishInputRow}>
+              <TextInput
+                value={dishInput}
+                onChangeText={setDishInput}
+                onSubmitEditing={() => addOrderedDish(dishInput)}
+                placeholder="e.g. Margherita pizza"
+                placeholderTextColor={colors.textFaint}
+                style={styles.dishInputField}
+                returnKeyType="done"
+                blurOnSubmit={false}
+              />
+              {dishInput.trim().length > 0 && (
+                <TouchableOpacity
+                  style={styles.dishAddBtn}
+                  onPress={() => addOrderedDish(dishInput)}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="add" size={18} color={colors.accent} />
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* Personal history: dishes you've had here before */}
+            {previousDishes.filter((s) => !orderedDishes.some((d) => d.toLowerCase() === s.toLowerCase())).length > 0 && (
+              <View style={styles.dishQuickAddWrap}>
+                <Text style={styles.dishQuickAddLabel}>You've had here before</Text>
+                <View style={styles.dishChipsRow}>
+                  {previousDishes
+                    .filter((s) => !orderedDishes.some((d) => d.toLowerCase() === s.toLowerCase()))
+                    .map((name) => (
+                      <TouchableOpacity
+                        key={name}
+                        style={styles.dishChip}
+                        onPress={() => addOrderedDish(name)}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={styles.dishChipText}>{name}</Text>
+                      </TouchableOpacity>
+                    ))}
+                </View>
+              </View>
+            )}
+          </View>
+
+          {/* ── 4. How was it? ─────────────────────────────────────── */}
+          <View style={styles.section}>
+            <Text style={styles.label}>How was it?</Text>
+            <TextInput
+              value={caption}
+              onChangeText={setCaption}
+              placeholder="What would you tell a friend?"
+              style={[styles.input, styles.quickTakeInput]}
+              multiline
+            />
+          </View>
+
+          {/* ── 5. Vibe + occasion ────────────────────────────────── */}
+          <View style={styles.section}>
+            <Text style={styles.label}>What was it like?</Text>
+            <Text style={styles.chipHint}>Pick up to 3</Text>
+            <View style={styles.vibeRow}>
+              {VIBE_OPTIONS.map((option) => {
+                const active = vibeTags.includes(option.value);
+                return (
+                  <TouchableOpacity
+                    key={option.value}
+                    style={[styles.vibeChip, active && styles.vibeChipActive]}
+                    onPress={() => toggleVibe(option.value)}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={[styles.vibeChipText, active && styles.vibeChipTextActive]}>
+                      {option.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </View>
+
+          {/* ── 6. Quick tip ──────────────────────────────────────── */}
+          <View style={styles.section}>
+            <Text style={styles.label}>Leave a tip</Text>
+            <Text style={styles.chipHint}>Help others decide</Text>
+            <TextInput
+              value={quickTip}
+              onChangeText={setQuickTip}
+              placeholder="e.g. Ask for extra crispy edges"
+              style={styles.input}
+              maxLength={80}
+            />
+          </View>
         </View>
 
+        {/* ── Save button ──────────────────────────────────────────── */}
         <TouchableOpacity
           style={styles.primaryButton}
           activeOpacity={0.85}
           onPress={handleSave}
           disabled={!restaurantQuery.trim()}
         >
-          <Ionicons name="checkmark" size={18} color="#111827" style={{ marginRight: 6 }} />
-          <Text style={styles.primaryButtonText}>Save log</Text>
+          <Ionicons name="checkmark" size={18} color="#111827" style={styles.primaryButtonIcon} />
+          <Text style={styles.primaryButtonText}>{isEditMode ? 'Save changes' : 'Save log'}</Text>
         </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.expandHeader}
-          onPress={() => setDetailsExpanded((e) => !e)}
-          activeOpacity={0.7}
-        >
-          <Text style={styles.expandTitle}>Add more details (optional)</Text>
-          <Ionicons
-            name={detailsExpanded ? 'chevron-up' : 'chevron-down'}
-            size={20}
-            color={colors.textMuted}
-          />
-        </TouchableOpacity>
-
-        {detailsExpanded && (
-          <View style={styles.detailsSection}>
-            <View style={styles.section}>
-              <Text style={styles.label}>Standout dish</Text>
-              <Text style={[styles.helper, { marginBottom: 4 }]}>
-                Shows as a Standout badge on your feed above the photo.
-              </Text>
-              <TextInput
-                value={dishHighlight}
-                onChangeText={setDishHighlight}
-                placeholder="e.g. Chicago-style deep dish, Goat belly & lobster"
-                style={styles.input}
-              />
-            </View>
-            <View style={styles.section}>
-              <Text style={styles.label}>Caption</Text>
-              <TextInput
-                value={caption}
-                onChangeText={setCaption}
-                placeholder="What stood out? Dish, vibe, or quick takeaway."
-                style={[styles.input, styles.noteInput]}
-                multiline
-              />
-            </View>
-
-            <View style={styles.section}>
-              <Text style={styles.label}>Food</Text>
-              <ScoreStepper value={foodRating ?? overallScore} onChange={(v) => setFoodRating(v)} />
-            </View>
-            <View style={styles.section}>
-              <Text style={styles.label}>Service</Text>
-              <ScoreStepper value={serviceRating ?? overallScore} onChange={(v) => setServiceRating(v)} />
-            </View>
-            <View style={styles.section}>
-              <Text style={styles.label}>Ambience</Text>
-              <ScoreStepper value={ambienceRating ?? overallScore} onChange={(v) => setAmbienceRating(v)} />
-            </View>
-            <View style={styles.section}>
-              <Text style={styles.label}>Value</Text>
-              <ScoreStepper value={valueRating ?? overallScore} onChange={(v) => setValueRating(v)} />
-            </View>
-
-            <View style={styles.section}>
-              <Text style={styles.label}>Dishes you tried</Text>
-              <View style={styles.dishInputRow}>
-                <TextInput
-                  value={dishInput}
-                  onChangeText={setDishInput}
-                  placeholder="Add a dish"
-                  style={[styles.input, { flex: 1 }]}
-                  onSubmitEditing={addDish}
-                />
-                <TouchableOpacity style={styles.addDishBtn} onPress={addDish}>
-                  <Ionicons name="add" size={18} color={colors.text} />
-                  <Text style={styles.addDishBtnText}>Add dish</Text>
-                </TouchableOpacity>
-              </View>
-              {dishes.length > 0 && (
-                <View style={styles.dishChips}>
-                  {dishes.map((d, i) => (
-                    <View key={i} style={styles.dishChip}>
-                      <Text style={styles.dishChipText}>{d}</Text>
-                      <TouchableOpacity onPress={() => removeDish(i)} hitSlop={8}>
-                        <Ionicons name="close-circle" size={18} color={colors.textMuted} />
-                      </TouchableOpacity>
-                    </View>
-                  ))}
-                </View>
-              )}
-            </View>
-
-            <View style={styles.section}>
-              <Text style={styles.label}>Vibe tags</Text>
-              <View style={styles.vibeRow}>
-                {VIBE_OPTIONS.map((opt) => {
-                  const active = vibeTags.includes(opt.value);
-                  return (
-                    <TouchableOpacity
-                      key={opt.value}
-                      style={[styles.vibeChip, active && styles.vibeChipActive]}
-                      onPress={() => toggleVibe(opt.value)}
-                    >
-                      <Text style={[styles.vibeChipText, active && styles.vibeChipTextActive]}>
-                        {opt.label}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            </View>
-
-            <View style={styles.section}>
-              <Text style={styles.label}>Photos</Text>
-              <Text style={styles.helper}>
-                Add photos. Tap a photo to choose the cover image for your feed.
-              </Text>
-              <View style={styles.photoRow}>
-                {photos.map((uri, index) => {
-                  const isPrimary = index === primaryIndex;
-                  return (
-                    <TouchableOpacity
-                      key={uri}
-                      style={[styles.photoThumbWrap, isPrimary && styles.photoThumbPrimary]}
-                      onPress={() => setPrimaryIndex(index)}
-                      activeOpacity={0.8}
-                    >
-                      <Image source={{ uri }} style={styles.photoThumb} />
-                      {isPrimary ? (
-                        <View style={styles.primaryBadge}>
-                          <Text style={styles.primaryBadgeText}>Cover</Text>
-                        </View>
-                      ) : null}
-                    </TouchableOpacity>
-                  );
-                })}
-                <TouchableOpacity style={styles.addPhoto} onPress={pickPhotos} activeOpacity={0.8}>
-                  <Ionicons name="image-outline" size={20} color={colors.textMuted} />
-                  <Text style={styles.addPhotoText}>Add photos</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          </View>
-        )}
       </ScrollView>
     </SafeAreaView>
   );
@@ -622,12 +887,22 @@ export default function LogVisitScreen() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
-  content: { paddingHorizontal: 20, paddingTop: 16, paddingBottom: 32 },
+  content: { paddingHorizontal: 20, paddingTop: 16, paddingBottom: 120 },
   title: { fontSize: 24, fontWeight: '700', color: colors.text },
-  subtitle: { marginTop: 4, fontSize: 13, color: colors.textMuted, marginBottom: 16 },
+  subtitle: { marginTop: 4, marginBottom: 16, fontSize: 13, color: colors.textMuted },
   section: { marginTop: 16 },
+  heroSection: {
+    marginTop: 20,
+    padding: 18,
+    borderRadius: 22,
+    backgroundColor: '#FFF4EB',
+    borderWidth: 1,
+    borderColor: '#F0E4D7',
+    gap: 4,
+  },
   label: { fontSize: 14, fontWeight: '600', color: colors.text, marginBottom: 6 },
-  helper: { fontSize: 13, color: colors.textMuted },
+  labelMuted: { fontSize: 13, fontWeight: '500', color: colors.textMuted, marginBottom: 4, textAlign: 'center' as const },
+  chipHint: { fontSize: 12, color: colors.textMuted, marginBottom: 8 },
   suggestions: {
     marginTop: 6,
     borderRadius: 12,
@@ -672,10 +947,10 @@ const styles = StyleSheet.create({
   restaurantInputWrap: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderRadius: 12,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: colors.border,
-    backgroundColor: colors.surface,
+    backgroundColor: colors.surfaceSoft,
     paddingRight: 12,
   },
   restaurantInputWrapSelected: {
@@ -702,17 +977,131 @@ const styles = StyleSheet.create({
     color: colors.accent,
   },
   input: {
-    borderRadius: 12,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: colors.border,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
     fontSize: 15,
-    backgroundColor: colors.surface,
+    backgroundColor: colors.surfaceSoft,
     color: colors.text,
   },
-  noteInput: { minHeight: 80, textAlignVertical: 'top' },
-  scoreRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 },
+  quickTakeInput: {
+    minHeight: 64,
+    paddingTop: 12,
+    textAlignVertical: 'top',
+  },
+  photoHero: {
+    minHeight: 148,
+    borderRadius: 18,
+    backgroundColor: '#f3e8dc',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    paddingHorizontal: 20,
+    shadowColor: 'rgba(43,33,24,0.06)',
+    shadowOpacity: 1,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 1,
+  },
+  photoHeroWithImage: {
+    aspectRatio: 4 / 3,
+    minHeight: undefined,
+    paddingHorizontal: 0,
+  },
+  photoHeroImage: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    width: '100%',
+    height: '100%',
+    resizeMode: 'cover',
+  },
+  photoHeroOverlay: {
+    position: 'absolute',
+    right: 12,
+    bottom: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(28,28,30,0.75)',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 999,
+  },
+  photoHeroOverlayText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  photoHeroTitle: {
+    marginTop: 8,
+    fontSize: 15,
+    fontWeight: '800',
+    color: colors.text,
+    letterSpacing: -0.2,
+  },
+  photoHeroSubtitle: {
+    marginTop: 6,
+    fontSize: 13,
+    fontWeight: '600',
+    lineHeight: 17,
+    color: colors.text,
+    textAlign: 'center',
+  },
+  photoHeroHint: {
+    marginTop: 2,
+    fontSize: 11,
+    lineHeight: 15,
+    color: colors.textFaint,
+    textAlign: 'center',
+  },
+  photoHelper: {
+    marginTop: 10,
+    fontSize: 12,
+    color: '#8A7060',
+  },
+  photoRow: { flexDirection: 'row', gap: 8, marginTop: 10, paddingRight: 8 },
+  photoAddMore: {
+    width: 72,
+    height: 72,
+    borderRadius: 12,
+    backgroundColor: colors.surfaceSoft,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  photoThumbWrap: {
+    position: 'relative',
+    width: 72,
+    height: 72,
+    borderRadius: 12,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  photoThumbPrimary: { borderColor: colors.accent, borderWidth: 2 },
+  photoThumb: { width: '100%', height: '100%' },
+  primaryBadge: {
+    position: 'absolute',
+    bottom: 4,
+    left: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+    backgroundColor: colors.accent,
+  },
+  primaryBadgeText: { fontSize: 10, fontWeight: '600', color: '#111827' },
+  scoreRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 4,
+  },
   scoreLabel: { fontSize: 13, color: colors.textMuted },
   scoreControls: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   scoreBtn: {
@@ -725,55 +1114,97 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  scoreValue: { fontSize: 18, fontWeight: '700', color: colors.text, minWidth: 36, textAlign: 'center' },
-  primaryButton: {
-    marginTop: 24,
-    borderRadius: 999,
-    backgroundColor: colors.accent,
-    paddingVertical: 14,
-    paddingHorizontal: 20,
+  scoreValue: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: colors.text,
+    minWidth: 36,
+    textAlign: 'center',
+  },
+  sliderValue: {
+    fontSize: 36,
+    fontWeight: '800',
+    color: colors.accent,
+    textAlign: 'center',
+    marginTop: 4,
+    marginBottom: 0,
+  },
+  sliderRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    gap: 8,
   },
-  primaryButtonText: { color: '#111827', fontSize: 16, fontWeight: '600' },
-  expandHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: 24,
-    paddingVertical: 12,
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
+  slider: {
+    flex: 1,
+    height: 44,
   },
-  expandTitle: { fontSize: 14, fontWeight: '600', color: colors.textMuted },
-  detailsSection: { marginTop: 8 },
-  dishInputRow: { flexDirection: 'row', gap: 8, alignItems: 'center', marginTop: 6 },
-  addDishBtn: {
+  sliderBound: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.textMuted,
+    width: 18,
+    textAlign: 'center',
+  },
+  dishChipsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 },
+  orderedDishChipRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    paddingHorizontal: 12,
+  },
+  orderedDishChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingLeft: 12,
+    paddingRight: 8,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: colors.accentSoft,
+    borderWidth: 1,
+    borderColor: colors.accent + '30',
+  },
+  orderedDishChipStandout: {
+    backgroundColor: colors.accent + '22',
+    borderColor: colors.accent + '55',
+  },
+  orderedDishChipText: { fontSize: 13, fontWeight: '600', color: colors.text },
+  dishInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 14,
+    backgroundColor: colors.surfaceSoft,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingRight: 6,
+  },
+  dishInputField: {
+    flex: 1,
+    paddingHorizontal: 14,
     paddingVertical: 10,
-    borderRadius: 12,
+    fontSize: 15,
+    color: colors.text,
+  },
+  dishAddBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    backgroundColor: colors.accentSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dishQuickAddWrap: { marginTop: 10 },
+  dishQuickAddLabel: { fontSize: 11, fontWeight: '500', color: colors.textFaint, marginBottom: 6 },
+  dishChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
     backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,
   },
-  addDishBtnText: { fontSize: 13, fontWeight: '600', color: colors.text },
-  dishChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 },
-  dishChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: colors.surfaceSoft,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  dishChipText: { fontSize: 13, color: colors.text },
+  dishChipActive: { backgroundColor: colors.accent, borderColor: colors.accent },
+  dishChipText: { fontSize: 13, fontWeight: '500', color: colors.text },
+  dishChipTextActive: { fontWeight: '600', color: '#111827' },
   vibeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 },
   vibeChip: {
     paddingHorizontal: 12,
@@ -786,38 +1217,16 @@ const styles = StyleSheet.create({
   vibeChipActive: { backgroundColor: colors.accent, borderColor: colors.accent },
   vibeChipText: { fontSize: 13, fontWeight: '500', color: colors.textMuted },
   vibeChipTextActive: { fontSize: 13, fontWeight: '600', color: '#111827' },
-  photoRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 },
-  photoThumbWrap: {
-    position: 'relative',
-    width: 72,
-    height: 72,
-    borderRadius: 12,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  photoThumbPrimary: { borderColor: colors.accent },
-  photoThumb: { width: '100%', height: '100%' },
-  primaryBadge: {
-    position: 'absolute',
-    bottom: 4,
-    left: 4,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 8,
+  primaryButton: {
+    marginTop: 22,
+    borderRadius: 999,
     backgroundColor: colors.accent,
-  },
-  primaryBadgeText: { fontSize: 10, fontWeight: '600', color: '#111827' },
-  addPhoto: {
-    height: 72,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    justifyContent: 'center',
   },
-  addPhotoText: { fontSize: 13, color: colors.textMuted },
+  primaryButtonIcon: { marginRight: 6 },
+  primaryButtonText: { color: '#111827', fontSize: 16, fontWeight: '600' },
 });

@@ -3,14 +3,13 @@ module.exports = function (api) {
   return {
     presets: ['expo'],
     plugins: [
-      'expo-router/babel',
       [
         'module-resolver',
         {
-          alias: { '~': '.' },
-          // Do not use root: ['.'] so bare 'server' never resolves to ./server (Node-only code).
+          alias: { '~': __dirname },
         },
       ],
+      // 'react-native-reanimated/plugin', // disabled — using RN built-in Animated
     ],
   };
 };

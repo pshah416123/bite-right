@@ -1,9 +1,9 @@
-import { Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Link } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../theme/colors';
 import type { SavedRestaurantItem } from '../api/saved';
-import { resolveRestaurantDisplayImage } from '../utils/restaurantImage';
+import { RestaurantImage } from './RestaurantImage';
 
 interface Props {
   item: SavedRestaurantItem;
@@ -13,9 +13,6 @@ interface Props {
 
 export function SavedRestaurantListCard({ item, tags, onRemove }: Props) {
   const placeId = item.place_id ?? item.restaurantId;
-  const photo = resolveRestaurantDisplayImage({
-    previewPhotoUrl: item.previewPhotoUrl,
-  }).url;
   const secondary = [item.neighborhood, item.city].filter(Boolean).join(' · ') || item.address || '';
   const rating = item.rating != null ? item.rating.toFixed(1) : null;
   const price =
@@ -27,7 +24,24 @@ export function SavedRestaurantListCard({ item, tags, onRemove }: Props) {
     <View style={styles.wrap}>
       <Link href={`/(tabs)/restaurant/${placeId}`} asChild>
         <TouchableOpacity style={styles.card} activeOpacity={0.8}>
-          <Image source={{ uri: photo }} style={styles.photo} />
+          <RestaurantImage
+            restaurant={{
+              id: item.restaurantId,
+              place_id: item.place_id,
+              name: item.name,
+              googlePlaceId: item.googlePlaceId ?? null,
+              displayImageUrl: item.displayImageUrl ?? item.previewPhotoUrl,
+              displayImageSourceType: item.displayImageSourceType ?? null,
+              displayImageLastResolvedAt: item.displayImageLastResolvedAt ?? null,
+              previewPhotoUrl: item.previewPhotoUrl,
+              cover_image_url: item.cover_image_url ?? null,
+              food_image_urls: item.food_image_urls ?? null,
+            }}
+            aspectRatio={1}
+            fallbackType="icon"
+            borderRadius={0}
+            style={styles.photo}
+          />
           <View style={styles.meta}>
             <View style={styles.badgeRow}>
               <Text style={styles.name} numberOfLines={1}>{item.name}</Text>

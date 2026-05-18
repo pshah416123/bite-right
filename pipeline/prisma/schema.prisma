@@ -1,0 +1,109 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Restaurant {
+  id              String        @id @default(cuid())
+  placeId         String        @unique @map("place_id")
+  name            String
+  address         String?
+  lat             Float?
+  lng             Float?
+  website         String?
+  phone           String?
+  cuisineInferred String?       @map("cuisine_inferred")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+  crawlRuns       CrawlRun[]
+  menuPages       MenuPage[]
+  menuSections    MenuSection[]
+
+  @@index([lat, lng])
+  @@map("restaurants")
+}
+
+model MenuPage {
+  id            String         @id @default(cuid())
+  restaurantId  String         @map("restaurant_id")
+  url           String
+  sourceType    MenuPageSource @map("source_type")
+  htmlHash      String?        @map("html_hash")
+  lastCrawledAt DateTime?      @map("last_crawled_at")
+  createdAt     DateTime       @default(now()) @map("created_at")
+  restaurant    Restaurant     @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@unique([restaurantId, url])
+  @@map("menu_pages")
+}
+
+model MenuSection {
+  id           String     @id @default(cuid())
+  restaurantId String     @map("restaurant_id")
+  name         String
+  sortOrder    Int        @default(0) @map("sort_order")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+  items        MenuItem[]
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@unique([restaurantId, name])
+  @@map("menu_sections")
+}
+
+model MenuItem {
+  id              String      @id @default(cuid())
+  sectionId       String      @map("section_id")
+  name            String
+  description     String?
+  price           Float?
+  currency        String      @default("USD")
+  confidenceScore Float       @default(0) @map("confidence_score")
+  parserType      String?     @map("parser_type")
+  isVeg           Boolean     @default(false) @map("is_veg")
+  isVegan         Boolean     @default(false) @map("is_vegan")
+  isSpicy         Boolean     @default(false) @map("is_spicy")
+  isGlutenFree    Boolean     @default(false) @map("is_gluten_free")
+  createdAt       DateTime    @default(now()) @map("created_at")
+  updatedAt       DateTime    @updatedAt @map("updated_at")
+  section         MenuSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+
+  @@index([sectionId])
+  @@map("menu_items")
+}
+
+model CrawlRun {
+  id            String      @id @default(cuid())
+  restaurantId  String      @map("restaurant_id")
+  status        CrawlStatus @default(PENDING)
+  parserUsed    String?     @map("parser_used")
+  sectionsFound Int         @default(0) @map("sections_found")
+  itemsFound    Int         @default(0) @map("items_found")
+  error         String?
+  startedAt     DateTime    @default(now()) @map("started_at")
+  finishedAt    DateTime?   @map("finished_at")
+  restaurant    Restaurant  @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@index([restaurantId, startedAt])
+  @@map("crawl_runs")
+}
+
+enum MenuPageSource {
+  HOMEPAGE
+  MENU_LINK
+  COMMON_PATH
+  PROVIDER
+  PUPPETEER
+}
+
+enum CrawlStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILED
+  SKIPPED
+}

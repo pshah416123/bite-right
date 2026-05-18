@@ -10,18 +10,26 @@
     "splash": {
       "image": "./assets/splash.png",
       "resizeMode": "contain",
-      "backgroundColor": "#111827"
+      "backgroundColor": "#fff7ed"
     },
     "assetBundlePatterns": [
       "**/*"
     ],
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.pooja.biteright",
+      "buildNumber": "1",
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "Allow BiteRight to access your photos to attach images of your meals.",
+        "NSCameraUsageDescription": "Allow BiteRight to use the camera to capture photos of your meals.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
+      "package": "com.pooja.biteright",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#111827"
+        "backgroundColor": "#fff7ed"
       }
     },
     "web": {
@@ -29,8 +37,21 @@
       "output": "static"
     },
     "plugins": [
-      "expo-router",
-      "expo-font"
+      ["expo-router", { "origin": "https://biteright.app" }],
+      "expo-font",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "To find restaurants near you."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow BiteRight to access your photos to attach images of your meals.",
+          "cameraPermission": "Allow BiteRight to use the camera to capture photos of your meals."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

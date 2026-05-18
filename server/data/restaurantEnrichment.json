@@ -1,1 +1,22 @@
-{}
+{
+  "rest_1": {
+    "placeId": "ChIJNUoDqLYsDogRG8jygr_J23U",
+    "googlePlaceId": "ChIJNUoDqLYsDogRG8jygr_J23U"
+  },
+  "rest_2": {
+    "placeId": "ChIJs8mbNsUsDogRUnpg-b_IK5E",
+    "googlePlaceId": "ChIJs8mbNsUsDogRUnpg-b_IK5E"
+  },
+  "rest_3": {
+    "placeId": "ChIJf_CED7MsDogR72PLB04AlFA",
+    "googlePlaceId": "ChIJf_CED7MsDogR72PLB04AlFA"
+  },
+  "rest_4": {
+    "placeId": "ChIJl8NTEawsDogRwXH-IVDyH2A",
+    "googlePlaceId": "ChIJl8NTEawsDogRwXH-IVDyH2A"
+  },
+  "rest_5": {
+    "placeId": "ChIJ78NyRsUsDogR6AqyYoPrts4",
+    "googlePlaceId": "ChIJ78NyRsUsDogR6AqyYoPrts4"
+  }
+}

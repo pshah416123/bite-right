@@ -14,12 +14,14 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
 import { colors } from '../theme/colors';
-import { resolveRestaurantDisplayImage } from '../utils/restaurantImage';
 import {
   useFriendVisitsAtRestaurant,
   type FriendVisitAtRestaurant,
 } from '../hooks/useFriendVisitsAtRestaurant';
+import { useCompare } from '../context/CompareContext';
+import { RestaurantImage } from './RestaurantImage';
 
 export interface DiscoverItem {
   restaurant: {
@@ -29,35 +31,51 @@ export interface DiscoverItem {
     neighborhood?: string;
     state?: string;
     priceLevel?: number;
+    lat?: number | null;
+    lng?: number | null;
     placeId?: string | null;
-    /** Derived cuisine categories used for chip filtering/ranking. */
+    googlePlaceId?: string | null;
     cuisines?: string[];
-    /** Normalized resolved card image field (same chain as Feed backend). */
+    displayImageUrl?: string | null;
+    displayImageSourceType?: 'override' | 'user' | 'google' | 'placeholder' | null;
+    displayImageLastResolvedAt?: string | null;
     previewPhotoUrl?: string;
-    /** Backward-compatible alias for resolved image URL. */
     imageUrl?: string;
   };
   matchScore: number;
   reasonTags: string[];
-  /** One social proof badge: e.g. "3 friends saved this", "Trending tonight", "People like you loved this". */
+  heroLabel?: string | null;
+  cardTags?: string[];
   socialProofBadge?: string | null;
-  /**
-   * When provided (e.g. from API), overrides client-side feed lookup for friend avatars.
-   */
   friendVisits?: FriendVisitAtRestaurant[] | null;
 }
 
 interface Props {
   item: DiscoverItem;
-  /** When true, show a saved/bookmark indicator. */
   saved?: boolean;
+  userCoords?: { lat: number; lng: number } | null;
+  animDelay?: number;
 }
 
 const AVATAR_SIZE = 22;
 const AVATAR_OVERLAP = 7;
 const MAX_AVATARS = 3;
 
-/** Prefer a specific cuisine label over generic "Restaurant" / "Takeout". */
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+function haversineDistanceMi(
+  lat1: number, lng1: number,
+  lat2: number, lng2: number,
+): number {
+  const R = 3958.8;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 function primaryCuisineLabel(restaurant: DiscoverItem['restaurant']): string {
   const generic = (c: string) => !c || c === 'Restaurant' || c === 'Takeout';
   if (restaurant.cuisines && restaurant.cuisines.length > 0) {
@@ -70,22 +88,17 @@ function primaryCuisineLabel(restaurant: DiscoverItem['restaurant']): string {
 }
 
 function formatVisitDate(iso?: string): string {
-  if (!iso) return '—';
+  if (!iso) return '\u2014';
   const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '—';
+  if (Number.isNaN(d.getTime())) return '\u2014';
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-function FriendAvatar({
-  visit,
-  index,
-}: {
-  visit: FriendVisitAtRestaurant;
-  index: number;
-}) {
+// ─── Friend Avatar ──────────────────────────────────────────────────────────
+
+function FriendAvatar({ visit, index }: { visit: FriendVisitAtRestaurant; index: number }) {
   const uri = visit.userAvatar?.trim();
   const initial = visit.userName?.[0]?.toUpperCase() ?? '?';
-
   return (
     <View
       style={[
@@ -104,42 +117,68 @@ function FriendAvatar({
   );
 }
 
-export function RestaurantCard({ item, saved }: Props) {
+// ─── RestaurantCard ─────────────────────────────────────────────────────────
+
+export function RestaurantCard({ item, saved, userCoords }: Props) {
   const router = useRouter();
-  const { restaurant, matchScore, reasonTags, socialProofBadge, friendVisits: friendVisitsProp } = item;
+  const { restaurant, matchScore, reasonTags, cardTags, socialProofBadge, friendVisits: friendVisitsProp } = item;
   const fromFeed = useFriendVisitsAtRestaurant(restaurant.id);
   const friendVisits = friendVisitsProp ?? fromFeed;
   const [friendsModalOpen, setFriendsModalOpen] = useState(false);
+  const { isSelected: isCompareSelected, toggle: toggleCompare, compareMode } = useCompare();
+  const inCompare = isCompareSelected(restaurant.id);
 
-  const resolvedImageUrl = resolveRestaurantDisplayImage({
-    previewPhotoUrl: restaurant.previewPhotoUrl,
-    imageUrl: restaurant.imageUrl,
-  }).url;
-  const [imageBroken, setImageBroken] = useState(false);
+  const cuisine = primaryCuisineLabel(restaurant);
 
-  useEffect(() => {
-    setImageBroken(false);
-  }, [restaurant.id, restaurant.previewPhotoUrl, restaurant.imageUrl]);
-
-  const badge = socialProofBadge || (reasonTags.length ? reasonTags[0] : null);
+  // Distance
+  const hasDistance =
+    userCoords && restaurant.lat != null && restaurant.lng != null &&
+    isFinite(restaurant.lat!) && isFinite(restaurant.lng!);
+  const distanceLabel = hasDistance
+    ? `${haversineDistanceMi(userCoords!.lat, userCoords!.lng, restaurant.lat!, restaurant.lng!).toFixed(1)} mi`
+    : null;
 
   const payload = encodeURIComponent(
     JSON.stringify({
       id: restaurant.id,
       name: restaurant.name,
-      cuisine: primaryCuisineLabel(restaurant),
+      cuisine,
       cuisines: restaurant.cuisines ?? null,
       neighborhood: restaurant.neighborhood ?? null,
       state: restaurant.state ?? null,
       priceLevel: restaurant.priceLevel ?? null,
       placeId: restaurant.placeId ?? null,
+      googlePlaceId: restaurant.googlePlaceId ?? null,
+      displayImageUrl: restaurant.displayImageUrl ?? null,
+      displayImageSourceType: restaurant.displayImageSourceType ?? null,
+      displayImageLastResolvedAt: restaurant.displayImageLastResolvedAt ?? null,
       previewPhotoUrl: restaurant.previewPhotoUrl ?? null,
       imageUrl: restaurant.imageUrl ?? null,
       matchScore,
+      fromLat: userCoords?.lat ?? null,
+      fromLng: userCoords?.lng ?? null,
     }),
   );
 
+  const addToCompare = () => {
+    toggleCompare({
+      id: restaurant.id, name: restaurant.name, cuisine,
+      neighborhood: restaurant.neighborhood ?? null,
+      priceLevel: restaurant.priceLevel ?? null, matchScore,
+      imageUrl: restaurant.displayImageUrl ?? restaurant.imageUrl ?? restaurant.previewPhotoUrl ?? null,
+      distanceLabel: distanceLabel ?? null,
+      reasonTags: reasonTags ?? [],
+      cardTags: cardTags ?? [],
+      friendCount: friendVisits.length,
+    });
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+  };
+
   const goRestaurant = () => {
+    if (compareMode) {
+      addToCompare();
+      return;
+    }
     router.push(`/(tabs)/restaurant/${encodeURIComponent(restaurant.id)}?payload=${payload}`);
   };
 
@@ -162,16 +201,11 @@ export function RestaurantCard({ item, saved }: Props) {
         },
       );
     } else {
-      Alert.alert(
-        'Adjust recommendations',
-        undefined,
-        [
-          { text: 'Hide this restaurant', onPress: () => run('hide') },
-          { text: 'Suggest less like this', onPress: () => run('suggest_less') },
-          { text: 'Cancel', style: 'cancel' },
-        ],
-        { cancelable: true },
-      );
+      Alert.alert('Adjust recommendations', undefined, [
+        { text: 'Hide this restaurant', onPress: () => run('hide') },
+        { text: 'Suggest less like this', onPress: () => run('suggest_less') },
+        { text: 'Cancel', style: 'cancel' },
+      ], { cancelable: true });
     }
   };
 
@@ -180,27 +214,26 @@ export function RestaurantCard({ item, saved }: Props) {
   const extraCount = friendVisits.length - MAX_AVATARS;
 
   const photoSection = (() => {
-    const uri = !imageBroken ? resolvedImageUrl : undefined;
-
-    const imageInner = !uri ? (
-      <View style={styles.photoPlaceholder}>
-        <View style={styles.photoPlaceholderIconWrap}>
-          <Ionicons name="camera-outline" size={16} color={colors.textMuted} />
-        </View>
-      </View>
-    ) : (
-      <Image
-        source={{ uri }}
-        style={styles.photo}
-        resizeMode="cover"
-        onError={() => setImageBroken(true)}
-      />
-    );
-
     return (
       <View style={styles.photoWrap}>
         <View style={styles.photoTouchable} accessibilityLabel={`${restaurant.name} photo`}>
-          {imageInner}
+          <RestaurantImage
+            restaurant={{
+              id: restaurant.id,
+              name: restaurant.name,
+              cuisine,
+              googlePlaceId: restaurant.googlePlaceId ?? restaurant.placeId ?? null,
+              displayImageUrl: restaurant.displayImageUrl ?? restaurant.imageUrl ?? restaurant.previewPhotoUrl ?? null,
+              displayImageSourceType: restaurant.displayImageSourceType ?? null,
+              displayImageLastResolvedAt: restaurant.displayImageLastResolvedAt ?? null,
+              previewPhotoUrl: restaurant.previewPhotoUrl ?? null,
+              imageUrl: restaurant.imageUrl ?? null,
+            }}
+            aspectRatio={1}
+            fallbackType="icon"
+            borderRadius={18}
+            style={styles.photo}
+          />
         </View>
         {showFriendStack ? (
           <Pressable
@@ -226,11 +259,13 @@ export function RestaurantCard({ item, saved }: Props) {
     );
   })();
 
+  const matchPct = Math.round(matchScore * 100);
+
   return (
     <>
       <TouchableOpacity
         activeOpacity={0.9}
-        style={styles.card}
+        style={[styles.card, inCompare && styles.cardSelected]}
         onPress={goRestaurant}
         onLongPress={handleLongPress}
         delayLongPress={400}
@@ -249,20 +284,11 @@ export function RestaurantCard({ item, saved }: Props) {
                   </View>
                 )}
               </View>
-              <Text style={styles.secondary}>
-                {primaryCuisineLabel(restaurant)}
-                {(restaurant.neighborhood || restaurant.state)
-                  ? ` · ${[restaurant.neighborhood, restaurant.state].filter(Boolean).join(', ')}`
-                  : ''}
+              <Text style={styles.secondary} numberOfLines={1}>
+                {cuisine}
+                {restaurant.neighborhood ? ` \u00B7 ${restaurant.neighborhood}` : ''}
+                {distanceLabel ? ` \u00B7 ${distanceLabel}` : ''}
               </Text>
-              {restaurant.neighborhood || restaurant.state ? (
-                <View style={styles.locationRow}>
-                  <Ionicons name="location-outline" size={11} color={colors.textMuted} />
-                  <Text style={styles.locationText} numberOfLines={1}>
-                    {[restaurant.neighborhood, restaurant.state].filter(Boolean).join(', ')}
-                  </Text>
-                </View>
-              ) : null}
               <Text style={styles.secondary}>
                 {Array.from({ length: restaurant.priceLevel ?? 0 })
                   .map(() => '$')
@@ -270,34 +296,32 @@ export function RestaurantCard({ item, saved }: Props) {
               </Text>
             </View>
           </View>
-          <View style={styles.matchBlock}>
-            <View style={styles.matchPill}>
-              <Text style={styles.matchText}>{Math.round(matchScore * 100)}%</Text>
+          <View style={styles.rightBlock}>
+            <View style={styles.rightTop}>
+              {matchPct > 0 && (
+                <View style={styles.matchPill}>
+                  <Text style={styles.matchText}>{matchPct}%</Text>
+                </View>
+              )}
+              <TouchableOpacity
+                style={[styles.compareBtn, inCompare && styles.compareBtnActive]}
+                onPress={addToCompare}
+                hitSlop={6}
+                activeOpacity={0.7}
+              >
+                <Ionicons
+                  name={inCompare ? 'git-compare' : 'git-compare-outline'}
+                  size={15}
+                  color={inCompare ? colors.accent : colors.textFaint}
+                />
+              </TouchableOpacity>
             </View>
-            {badge ? (
-              <Text style={styles.socialProofBadge} numberOfLines={1}>
-                {badge}
-              </Text>
-            ) : null}
           </View>
         </View>
-        {!badge && reasonTags.length ? (
-          <View style={styles.tagsRow}>
-            {reasonTags.slice(0, 2).map((tag) => (
-              <View key={tag} style={styles.tag}>
-                <Text style={styles.tagText}>{tag}</Text>
-              </View>
-            ))}
-          </View>
-        ) : null}
       </TouchableOpacity>
 
-      <Modal
-        visible={friendsModalOpen}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setFriendsModalOpen(false)}
-      >
+      {/* ── Friends modal ── */}
+      <Modal visible={friendsModalOpen} transparent animationType="fade" onRequestClose={() => setFriendsModalOpen(false)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setFriendsModalOpen(false)}>
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>Friends who ate here</Text>
@@ -314,11 +338,9 @@ export function RestaurantCard({ item, saved }: Props) {
                       </View>
                     )}
                   </View>
-                  <View style={styles.modalRowText}>
+                  <View style={{ flex: 1 }}>
                     <Text style={styles.modalName}>{v.userName}</Text>
-                    <Text style={styles.modalMeta}>
-                      {v.score.toFixed(1)} rating · {formatVisitDate(v.createdAt)}
-                    </Text>
+                    <Text style={styles.modalMeta}>{v.score.toFixed(1)} rating \u00B7 {formatVisitDate(v.createdAt)}</Text>
                   </View>
                 </View>
               ))}
@@ -333,6 +355,8 @@ export function RestaurantCard({ item, saved }: Props) {
   );
 }
 
+// ─── Styles ─────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
   card: {
     borderRadius: 24,
@@ -341,6 +365,10 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     padding: 16,
     marginBottom: 16,
+  },
+  cardSelected: {
+    borderColor: colors.accent,
+    borderWidth: 1.5,
   },
   row: {
     flexDirection: 'row',
@@ -364,24 +392,6 @@ const styles = StyleSheet.create({
     height: 56,
     borderRadius: 18,
     backgroundColor: colors.surfaceSoft,
-  },
-  photoPlaceholder: {
-    width: 56,
-    height: 56,
-    borderRadius: 18,
-    backgroundColor: colors.surfaceSoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  photoPlaceholderIconWrap: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: colors.bgSoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: colors.border,
   },
   friendStackPressable: {
     position: 'absolute',
@@ -460,41 +470,43 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: colors.textMuted,
   },
-  locationRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 4,
-    gap: 4,
-  },
-  locationText: {
-    fontSize: 11,
-    color: colors.textMuted,
-    flex: 1,
-  },
-  matchBlock: {
+  rightBlock: {
     alignItems: 'flex-end',
     justifyContent: 'center',
+    marginLeft: 8,
+  },
+  rightTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   matchPill: {
-    minWidth: 48,
+    minWidth: 44,
     paddingHorizontal: 8,
-    paddingVertical: 6,
+    paddingVertical: 5,
     borderRadius: 999,
     backgroundColor: colors.accent,
     alignItems: 'center',
     justifyContent: 'center',
   },
   matchText: {
-    color: '#111827',
-    fontSize: 13,
+    color: '#fff',
+    fontSize: 12,
     fontWeight: '700',
   },
-  socialProofBadge: {
-    marginTop: 4,
-    fontSize: 11,
-    color: colors.textMuted,
-    maxWidth: 120,
-    textAlign: 'right',
+  compareBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.bgSoft,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  compareBtnActive: {
+    backgroundColor: colors.accentSoft,
+    borderColor: colors.accent,
   },
   tagsRow: {
     flexDirection: 'row',
@@ -513,6 +525,8 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: colors.textMuted,
   },
+
+  // ── Modals ──
   modalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.45)',
@@ -527,20 +541,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: colors.text,
-  },
-  modalSubtitle: {
-    marginTop: 4,
-    fontSize: 14,
-    color: colors.textMuted,
-    marginBottom: 12,
-  },
-  modalList: {
-    maxHeight: 280,
-  },
+  modalTitle: { fontSize: 18, fontWeight: '700', color: colors.text },
+  modalSubtitle: { marginTop: 4, fontSize: 14, color: colors.textMuted, marginBottom: 12 },
+  modalList: { maxHeight: 280 },
   modalRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -557,43 +560,16 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: '#fff',
   },
-  modalAvatarImg: {
-    width: '100%',
-    height: '100%',
-  },
+  modalAvatarImg: { width: '100%', height: '100%' },
   modalAvatarFallback: {
     flex: 1,
     backgroundColor: colors.accentSoft,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  modalAvatarLetter: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: colors.text,
-  },
-  modalRowText: {
-    flex: 1,
-  },
-  modalName: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: colors.text,
-  },
-  modalMeta: {
-    marginTop: 2,
-    fontSize: 13,
-    color: colors.textMuted,
-  },
-  modalClose: {
-    marginTop: 14,
-    alignSelf: 'center',
-    paddingVertical: 10,
-    paddingHorizontal: 24,
-  },
-  modalCloseText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: colors.accent,
-  },
+  modalAvatarLetter: { fontSize: 16, fontWeight: '700', color: colors.text },
+  modalName: { fontSize: 16, fontWeight: '600', color: colors.text },
+  modalMeta: { marginTop: 2, fontSize: 13, color: colors.textMuted },
+  modalClose: { marginTop: 14, alignSelf: 'center', paddingVertical: 10, paddingHorizontal: 24 },
+  modalCloseText: { fontSize: 16, fontWeight: '600', color: colors.accent },
 });

@@ -11,6 +11,12 @@ export interface DiscoverRecommendation {
     placeId?: string | null;
     /** Derived cuisine labels from types + name (server). */
     cuisines?: string[];
+    googlePlaceId?: string | null;
+    lat?: number | null;
+    lng?: number | null;
+    displayImageUrl?: string | null;
+    displayImageSourceType?: 'override' | 'user' | 'google' | 'placeholder' | null;
+    displayImageLastResolvedAt?: string | null;
     /** Normalized resolved image field (same chain as Feed). */
     previewPhotoUrl?: string;
     /** Resolved image URL (https or relative). Never a photo_reference. Always populated by backend. */
@@ -18,6 +24,10 @@ export interface DiscoverRecommendation {
   };
   percentMatch: number;
   explanations: string[];
+  /** One standout label: "Pilsen staple", "Hidden gem", "Top rated", etc. */
+  heroLabel?: string | null;
+  /** 1–2 short cuisine/subcategory tags: "Tacos", "Birria", "Seafood". */
+  cardTags?: string[];
   /** One social proof badge per card: friend signal, taste similarity, or trending. */
   socialProofBadge?: string | null;
 }
@@ -43,6 +53,8 @@ export interface DiscoverResponse {
 }
 
 export type DiscoverMode = 'nearby' | 'location';
+export type DiscoverSortMode = 'best' | 'nearest' | 'popular' | 'new';
+export type DiscoverOccasion = 'brunch' | 'lunch' | 'dinner' | 'bars' | 'dessert' | 'coffee' | 'late_night';
 
 export async function getDiscover(opts: {
   mode: DiscoverMode;
@@ -53,6 +65,12 @@ export async function getDiscover(opts: {
   radiusMiles?: number;
   /** Cuisine chip label — sent to backend for keyword search + filtering. */
   cuisine?: string | null;
+  /** Free-text search term (e.g. "ramen", "bubble tea"). Uses Text Search for precise results. */
+  search?: string | null;
+  /** Sort mode: 'best' (default ranking) or 'nearest' (distance ascending). */
+  sortMode?: DiscoverSortMode;
+  /** Occasion filter: brunch, lunch, dinner, bars, dessert, coffee, late_night. */
+  occasion?: DiscoverOccasion | null;
 }): Promise<DiscoverResponse> {
   const params: Record<string, string> = {
     mode: opts.mode,
@@ -60,6 +78,9 @@ export async function getDiscover(opts: {
   };
   if (opts.userId) params.userId = opts.userId;
   if (opts.cuisine && opts.cuisine.trim()) params.cuisine = opts.cuisine.trim();
+  if (opts.search && opts.search.trim()) params.search = opts.search.trim();
+  if (opts.sortMode && opts.sortMode !== 'best') params.sortMode = opts.sortMode;
+  if (opts.occasion) params.occasion = opts.occasion;
   // If we already know lat/lng (e.g. user picked a predefined location),
   // pass it through even for mode=location to avoid backend geocoding.
   if (opts.lat != null && opts.lng != null) {

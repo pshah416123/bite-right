@@ -5,9 +5,11 @@ import { useFeedContext } from '../context/FeedContext';
 export const DISCOVER_CURRENT_USER_NAME = 'You';
 
 export type FriendVisitAtRestaurant = {
+  id: string;
   userName: string;
   userAvatar?: string;
   score: number;
+  note?: string;
   createdAt?: string;
 };
 
@@ -34,9 +36,11 @@ export function useFriendVisitsAtRestaurant(restaurantId: string): FriendVisitAt
       const prevTime = existing ? new Date(existing.createdAt ?? 0).getTime() : 0;
       if (!existing || logTime >= prevTime) {
         byUser.set(key, {
+          id: log.id,
           userName: key,
           userAvatar: log.userAvatar,
           score: log.score,
+          note: log.note,
           createdAt: log.createdAt,
         });
       }

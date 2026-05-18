@@ -61,7 +61,7 @@ export default function FindFriendsScreen() {
       <TouchableOpacity
         style={styles.userRow}
         activeOpacity={0.8}
-        onPress={() => router.push(`/friend/${item.id}`)}
+        onPress={() => router.push(`/friend/${item.id}` as any)}
       >
         <View style={styles.avatar}>
           <Text style={styles.avatarInitial}>{(item.displayName || item.username)[0] ?? '·'}</Text>

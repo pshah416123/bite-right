@@ -39,7 +39,7 @@ export default function TonightJoinScreen() {
           participantCount: res.sessionState.participantCount,
         });
         setStatus('ok');
-        router.replace('/(tabs)/tonight/swipe');
+        router.navigate('/(tabs)/tonight/setup');
       })
       .catch((err) => {
         if (cancelled) return;
@@ -70,7 +70,7 @@ export default function TonightJoinScreen() {
           <Text style={styles.helper}>{errorMessage}</Text>
           <TouchableOpacity
             style={styles.button}
-            onPress={() => router.replace('/(tabs)/tonight')}
+            onPress={() => router.navigate('/(tabs)/tonight')}
           >
             <Text style={styles.buttonText}>Back to Tonight</Text>
           </TouchableOpacity>

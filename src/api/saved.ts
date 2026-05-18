@@ -10,7 +10,15 @@ export interface SavedRestaurantItem {
   neighborhood: string | null;
   lat: number | null;
   lng: number | null;
+  googlePlaceId?: string | null;
+  displayImageUrl?: string | null;
+  displayImageSourceType?: 'override' | 'user' | 'google' | 'placeholder' | null;
+  displayImageLastResolvedAt?: string | null;
   previewPhotoUrl: string | null;
+  /** Supabase restaurants.cover_image_url — preferred display photo */
+  cover_image_url?: string | null;
+  /** Supabase restaurants.food_image_urls — curated food photos */
+  food_image_urls?: string[] | null;
   savedAt: string;
   source: 'swipe' | 'manual';
   rating?: number | null;
@@ -52,7 +60,7 @@ export async function getSavedRestaurants(
   const normalized = list.map((item) => ({
     ...item,
     place_id: item.place_id ?? item.restaurantId,
-    source: item.source === 'swipe' ? 'swipe' : 'manual',
+    source: (item.source === 'swipe' ? 'swipe' : 'manual') as 'swipe' | 'manual',
   }));
   if (opts.sort === 'recent') {
     normalized.sort((a, b) => new Date(b.savedAt).getTime() - new Date(a.savedAt).getTime());

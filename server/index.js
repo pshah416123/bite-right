@@ -1,13 +1,19 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
+const cheerio = require('cheerio');
+const puppeteer = require('puppeteer');
 const dotenv = require('dotenv');
 
-dotenv.config();
+dotenv.config({ path: require('path').join(__dirname, '.env') });
+const { rankPlaces, rankForSection } = require('./ranking');
+const { getCuisineGroups, matchesCuisineGroup } = require('./utils/cuisineNormalization');
+const db = require('./utils/db');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
-const GOOGLE_PLACES_API_KEY = process.env.GOOGLE_PLACES_API_KEY;
+const GOOGLE_PLACES_API_KEY = (process.env.GOOGLE_PLACES_API_KEY || '').trim() || undefined;
+const YELP_API_KEY = process.env.YELP_API_KEY;
 /** Public base URL for absolute image URLs in API responses (no trailing slash). */
 const PUBLIC_API_URL = (process.env.PUBLIC_API_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
 
@@ -20,26 +26,25 @@ if (!GOOGLE_PLACES_API_KEY) {
 app.use(cors());
 app.use(express.json());
 
-// Neutral placeholder when no restaurant photo is available (used only as last resort).
-const NEUTRAL_PLACEHOLDER_URL = 'https://placehold.co/800x600/e5e7eb/6b7280?text=No+photo';
-
 // In‑memory storage (swap with a real DB later)
 /** @type {Array<{
  *  restaurantId: string;
- *  placeId: string;
+ *  placeId?: string | null;
  *  name: string;
- *  address: string;
- *  lat: number;
- *  lng: number;
+ *  address?: string | null;
+ *  city?: string | null;
+ *  neighborhood?: string | null;
+ *  lat?: number | null;
+ *  lng?: number | null;
+ *  googlePlaceId?: string | null;
+ *  displayImageUrl?: string | null;
+ *  displayImageSourceType?: 'override' | 'user' | 'google' | 'placeholder' | null;
+ *  displayImageLastResolvedAt?: string | null;
+ *  displayImagePhotoReference?: string | null;
  *  websiteUrl?: string;
  *  googleMapsUrl?: string;
  *  phone?: string;
  *  reservationUrl?: string;
- *  fallbackPhotoRef?: string;
- *  fallbackPhotoUrl?: string;
- *  bestFoodPhotoRef?: string;
- *  bestFoodPhotoUrl?: string;
- *  bestFoodPhotoUpdatedAt?: string;
  *  createdAt: string;
  * }>} */
 const restaurants = [];
@@ -65,16 +70,14 @@ const negativeFeedback = [];
 
 /** Static restaurant info for rest_1..rest_5 (Chicago). Google-selected places are in `restaurants`. */
 const STATIC_RESTAURANTS = {
-  // Use real food imagery for static restaurants so Discover/Tonight cards never appear blank.
-  // Pizza-specific photo (avoid mismatched cuisine imagery in Feed/Discover).
-  rest_1: { name: "Lou Malnati's", address: 'River North, IL', city: 'Chicago', neighborhood: 'River North', lat: 41.8902, lng: -87.6369, websiteUrl: 'https://www.loumalnatis.com', phone: '+1-312-828-9800' },
-  rest_2: { name: 'Girl & the Goat', address: 'West Loop, IL', city: 'Chicago', neighborhood: 'West Loop', lat: 41.8815, lng: -87.6472, websiteUrl: 'https://www.girlandthegoat.com', googleMapsUrl: 'https://maps.google.com/?cid=123' },
-  rest_3: { name: "Portillo's", address: 'River North, IL', city: 'Chicago', neighborhood: 'River North', lat: 41.8902, lng: -87.6369, websiteUrl: 'https://www.portillos.com' },
-  rest_4: { name: 'The Purple Pig', address: 'Magnificent Mile, IL', city: 'Chicago', neighborhood: 'Magnificent Mile', lat: 41.8904, lng: -87.6242, websiteUrl: 'https://www.thepurplepigchicago.com' },
-  rest_5: { name: 'Au Cheval', address: 'West Loop, IL', city: 'Chicago', neighborhood: 'West Loop', lat: 41.8815, lng: -87.6472, websiteUrl: 'https://www.aucheval.com' },
+  rest_1: { name: "Lou Malnati's", address: '439 N Wells St, Chicago, IL', city: 'Chicago', neighborhood: 'River North', lat: 41.8902, lng: -87.6369, websiteUrl: 'https://www.loumalnatis.com', phone: '+1-312-828-9800' },
+  rest_2: { name: 'Girl & the Goat', address: '809 W Randolph St, Chicago, IL', city: 'Chicago', neighborhood: 'West Loop', lat: 41.8815, lng: -87.6472, websiteUrl: 'https://www.girlandthegoat.com', googleMapsUrl: 'https://maps.google.com/?cid=123' },
+  rest_3: { name: "Portillo's", address: '100 W Ontario St, Chicago, IL', city: 'Chicago', neighborhood: 'River North', lat: 41.8934, lng: -87.6314, websiteUrl: 'https://www.portillos.com' },
+  rest_4: { name: 'The Purple Pig', address: '500 N Michigan Ave, Chicago, IL', city: 'Chicago', neighborhood: 'Magnificent Mile', lat: 41.8904, lng: -87.6242, websiteUrl: 'https://www.thepurplepigchicago.com' },
+  rest_5: { name: 'Au Cheval', address: '800 W Randolph St, Chicago, IL', city: 'Chicago', neighborhood: 'West Loop', lat: 41.8845, lng: -87.6477, websiteUrl: 'https://www.aucheval.com' },
 };
 
-function getRestaurantInfo(restaurantId) {
+function getRestaurantInfoSync(restaurantId) {
   // rest_1..rest_5 are always the static Chicago list (Lou Malnati's, etc.). Prefer static over DB so Reserve/labels stay correct.
   const stat = STATIC_RESTAURANTS[restaurantId];
   if (stat) {
@@ -83,6 +86,10 @@ function getRestaurantInfo(restaurantId) {
       restaurantId,
       ...stat,
       placeId: dbRow?.placeId ?? null,
+      googlePlaceId: dbRow?.googlePlaceId ?? dbRow?.placeId ?? null,
+      displayImageUrl: dbRow?.displayImageUrl ?? dbRow?.bestFoodPhotoUrl ?? dbRow?.fallbackPhotoUrl ?? null,
+      displayImageSourceType: dbRow?.displayImageSourceType ?? 'placeholder',
+      displayImageLastResolvedAt: dbRow?.displayImageLastResolvedAt ?? null,
       websiteUrl: stat.websiteUrl || null,
       googleMapsUrl: stat.googleMapsUrl || null,
       phone: stat.phone || null,
@@ -94,21 +101,48 @@ function getRestaurantInfo(restaurantId) {
     fromDb = findRestaurantByPlaceId(restaurantId);
   }
   if (fromDb) {
-    return {
-      restaurantId: fromDb.restaurantId,
-      placeId: fromDb.placeId || null,
-      name: fromDb.name,
-      address: fromDb.address || '',
-      city: fromDb.city || 'Chicago',
-      neighborhood: fromDb.neighborhood || null,
-      lat: fromDb.lat ?? 41.88,
-      lng: fromDb.lng ?? -87.63,
-      previewPhotoUrl: fromDb.bestFoodPhotoUrl || fromDb.fallbackPhotoUrl || null,
-      websiteUrl: fromDb.websiteUrl || null,
-      googleMapsUrl: fromDb.googleMapsUrl || null,
-      phone: fromDb.phone || null,
-      reservationUrl: fromDb.reservationUrl || fromDb.websiteUrl || null,
-    };
+    return _buildInfoFromDb(fromDb);
+  }
+  return null;
+}
+
+function _buildInfoFromDb(fromDb) {
+  return {
+    restaurantId: fromDb.restaurantId,
+    placeId: fromDb.placeId || null,
+    name: fromDb.name,
+    address: fromDb.address || '',
+    city: fromDb.city || 'Chicago',
+    neighborhood: fromDb.neighborhood || null,
+    lat: fromDb.lat ?? 41.88,
+    lng: fromDb.lng ?? -87.63,
+    googlePlaceId: fromDb.googlePlaceId || fromDb.placeId || null,
+    displayImageUrl: fromDb.displayImageUrl || fromDb.bestFoodPhotoUrl || fromDb.fallbackPhotoUrl || null,
+    displayImageSourceType: fromDb.displayImageSourceType || 'placeholder',
+    displayImageLastResolvedAt: fromDb.displayImageLastResolvedAt || null,
+    previewPhotoUrl: fromDb.displayImageUrl || fromDb.bestFoodPhotoUrl || fromDb.fallbackPhotoUrl || null,
+    websiteUrl: fromDb.websiteUrl || null,
+    googleMapsUrl: fromDb.googleMapsUrl || null,
+    phone: fromDb.phone || null,
+    reservationUrl: fromDb.reservationUrl || fromDb.websiteUrl || null,
+  };
+}
+
+async function getRestaurantInfo(restaurantId) {
+  // Try sync first (in-memory + static)
+  const sync = getRestaurantInfoSync(restaurantId);
+  if (sync) return sync;
+  // Fall back to async DB lookup
+  let fromDb = await db.findRestaurantById(restaurantId);
+  if (!fromDb && restaurantId && String(restaurantId).startsWith('ChIJ')) {
+    fromDb = await db.findRestaurantByPlaceId(restaurantId);
+  }
+  if (fromDb) {
+    // Cache in memory for subsequent sync lookups
+    if (!findRestaurantById(fromDb.restaurantId)) {
+      restaurants.push(fromDb);
+    }
+    return _buildInfoFromDb(fromDb);
   }
   return null;
 }
@@ -118,7 +152,26 @@ function findRestaurantByPlaceId(placeId) {
 }
 
 function findRestaurantById(id) {
-  return restaurants.find((r) => r.restaurantId === id);
+  const byId = restaurants.find((r) => r.restaurantId === id);
+  if (byId) return byId;
+  // Fall back to placeId lookup for Google Place IDs (ChIJ...)
+  if (id && String(id).startsWith('ChIJ')) {
+    return findRestaurantByPlaceId(id) ?? undefined;
+  }
+  return undefined;
+}
+
+// Async versions that check Supabase first, then fall back to in-memory
+async function findRestaurantByPlaceIdAsync(placeId) {
+  const fromDb = await db.findRestaurantByPlaceId(placeId);
+  if (fromDb) return fromDb;
+  return findRestaurantByPlaceId(placeId) ?? null;
+}
+
+async function findRestaurantByIdAsync(id) {
+  const fromDb = await db.findRestaurantById(id);
+  if (fromDb) return fromDb;
+  return findRestaurantById(id) ?? null;
 }
 
 const fs = require('fs');
@@ -128,6 +181,14 @@ const {
   buildEnrichmentQuery,
   logRestaurantImageResolution,
 } = require('./restaurantEnrichment');
+const {
+  CURATED_RESTAURANT_IMAGE_OVERRIDES,
+  clearRestaurantImageResolutionCache,
+  normalizeRestaurantName,
+  rankPlacePhotoCandidates,
+  resolveRestaurantImage,
+  selectBestPlacePhotoReference,
+} = require('./utils/resolveRestaurantImage');
 
 let loadedRestaurantEnrichment = {};
 try {
@@ -138,13 +199,29 @@ try {
   /* optional file */
 }
 
-function seedStaticRestaurantsIntoDb() {
+let seedRestaurantHintsById = {};
+try {
+  const seedRows = JSON.parse(
+    fs.readFileSync(path.join(__dirname, 'data', 'seedRestaurantsForEnrichment.json'), 'utf8'),
+  );
+  seedRestaurantHintsById = Array.isArray(seedRows)
+    ? Object.fromEntries(
+        seedRows
+          .filter((row) => row && typeof row.restaurantId === 'string' && row.restaurantId.trim())
+          .map((row) => [row.restaurantId, row]),
+      )
+    : {};
+} catch (_e) {
+  /* optional file */
+}
+
+async function seedStaticRestaurantsIntoDb() {
   for (const restaurantId of Object.keys(STATIC_RESTAURANTS)) {
     if (findRestaurantById(restaurantId)) continue;
     const stat = STATIC_RESTAURANTS[restaurantId];
     const enc = loadedRestaurantEnrichment[restaurantId] || {};
     const placeId = enc.placeId || enc.googlePlaceId || null;
-    restaurants.push({
+    const restaurant = {
       restaurantId,
       placeId,
       name: stat.name,
@@ -153,12 +230,21 @@ function seedStaticRestaurantsIntoDb() {
       neighborhood: stat.neighborhood || null,
       lat: stat.lat,
       lng: stat.lng,
+      googlePlaceId: placeId,
+      displayImageUrl: null,
+      displayImageSourceType: 'placeholder',
+      displayImageLastResolvedAt: null,
       websiteUrl: stat.websiteUrl,
       googleMapsUrl: stat.googleMapsUrl,
       phone: stat.phone,
       reservationUrl: stat.reservationUrl || stat.websiteUrl,
       createdAt: new Date().toISOString(),
-    });
+    };
+    restaurants.push(restaurant);
+    // Fire-and-forget upsert to Supabase (don't block startup)
+    db.insertRestaurant(restaurant).catch((err) =>
+      console.error('[seed] Failed to persist', restaurantId, err.message),
+    );
   }
 }
 
@@ -169,16 +255,18 @@ const lazyEnrichFailedIds = new Set();
 
 // --- Google Places helpers ---------------------------------------------------
 
-async function googlePlacesAutocomplete(query) {
+async function googlePlacesAutocomplete(query, lat, lng) {
   if (!GOOGLE_PLACES_API_KEY) return [];
 
   const url = 'https://maps.googleapis.com/maps/api/place/autocomplete/json';
+  const hasCoords = lat != null && lng != null && isFinite(lat) && isFinite(lng);
   const params = {
     input: query,
     key: GOOGLE_PLACES_API_KEY,
     types: 'establishment',
-    location: '37.7749,-122.4194',
-    radius: 50000,
+    ...(hasCoords
+      ? { location: `${lat},${lng}`, radius: 30000 }
+      : { location: '41.8781,-87.6298', radius: 50000 }),
   };
 
   let data;
@@ -204,7 +292,40 @@ async function googlePlacesAutocomplete(query) {
   if (predictions.length === 0) {
     console.log('[BiteRight] Google returned status=%s with 0 predictions. Try a different query (e.g. "pizza" or a real restaurant name).', data.status);
   }
-  return predictions;
+
+  // Filter to food/drink establishments only — exclude shopping, lodging, etc.
+  const FOOD_TYPES = new Set([
+    'restaurant', 'food', 'meal_delivery', 'meal_takeaway',
+    'cafe', 'bakery', 'bar', 'night_club',
+  ]);
+  const BLOCKED_TYPES = new Set([
+    'shopping_mall', 'department_store', 'clothing_store', 'shoe_store',
+    'electronics_store', 'furniture_store', 'hardware_store', 'home_goods_store',
+    'jewelry_store', 'pet_store', 'book_store', 'convenience_store',
+    'supermarket', 'grocery_or_supermarket', 'drugstore', 'pharmacy',
+    'hospital', 'doctor', 'dentist', 'veterinary_care',
+    'car_dealer', 'car_rental', 'car_repair', 'car_wash', 'gas_station',
+    'lodging', 'real_estate_agency', 'insurance_agency', 'bank', 'atm',
+    'gym', 'spa', 'beauty_salon', 'hair_care', 'laundry',
+    'school', 'university', 'library', 'church', 'mosque', 'synagogue',
+    'city_hall', 'courthouse', 'fire_station', 'police', 'post_office',
+    'parking', 'transit_station', 'bus_station', 'train_station', 'airport',
+    'travel_agency', 'movie_theater', 'amusement_park', 'stadium', 'zoo',
+    'storage', 'moving_company', 'plumber', 'electrician', 'painter',
+  ]);
+
+  const filtered = predictions.filter((p) => {
+    const types = p.types || [];
+    // If any type is explicitly food-related, keep it
+    if (types.some((t) => FOOD_TYPES.has(t))) return true;
+    // If any type is explicitly non-food, drop it
+    if (types.some((t) => BLOCKED_TYPES.has(t))) return false;
+    // For generic establishments with no specific type, reject —
+    // real restaurants almost always have a food type tag
+    return false;
+  });
+
+  return filtered;
 }
 
 async function googlePlaceDetails(placeId) {
@@ -214,7 +335,7 @@ async function googlePlaceDetails(placeId) {
   const params = {
     place_id: placeId,
     key: GOOGLE_PLACES_API_KEY,
-    fields: 'name,formatted_address,geometry,photos,website,url,international_phone_number',
+    fields: 'name,formatted_address,geometry,photos,website,url,international_phone_number,opening_hours,price_level',
   };
 
   const { data } = await axios.get(url, { params });
@@ -222,6 +343,22 @@ async function googlePlaceDetails(placeId) {
     return null;
   }
   return data.result;
+}
+
+function _mapPlaceResult(r) {
+  return {
+    placeId: r.place_id,
+    name: r.name || '',
+    address: r.vicinity || r.formatted_address || '',
+    lat: r.geometry?.location?.lat ?? null,
+    lng: r.geometry?.location?.lng ?? null,
+    rating: typeof r.rating === 'number' ? r.rating : null,
+    userRatingsTotal: typeof r.user_ratings_total === 'number' ? r.user_ratings_total : null,
+    priceLevel: typeof r.price_level === 'number' ? r.price_level : null,
+    types: Array.isArray(r.types) ? r.types : [],
+    photoRef: r.photos?.[0]?.photo_reference || null,
+    isOpenNow: r.opening_hours?.open_now ?? null,
+  };
 }
 
 async function googlePlacesNearbyRestaurants(lat, lng, radiusMeters, keyword) {
@@ -241,17 +378,106 @@ async function googlePlacesNearbyRestaurants(lat, lng, radiusMeters, keyword) {
     return [];
   }
   const list = Array.isArray(data.results) ? data.results : [];
-  return list.map((r) => ({
-    placeId: r.place_id,
-    name: r.name || '',
-    address: r.vicinity || r.formatted_address || '',
-    lat: r.geometry?.location?.lat ?? null,
-    lng: r.geometry?.location?.lng ?? null,
-    rating: typeof r.rating === 'number' ? r.rating : null,
-    priceLevel: typeof r.price_level === 'number' ? r.price_level : null,
-    types: Array.isArray(r.types) ? r.types : [],
-    photoRef: r.photos?.[0]?.photo_reference || null,
-  }));
+  const results = list.map(_mapPlaceResult);
+
+  // Fetch page 2 if available (doubles coverage from 20 → 40 results)
+  if (data.next_page_token) {
+    try {
+      // Google requires a short delay before using next_page_token
+      await new Promise((r) => setTimeout(r, 2000));
+      const { data: page2 } = await axios.get(url, {
+        params: { pagetoken: data.next_page_token, key: GOOGLE_PLACES_API_KEY },
+      });
+      if (page2.status === 'OK' && Array.isArray(page2.results)) {
+        results.push(...page2.results.map(_mapPlaceResult));
+      }
+    } catch (e) {
+      console.warn('[BiteRight] Nearby page 2 failed:', e.message);
+    }
+  }
+  return results;
+}
+
+/** Text Search — better for cuisine queries in smaller towns. */
+async function googlePlacesTextSearch(query, lat, lng, radiusMeters, opts = {}) {
+  if (!GOOGLE_PLACES_API_KEY) return [];
+  const url = 'https://maps.googleapis.com/maps/api/place/textsearch/json';
+  const params = {
+    query,
+    location: `${lat},${lng}`,
+    radius: Math.max(500, Math.min(50000, Math.round(radiusMeters))),
+    key: GOOGLE_PLACES_API_KEY,
+  };
+  // Only add type=restaurant when no specific search term — the type constraint
+  // can override the keyword and return generic popular restaurants instead.
+  if (!opts.skipTypeFilter) {
+    params.type = 'restaurant';
+  }
+  const { data } = await axios.get(url, { params });
+  if (data.status !== 'OK' && data.status !== 'ZERO_RESULTS') {
+    console.warn('[BiteRight] Text search status:', data.status, data.error_message || '');
+    return [];
+  }
+  const list = Array.isArray(data.results) ? data.results : [];
+  const results = list.map((r) => ({ ..._mapPlaceResult(r), address: r.formatted_address || r.vicinity || '' }));
+
+  // Fetch page 2 if available
+  if (data.next_page_token) {
+    try {
+      await new Promise((r) => setTimeout(r, 2000));
+      const { data: page2 } = await axios.get(url, {
+        params: { pagetoken: data.next_page_token, key: GOOGLE_PLACES_API_KEY },
+      });
+      if (page2.status === 'OK' && Array.isArray(page2.results)) {
+        results.push(...page2.results.map((r) => ({ ..._mapPlaceResult(r), address: r.formatted_address || r.vicinity || '' })));
+      }
+    } catch (e) {
+      console.warn('[BiteRight] Text search page 2 failed:', e.message);
+    }
+  }
+  return results;
+}
+
+/**
+ * Runs a "best [keyword]" text search to surface top-rated/popular places that
+ * the standard nearby+text combo might miss. Google ranks differently for
+ * "best sushi" vs "sushi restaurants".
+ */
+async function googlePlacesBestOfSearch(keyword, lat, lng, radiusMeters) {
+  if (!GOOGLE_PLACES_API_KEY || !keyword) return [];
+  const query = `best ${keyword}`;
+  const url = 'https://maps.googleapis.com/maps/api/place/textsearch/json';
+  const params = {
+    query,
+    location: `${lat},${lng}`,
+    radius: Math.max(500, Math.min(50000, Math.round(radiusMeters))),
+    key: GOOGLE_PLACES_API_KEY,
+  };
+  try {
+    const { data } = await axios.get(url, { params });
+    if (data.status !== 'OK' && data.status !== 'ZERO_RESULTS') return [];
+    const list = Array.isArray(data.results) ? data.results : [];
+    const results = list.map((r) => ({ ..._mapPlaceResult(r), address: r.formatted_address || r.vicinity || '' }));
+
+    // Fetch page 2 if available
+    if (data.next_page_token) {
+      try {
+        await new Promise((r) => setTimeout(r, 2000));
+        const { data: page2 } = await axios.get(url, {
+          params: { pagetoken: data.next_page_token, key: GOOGLE_PLACES_API_KEY },
+        });
+        if (page2.status === 'OK' && Array.isArray(page2.results)) {
+          results.push(...page2.results.map((r) => ({ ..._mapPlaceResult(r), address: r.formatted_address || r.vicinity || '' })));
+        }
+      } catch (e) {
+        console.warn('[BiteRight] best-of page 2 failed:', e.message);
+      }
+    }
+    return results;
+  } catch (e) {
+    console.warn('[BiteRight] best-of search failed:', e.message);
+    return [];
+  }
 }
 
 const FOOD_TYPE_ALLOWLIST = new Set([
@@ -264,6 +490,7 @@ const FOOD_TYPE_ALLOWLIST = new Set([
   'bar',
   'coffee_shop',
   'ice_cream_shop',
+  'dessert_shop',
 ]);
 
 const FOOD_TYPE_BLOCKLIST = new Set([
@@ -318,26 +545,34 @@ const CUISINE_TYPE_MAP = [
   { key: 'dessert_shop', label: 'Dessert' },
 ];
 
+// Comprehensive keyword map — kept in sync with src/utils/cuisineMatch.ts
 const CUISINE_NAME_KEYWORDS = [
-  { re: /\bitalian|pasta|trattoria\b/i, label: 'Italian' },
-  { re: /\bmexican|taco|taqueria|burrito\b/i, label: 'Mexican' },
-  { re: /\bchinese|dim\s*sum|szechuan|sichuan\b/i, label: 'Chinese' },
-  { re: /\bindian|curry\b/i, label: 'Indian' },
-  { re: /\bthai\b/i, label: 'Thai' },
-  { re: /\bjapanese|ramen|izakaya\b/i, label: 'Japanese' },
-  { re: /\bkorean|kimchi|korean bbq\b/i, label: 'Korean' },
-  { re: /\bmediterranean|greek|falafel\b/i, label: 'Mediterranean' },
-  { re: /\bpizza|pizzeria\b/i, label: 'Pizza' },
-  { re: /\bburger|hamburger\b/i, label: 'Burgers' },
-  { re: /\bsushi|omakase\b/i, label: 'Sushi' },
-  { re: /\bvegan\b/i, label: 'Vegan' },
-  { re: /\bvegetarian\b/i, label: 'Vegetarian' },
-  { re: /\bbrunch|breakfast\b/i, label: 'Brunch' },
-  { re: /\bseafood|oyster|fish\b/i, label: 'Seafood' },
-  { re: /\bbbq|barbecue|smokehouse\b/i, label: 'BBQ' },
-  { re: /\bbakery|boulangerie\b/i, label: 'Bakery' },
-  { re: /\bdessert|gelato|ice cream|boba|tea|juice\b/i, label: 'Dessert' },
-  { re: /\bcafe|coffee|espresso\b/i, label: 'Coffee' },
+  { re: /\b(?:italian|pizza|pasta|trattoria|osteria|ristorante|gelato|risotto|calzone|focaccia)\b/i, label: 'Italian' },
+  { re: /\b(?:mexican|taco|burrito|cantina|taqueria|enchilada|quesadilla|tamale|elote|churro)\b/i, label: 'Mexican' },
+  { re: /\b(?:chinese|dim sum|dumpling|wonton|szechuan|sichuan|cantonese|chow mein|kung pao|peking)\b/i, label: 'Chinese' },
+  { re: /\b(?:indian|curry|biryani|tandoor|chai|nihari|desi|punjabi|gujarati|masala|naan|dosa|tikka|samosa)\b/i, label: 'Indian' },
+  { re: /\b(?:japanese|sushi|ramen|izakaya|tempura|udon|soba|omakase|teriyaki|yakitori|tonkatsu|matcha)\b/i, label: 'Japanese' },
+  { re: /\b(?:thai|pad thai|tom yum|satay|som tum)\b/i, label: 'Thai' },
+  { re: /\b(?:korean|kimchi|korean bbq|bibimbap|bulgogi|japchae|tteokbokki|kbbq)\b/i, label: 'Korean' },
+  { re: /\b(?:mediterranean|hummus|pita|tahini)\b/i, label: 'Mediterranean' },
+  { re: /\b(?:greek|gyro|souvlaki|moussaka|spanakopita|baklava)\b/i, label: 'Greek' },
+  { re: /\b(?:french|bistro|brasserie|crepe|patisserie|croissant|boulangerie)\b/i, label: 'French' },
+  { re: /\b(?:middle eastern|lebanese|turkish|persian|shawarma|kebab|falafel|hookah|meze)\b/i, label: 'Middle Eastern' },
+  { re: /\b(?:american|diner|grill|wings|cornbread)\b/i, label: 'American' },
+  { re: /\b(?:asian|pan[- ]?asian|fusion)\b/i, label: 'Asian' },
+  { re: /\b(?:steakhouse|steak house|chophouse|prime rib|wagyu)\b/i, label: 'Steakhouse' },
+  { re: /\b(?:seafood|oyster|fish|lobster|crab|shrimp|clam|poke)\b/i, label: 'Seafood' },
+  { re: /\b(?:sushi|omakase|sashimi|nigiri|maki)\b/i, label: 'Sushi' },
+  { re: /\b(?:pizza|pizzeria|deep dish|neapolitan)\b/i, label: 'Pizza' },
+  { re: /\b(?:burger|hamburger|smash burger)\b/i, label: 'Burgers' },
+  { re: /\b(?:bbq|barbecue|smokehouse|brisket|ribs|pulled pork|smoked)\b/i, label: 'BBQ' },
+  { re: /\b(?:dessert|gelato|ice cream|boba|frozen yogurt|cupcake|donut|sweets|cobbler|cookie|milkshake|pastry|cake|pie|candy|fudge|brownie|macaron)\b/i, label: 'Dessert' },
+  { re: /\b(?:breakfast|pancake|waffle|omelette|eggs benedict)\b/i, label: 'Breakfast' },
+  { re: /\b(?:brunch|mimosa|eggs benedict|benedict)\b/i, label: 'Brunch' },
+  { re: /\b(?:vegan|plant[- ]?based)\b/i, label: 'Vegan' },
+  { re: /\b(?:vegetarian|veggie)\b/i, label: 'Vegetarian' },
+  { re: /\b(?:bakery|boulangerie|bread|pastry|croissant|scone)\b/i, label: 'Bakery' },
+  { re: /\b(?:coffee|cafe|espresso|roast|latte|cappuccino|barista)\b/i, label: 'Coffee' },
 ];
 
 function mapFoodCategory(types, name) {
@@ -382,7 +617,139 @@ function deriveCuisinesFromPlace(types, name, cuisineHint) {
 
   if (labels.has('Bakery')) labels.add('Dessert');
 
+  // Enrich with taxonomy parent groups (e.g. Pizza → Italian, BBQ → American)
+  const taxonomyGroups = getCuisineGroups(types, name, cuisineHint);
+  for (const g of taxonomyGroups) labels.add(g);
+
   return Array.from(labels);
+}
+
+// ── Recommended dishes by cuisine (popular picks for Tonight cards) ──────────
+const CUISINE_DISHES = {
+  Japanese: [
+    { name: 'Omakase Nigiri', price: null, description: 'Chef\'s choice sushi selection' },
+    { name: 'Spicy Tuna Roll', price: null, description: 'Fresh tuna with spicy mayo' },
+    { name: 'Wagyu Tataki', price: null, description: 'Seared wagyu with ponzu' },
+  ],
+  Sushi: [
+    { name: 'Omakase Nigiri', price: null, description: 'Chef\'s choice sushi selection' },
+    { name: 'Dragon Roll', price: null, description: 'Eel and avocado with unagi sauce' },
+    { name: 'Sashimi Platter', price: null, description: 'Assorted fresh-cut fish' },
+  ],
+  Italian: [
+    { name: 'Cacio e Pepe', price: null, description: 'Roman pasta with pecorino & black pepper' },
+    { name: 'Burrata', price: null, description: 'Creamy burrata with heirloom tomatoes' },
+    { name: 'Osso Buco', price: null, description: 'Braised veal shank with gremolata' },
+  ],
+  Mexican: [
+    { name: 'Al Pastor Tacos', price: null, description: 'Spit-roasted pork with pineapple' },
+    { name: 'Guacamole Fresco', price: null, description: 'Tableside-prepared guacamole' },
+    { name: 'Birria Quesadilla', price: null, description: 'Braised beef with consommé' },
+  ],
+  Chinese: [
+    { name: 'Xiao Long Bao', price: null, description: 'Soup dumplings with pork filling' },
+    { name: 'Mapo Tofu', price: null, description: 'Silken tofu in spicy chili sauce' },
+    { name: 'Peking Duck', price: null, description: 'Roasted duck with pancakes & hoisin' },
+  ],
+  Indian: [
+    { name: 'Butter Chicken', price: null, description: 'Tandoori chicken in tomato cream' },
+    { name: 'Lamb Biryani', price: null, description: 'Fragrant basmati rice with spiced lamb' },
+    { name: 'Garlic Naan', price: null, description: 'Fresh-baked garlic flatbread' },
+  ],
+  Thai: [
+    { name: 'Pad Thai', price: null, description: 'Stir-fried rice noodles with shrimp' },
+    { name: 'Green Curry', price: null, description: 'Coconut curry with Thai basil' },
+    { name: 'Tom Yum Soup', price: null, description: 'Hot & sour lemongrass broth' },
+  ],
+  Korean: [
+    { name: 'Korean BBQ Platter', price: null, description: 'Bulgogi and galbi with banchan' },
+    { name: 'Bibimbap', price: null, description: 'Rice bowl with veggies and gochujang' },
+    { name: 'Kimchi Jjigae', price: null, description: 'Spicy fermented cabbage stew' },
+  ],
+  Mediterranean: [
+    { name: 'Lamb Chops', price: null, description: 'Grilled with rosemary and lemon' },
+    { name: 'Hummus Platter', price: null, description: 'Classic hummus with warm pita' },
+    { name: 'Grilled Octopus', price: null, description: 'Charred tentacles with olive oil' },
+  ],
+  American: [
+    { name: 'Smash Burger', price: null, description: 'Double-stacked with American cheese' },
+    { name: 'Mac & Cheese', price: null, description: 'Three-cheese blend, baked golden' },
+    { name: 'BBQ Ribs', price: null, description: 'Slow-smoked with house dry rub' },
+  ],
+  Steakhouse: [
+    { name: 'Dry-Aged Ribeye', price: null, description: '28-day aged, bone-in' },
+    { name: 'Wedge Salad', price: null, description: 'Iceberg with blue cheese & bacon' },
+    { name: 'Creamed Spinach', price: null, description: 'Classic steakhouse side' },
+  ],
+  Seafood: [
+    { name: 'Lobster Roll', price: null, description: 'Butter-poached lobster on brioche' },
+    { name: 'Oysters on the Half Shell', price: null, description: 'Fresh selection with mignonette' },
+    { name: 'Pan-Seared Salmon', price: null, description: 'Crispy skin with lemon butter' },
+  ],
+  French: [
+    { name: 'Steak Frites', price: null, description: 'Hanger steak with herb butter & fries' },
+    { name: 'French Onion Soup', price: null, description: 'Caramelized onion with gruyère' },
+    { name: 'Crème Brûlée', price: null, description: 'Classic vanilla custard, torched' },
+  ],
+  Pizza: [
+    { name: 'Margherita', price: null, description: 'San Marzano, fresh mozzarella, basil' },
+    { name: 'Pepperoni & Hot Honey', price: null, description: 'Crispy pepperoni with chili honey' },
+    { name: 'Burrata Pizza', price: null, description: 'Arugula, prosciutto, burrata' },
+  ],
+  BBQ: [
+    { name: 'Brisket Platter', price: null, description: '14-hour smoked, sliced to order' },
+    { name: 'Pulled Pork Sandwich', price: null, description: 'Slow-smoked with slaw & pickles' },
+    { name: 'Burnt Ends', price: null, description: 'Caramelized point-cut brisket bites' },
+  ],
+  Burgers: [
+    { name: 'Classic Smash Burger', price: null, description: 'Double patty, cheese, pickles, sauce' },
+    { name: 'Truffle Burger', price: null, description: 'Truffle aioli, gruyère, caramelized onion' },
+    { name: 'Crispy Chicken Sandwich', price: null, description: 'Buttermilk-fried with slaw' },
+  ],
+};
+function getRecommendedDishes(cuisine, restaurantName) {
+  const c = (cuisine || '').trim();
+  // Try exact match first, then partial match on cuisine
+  let dishes = CUISINE_DISHES[c];
+  if (!dishes) {
+    const lower = c.toLowerCase();
+    for (const [key, val] of Object.entries(CUISINE_DISHES)) {
+      if (key.toLowerCase() === lower || lower.includes(key.toLowerCase())) {
+        dishes = val;
+        break;
+      }
+    }
+  }
+  // Try inferring from restaurant name if no cuisine match
+  if (!dishes && restaurantName) {
+    const nameLower = restaurantName.toLowerCase();
+    const nameHints = [
+      [/sushi|omakase/i, 'Sushi'],
+      [/pizza|pizzeria/i, 'Pizza'],
+      [/burger/i, 'Burgers'],
+      [/taco|taqueria|burrito/i, 'Mexican'],
+      [/steak/i, 'Steakhouse'],
+      [/bbq|barbecue|smokehouse/i, 'BBQ'],
+      [/ramen|noodle|udon/i, 'Japanese'],
+      [/thai/i, 'Thai'],
+      [/pho|vietnamese/i, 'Thai'],
+      [/curry|tandoori|masala/i, 'Indian'],
+      [/dim sum|dumpling|wok/i, 'Chinese'],
+      [/seafood|oyster|lobster|crab|fish/i, 'Seafood'],
+      [/pasta|trattoria|ristorante/i, 'Italian'],
+      [/bistro|brasserie|crêpe/i, 'French'],
+      [/mediterranean|falafel|hummus|kebab/i, 'Mediterranean'],
+      [/korean|bulgogi|bibimbap/i, 'Korean'],
+    ];
+    for (const [regex, key] of nameHints) {
+      if (regex.test(nameLower) && CUISINE_DISHES[key]) {
+        dishes = CUISINE_DISHES[key];
+        break;
+      }
+    }
+  }
+  // Return empty array instead of generic placeholders — the client handles this gracefully
+  return (dishes || []).slice(0, 3);
 }
 
 /** Maps Discover cuisine chip labels to Google Nearby Search keyword hints. */
@@ -397,7 +764,12 @@ function cuisineChipToNearbyKeyword(chip) {
     Japanese: 'japanese',
     Korean: 'korean',
     Mediterranean: 'mediterranean',
+    Greek: 'greek',
+    French: 'french',
+    'Middle Eastern': 'middle eastern',
     American: 'american',
+    Asian: 'asian',
+    Steakhouse: 'steakhouse',
     Pizza: 'pizza',
     Burgers: 'burger',
     Sushi: 'sushi',
@@ -407,27 +779,25 @@ function cuisineChipToNearbyKeyword(chip) {
     Vegetarian: 'vegetarian',
     Vegan: 'vegan',
     Brunch: 'brunch',
+    Breakfast: 'breakfast',
     Seafood: 'seafood',
     BBQ: 'barbecue',
   };
   return table[c] || c.toLowerCase() || '';
 }
 
-function restaurantMatchesCuisineFilter(derivedLabels, selectedChip) {
+function restaurantMatchesCuisineFilter(derivedLabels, selectedChip, restaurantName, cuisineHint) {
   if (!selectedChip || !selectedChip.trim()) return true;
-  const chip = selectedChip.trim();
-  const related = {
-    Italian: ['Italian', 'Pizza'],
-    Japanese: ['Japanese', 'Sushi'],
-    American: ['American', 'Burgers', 'BBQ', 'Brunch'],
-    Dessert: ['Dessert', 'Bakery', 'Coffee'],
-    Vegan: ['Vegan', 'Vegetarian'],
-    Vegetarian: ['Vegetarian', 'Vegan'],
-  };
-  const want = new Set([chip, ...(related[chip] || [])]);
-  return derivedLabels.some((l) => want.has(l));
+  // Delegate to taxonomy-driven matching (handles parent/child rollup + keyword fallback)
+  return matchesCuisineGroup(derivedLabels, selectedChip, restaurantName, cuisineHint);
 }
 
+/**
+ * Pick the best food-like photo from Google Places photos array.
+ * Uses aspect ratio as a heuristic: portrait/square photos (ratio ≤ 1.3) are more
+ * likely to be food/dish shots; wide landscape (ratio > 1.5) are typically exterior/panorama.
+ * Checks up to 5 photos and returns the best photo_reference.
+ */
 // We store photo_reference and a relative proxy URL so the frontend never sees the Google API key.
 function buildPhotoProxyUrl(restaurantId) {
   return `/api/restaurants/${restaurantId}/photo`;
@@ -444,11 +814,10 @@ function toAbsoluteImageUrl(url) {
 
 /** Source of resolved image for dev logging. */
 const IMAGE_SOURCE = {
-  USER_PHOTO: 'USER_PHOTO',
-  LOG_PHOTO: 'LOG_PHOTO',
-  PLACES: 'PLACES',
-  WEBSITE: 'WEBSITE',
-  PLACEHOLDER: 'PLACEHOLDER',
+  OVERRIDE: 'override',
+  USER: 'user',
+  GOOGLE: 'google',
+  PLACEHOLDER: 'placeholder',
 };
 
 function isValidImageUrl(url) {
@@ -463,73 +832,6 @@ function isValidImageUrl(url) {
   );
 }
 
-const websiteImageCache = {};
-
-/**
- * Try to resolve an image from a restaurant's official website.
- * Looks for og:image / twitter:image meta tags and returns an absolute URL
- * on the same domain as the website.
- */
-async function resolveWebsiteImage(websiteUrl) {
-  if (!websiteUrl || typeof websiteUrl !== 'string') return null;
-  const key = websiteUrl.trim().toLowerCase();
-  if (websiteImageCache[key] !== undefined) {
-    return websiteImageCache[key];
-  }
-
-  let base;
-  try {
-    base = new URL(websiteUrl);
-  } catch {
-    websiteImageCache[key] = null;
-    return null;
-  }
-
-  try {
-    const res = await axios.get(websiteUrl, { timeout: 7000 });
-    const html = typeof res.data === 'string' ? res.data : String(res.data || '');
-
-    const candidates = [];
-    const metaTagRegex = /<meta[^>]+(property|name)=['\"]([^'\"]+)['\"][^>]*>/gi;
-    let match;
-    while ((match = metaTagRegex.exec(html))) {
-      const propName = (match[2] || '').toLowerCase();
-      if (
-        propName === 'og:image' ||
-        propName === 'og:image:secure_url' ||
-        propName === 'twitter:image'
-      ) {
-        const tag = match[0];
-        const contentMatch = tag.match(/content=['\"]([^'\"]+)['\"]/i);
-        if (contentMatch && contentMatch[1]) {
-          candidates.push(contentMatch[1]);
-        }
-      }
-    }
-
-    for (const raw of candidates) {
-      try {
-        const url = new URL(raw, base.href);
-        // Only accept images hosted on the same registrable domain (ignore random CDNs/third-parties)
-        const baseHost = base.hostname.replace(/^www\./, '');
-        const candidateHost = url.hostname.replace(/^www\./, '');
-        if (baseHost !== candidateHost) continue;
-        if (isValidImageUrl(url.href)) {
-          websiteImageCache[key] = url.href;
-          return url.href;
-        }
-      } catch {
-        // ignore bad candidate
-      }
-    }
-  } catch (err) {
-    console.warn('[BiteRight] Website image fetch failed for %s: %s', websiteUrl, err.message);
-  }
-
-  websiteImageCache[key] = null;
-  return null;
-}
-
 function logImageResolve(restaurantId, extra) {
   if (process.env.NODE_ENV === 'production' && !process.env.BITERIGHT_LOG_IMAGES) return;
   const row = findRestaurantById(restaurantId);
@@ -537,8 +839,8 @@ function logImageResolve(restaurantId, extra) {
   logRestaurantImageResolution({
     internalId: restaurantId,
     restaurantName: row?.name || stat?.name || restaurantId,
-    googlePlaceId: row?.placeId || extra?.effectivePlaceId || null,
-    googlePlaceIdFound: !!(row?.placeId || extra?.effectivePlaceId),
+    googlePlaceId: row?.googlePlaceId || row?.placeId || extra?.effectivePlaceId || null,
+    googlePlaceIdFound: !!(row?.googlePlaceId || row?.placeId || extra?.effectivePlaceId),
     ...extra,
   });
 }
@@ -549,21 +851,29 @@ function logImageResolve(restaurantId, extra) {
 async function lazyEnrichPlaceId(restaurantId) {
   if (!GOOGLE_PLACES_API_KEY || lazyEnrichFailedIds.has(restaurantId)) return null;
   const row = findRestaurantById(restaurantId);
-  if (!row || row.placeId) return row?.placeId || null;
+  if (!row || row.googlePlaceId || row.placeId) return row?.googlePlaceId || row?.placeId || null;
   const stat = STATIC_RESTAURANTS[restaurantId];
-  const query = stat
+  const hint = seedRestaurantHintsById[restaurantId] || stat || row;
+  const query = hint
     ? buildEnrichmentQuery({
-        name: stat.name,
-        neighborhood: stat.neighborhood,
-        city: stat.city,
-        address: stat.address,
+        name: hint.name,
+        neighborhood: hint.neighborhood,
+        city: hint.city,
+        state: hint.state,
+        address: hint.address,
       })
     : `${row.name || ''} ${row.address || ''}`.trim();
   if (!query) {
     lazyEnrichFailedIds.add(restaurantId);
     return null;
   }
-  const pid = await googleFindPlaceFromText(axios, GOOGLE_PLACES_API_KEY, query, row.lat, row.lng);
+  const pid = await googleFindPlaceFromText(
+    axios,
+    GOOGLE_PLACES_API_KEY,
+    query,
+    hint?.lat ?? row.lat,
+    hint?.lng ?? row.lng,
+  );
   if (!pid) {
     lazyEnrichFailedIds.add(restaurantId);
     logImageResolve(restaurantId, {
@@ -574,139 +884,88 @@ async function lazyEnrichPlaceId(restaurantId) {
     return null;
   }
   row.placeId = pid;
-  const details = await googlePlaceDetails(pid);
-  const photoRefs = details?.photos?.slice(0, 10)?.map((p) => p.photo_reference).filter(Boolean) || [];
-  if (photoRefs.length > 0) {
-    row.bestFoodPhotoRef = photoRefs[0];
-    row.bestFoodPhotoUrl = buildPhotoProxyUrl(restaurantId);
-    row.bestFoodPhotoUpdatedAt = new Date().toISOString();
-  }
+  row.googlePlaceId = pid;
   return pid;
+}
+
+function syncRestaurantDisplayImage(row, resolved) {
+  if (!row || !resolved) return;
+  row.googlePlaceId = resolved.googlePlaceId || row.googlePlaceId || row.placeId || null;
+  row.placeId = row.placeId || row.googlePlaceId || null;
+  row.displayImageSourceType = resolved.displayImageSourceType || 'placeholder';
+  row.displayImageLastResolvedAt =
+    resolved.displayImageLastResolvedAt || new Date().toISOString();
+  row.displayImagePhotoReference = resolved.photoReference || null;
+  if (resolved.displayImageUrl && resolved.displayImageSourceType === IMAGE_SOURCE.GOOGLE) {
+    row.displayImageUrl = buildPhotoProxyUrl(row.restaurantId);
+  } else if (resolved.displayImageUrl) {
+    row.displayImageUrl = resolved.displayImageUrl;
+  } else {
+    row.displayImageUrl = null;
+  }
 }
 
 /**
  * Resolve the image URL for a restaurant card. Used by Feed, Discover, Tonight, and logs.
  * Priority:
- * 1) User-uploaded photo (logPreviewPhotoUrl)
- * 2) First stored log photo for that restaurant
- * 3) Google Places photo (cached proxy URL)
- * 4) Lazy enrich → Google Places photo (Find Place + Details)
- * 5) Google Places Details when placeId already known
- * 6) Discover nearby fallbackPhoto proxy
- * 7) Official website hero (same-domain og:image only)
- * 8) Neutral placeholder — no cuisine stock photos
- * @returns {Promise<{ url: string; source: string }>}
+ * 1) Curated exact override
+ * 2) User-uploaded/logged photo
+ * 3) Cached resolved display image
+ * 4) Google Places photo via googlePlaceId
+ * 5) Placeholder
+ * @returns {Promise<{ url: string | null; source: string; resolved: any }>}
  */
 async function resolveRestaurantCardImageWithSource(restaurantId, placeId, logPreviewPhotoUrl) {
   const staticInfo = STATIC_RESTAURANTS[restaurantId];
-
-  if (isValidImageUrl(logPreviewPhotoUrl)) {
-    logImageResolve(restaurantId, {
-      chosenImageSourceType: 'USER_PHOTO',
-      placeholderUsed: false,
-      effectivePlaceId: placeId || findRestaurantById(restaurantId)?.placeId,
-    });
-    return { url: logPreviewPhotoUrl.trim(), source: IMAGE_SOURCE.USER_PHOTO };
-  }
-  const logForRestaurant = logs.find((l) => l.restaurantId === restaurantId);
-  const firstLogPhoto = Array.isArray(logForRestaurant?.photos) && logForRestaurant.photos.length > 0
-    ? logForRestaurant.photos[0]
-    : undefined;
-  if (isValidImageUrl(firstLogPhoto)) {
-    logImageResolve(restaurantId, {
-      chosenImageSourceType: 'LOG_PHOTO',
-      placeholderUsed: false,
-      effectivePlaceId: placeId || findRestaurantById(restaurantId)?.placeId,
-    });
-    return { url: firstLogPhoto.trim(), source: IMAGE_SOURCE.LOG_PHOTO };
-  }
-
   const fromDb = findRestaurantById(restaurantId);
-  let effectivePlaceId = placeId || fromDb?.placeId || null;
-
-  if (isValidImageUrl(fromDb?.bestFoodPhotoUrl)) {
-    logImageResolve(restaurantId, {
-      chosenImageSourceType: 'PLACES',
-      placeholderUsed: false,
-      effectivePlaceId,
-    });
-    return { url: fromDb.bestFoodPhotoUrl, source: IMAGE_SOURCE.PLACES };
-  }
-
-  if (!effectivePlaceId && fromDb && GOOGLE_PLACES_API_KEY) {
+  let effectivePlaceId = placeId || fromDb?.googlePlaceId || fromDb?.placeId || null;
+  if (!effectivePlaceId) {
     effectivePlaceId = await lazyEnrichPlaceId(restaurantId);
   }
 
-  if (isValidImageUrl(fromDb?.bestFoodPhotoUrl)) {
-    logImageResolve(restaurantId, {
-      chosenImageSourceType: 'PLACES',
-      placeholderUsed: false,
-      effectivePlaceId: effectivePlaceId || fromDb?.placeId,
-    });
-    return { url: fromDb.bestFoodPhotoUrl, source: IMAGE_SOURCE.PLACES };
-  }
+  const resolved = await resolveRestaurantImage(
+    {
+      restaurantId,
+      id: restaurantId,
+      name: fromDb?.name || staticInfo?.name || restaurantId,
+      googlePlaceId: effectivePlaceId,
+      displayImageUrl: fromDb?.displayImageUrl || null,
+      displayImageSourceType: fromDb?.displayImageSourceType || null,
+      displayImageLastResolvedAt: fromDb?.displayImageLastResolvedAt || null,
+    },
+    {
+      axios,
+      apiKey: GOOGLE_PLACES_API_KEY,
+      cacheKey: restaurantId,
+      userUploadedPhotoUrl: logPreviewPhotoUrl,
+      buildGooglePhotoUrl: (_photoReference, restaurant) =>
+        buildPhotoProxyUrl(restaurant.restaurantId || restaurant.id || restaurantId),
+    },
+  );
 
-  if (effectivePlaceId && GOOGLE_PLACES_API_KEY) {
-    const details = await googlePlaceDetails(effectivePlaceId);
-    const photoRefs = details?.photos?.slice(0, 10)?.map((p) => p.photo_reference).filter(Boolean) || [];
-    if (photoRefs.length > 0) {
-      const chosenRef = photoRefs[0];
-      if (fromDb) {
-        fromDb.bestFoodPhotoRef = chosenRef;
-        fromDb.bestFoodPhotoUrl = buildPhotoProxyUrl(restaurantId);
-        fromDb.bestFoodPhotoUpdatedAt = new Date().toISOString();
-      }
-      const url = fromDb?.bestFoodPhotoUrl || buildPhotoProxyUrl(restaurantId);
-      if (isValidImageUrl(url)) {
-        logImageResolve(restaurantId, {
-          chosenImageSourceType: 'PLACES',
-          placeholderUsed: false,
-          effectivePlaceId,
-        });
-        return { url, source: IMAGE_SOURCE.PLACES };
-      }
-    }
-  }
-
-  if (isValidImageUrl(fromDb?.fallbackPhotoUrl)) {
-    logImageResolve(restaurantId, {
-      chosenImageSourceType: 'PLACES',
-      placeholderUsed: false,
-      effectivePlaceId,
-    });
-    return { url: fromDb.fallbackPhotoUrl, source: IMAGE_SOURCE.PLACES };
-  }
-  if (fromDb?.fallbackPhotoRef && !fromDb.fallbackPhotoUrl) {
-    fromDb.fallbackPhotoUrl = buildPhotoProxyUrl(restaurantId);
-    if (isValidImageUrl(fromDb.fallbackPhotoUrl)) {
-      logImageResolve(restaurantId, {
-        chosenImageSourceType: 'PLACES',
-        placeholderUsed: false,
-        effectivePlaceId,
-      });
-      return { url: fromDb.fallbackPhotoUrl, source: IMAGE_SOURCE.PLACES };
-    }
-  }
-
-  const websiteUrl = fromDb?.websiteUrl || staticInfo?.websiteUrl;
-  if (websiteUrl) {
-    const siteImage = await resolveWebsiteImage(websiteUrl);
-    if (isValidImageUrl(siteImage)) {
-      logImageResolve(restaurantId, {
-        chosenImageSourceType: 'WEBSITE',
-        placeholderUsed: false,
-        effectivePlaceId,
-      });
-      return { url: siteImage, source: IMAGE_SOURCE.WEBSITE };
-    }
+  if (fromDb) {
+    syncRestaurantDisplayImage(fromDb, resolved);
   }
 
   logImageResolve(restaurantId, {
-    chosenImageSourceType: 'PLACEHOLDER',
-    placeholderUsed: true,
+    chosenImageSourceType: resolved.displayImageSourceType,
+    finalChosenImageUrl: resolved.displayImageUrl,
+    placeholderUsed: resolved.placeholderUsed,
     effectivePlaceId,
+    curatedOverrideMatched: !!(
+      CURATED_RESTAURANT_IMAGE_OVERRIDES[restaurantId] ||
+      CURATED_RESTAURANT_IMAGE_OVERRIDES[
+        normalizeRestaurantName(fromDb?.name || staticInfo?.name || restaurantId)
+      ]
+    ),
+    googleBlockedByOverride: !!resolved.blockedGoogleFallback,
   });
-  return { url: NEUTRAL_PLACEHOLDER_URL, source: IMAGE_SOURCE.PLACEHOLDER };
+
+  return {
+    url: resolved.displayImageUrl || null,
+    source: resolved.displayImageSourceType,
+    resolved,
+  };
 }
 
 /** Resolve image URL only (backward compatible). */
@@ -732,8 +991,11 @@ app.get('/api/restaurants/autocomplete', async (req, res) => {
     return res.json([]);
   }
 
+  const lat = req.query.lat != null ? parseFloat(req.query.lat) : undefined;
+  const lng = req.query.lng != null ? parseFloat(req.query.lng) : undefined;
+
   try {
-    const predictions = await googlePlacesAutocomplete(query);
+    const predictions = await googlePlacesAutocomplete(query, lat, lng);
     const simplified = predictions.map((p) => ({
       placeId: p.place_id,
       name: (p.structured_formatting && p.structured_formatting.main_text) || p.description || '',
@@ -758,7 +1020,36 @@ app.post('/api/restaurants/select', async (req, res) => {
   }
 
   try {
-    let restaurant = findRestaurantByPlaceId(placeId);
+    let restaurant = await findRestaurantByPlaceIdAsync(placeId);
+
+    // Re-resolve image if existing restaurant has none (e.g. was created before Google key was set)
+    if (restaurant && !restaurant.displayImageUrl && GOOGLE_PLACES_API_KEY) {
+      try {
+        const details = await googlePlaceDetails(placeId);
+        if (details) {
+          const photoRef = selectBestPlacePhotoReference(details.photos);
+          if (photoRef) {
+            const now = new Date().toISOString();
+            restaurant.displayImageUrl = buildPhotoProxyUrl(restaurant.restaurantId);
+            restaurant.displayImageSourceType = IMAGE_SOURCE.GOOGLE;
+            restaurant.displayImageLastResolvedAt = now;
+            restaurant.displayImagePhotoReference = photoRef;
+            await db.updateRestaurant(restaurant.restaurantId, {
+              displayImageUrl: restaurant.displayImageUrl,
+              displayImageSourceType: restaurant.displayImageSourceType,
+              displayImageLastResolvedAt: now,
+              displayImagePhotoReference: photoRef,
+            }).catch(() => {});
+            // Clear stale caches so subsequent requests see the new image
+            clearRestaurantImageResolutionCache(restaurant.restaurantId);
+            lazyEnrichFailedIds.delete(restaurant.restaurantId);
+            console.log('[BiteRight] Re-resolved image for', restaurant.name);
+          }
+        }
+      } catch (e) {
+        console.error('[BiteRight] Re-resolve image failed', e.message);
+      }
+    }
 
     if (!restaurant) {
       const details = await googlePlaceDetails(placeId);
@@ -768,40 +1059,58 @@ app.post('/api/restaurants/select', async (req, res) => {
 
       // rest_1..rest_5 are reserved for STATIC_RESTAURANTS (Lou Malnati's, etc.). Google-selected places start at rest_6.
       const baseId = `rest_${6 + restaurants.length}`;
-      const photoRef = details.photos?.[0]?.photo_reference;
+      const photoRef = selectBestPlacePhotoReference(details.photos);
       const now = new Date().toISOString();
 
       const websiteUrl = details.website || undefined;
       restaurant = {
         restaurantId: baseId,
         placeId,
+        googlePlaceId: placeId,
         name: details.name,
         address: details.formatted_address,
         lat: details.geometry?.location?.lat ?? 0,
         lng: details.geometry?.location?.lng ?? 0,
+        _types: details.types || [],
         websiteUrl,
         googleMapsUrl: details.url || undefined,
         phone: details.international_phone_number || undefined,
         reservationUrl: websiteUrl,
-        fallbackPhotoRef: photoRef,
-        fallbackPhotoUrl: photoRef ? buildPhotoProxyUrl(baseId) : undefined,
-        bestFoodPhotoRef: photoRef,
-        bestFoodPhotoUrl: photoRef ? buildPhotoProxyUrl(baseId) : undefined,
-        bestFoodPhotoUpdatedAt: photoRef ? now : undefined,
+        displayImageUrl: photoRef ? buildPhotoProxyUrl(baseId) : null,
+        displayImageSourceType: photoRef ? IMAGE_SOURCE.GOOGLE : IMAGE_SOURCE.PLACEHOLDER,
+        displayImageLastResolvedAt: now,
+        displayImagePhotoReference: photoRef || null,
         createdAt: now,
       };
 
+      // Persist to Supabase + in-memory
+      await db.insertRestaurant(restaurant);
       restaurants.push(restaurant);
     }
+
+    // Derive cuisine from Google types + name
+    const types = restaurant._types || [];
+    const cuisines = deriveCuisinesFromPlace(types, restaurant.name, '');
+    const cuisine = cuisines.length > 0 ? cuisines.join(' · ') : null;
+
+    // Extract neighborhood from address (first component before city/state)
+    const addressParts = (restaurant.address || '').split(',').map((s) => s.trim());
+    const neighborhood = addressParts.length >= 3 ? addressParts[addressParts.length - 3] : null;
 
     res.json({
       restaurantId: restaurant.restaurantId,
       placeId: restaurant.placeId,
+      googlePlaceId: restaurant.googlePlaceId || restaurant.placeId || null,
       name: restaurant.name,
       address: restaurant.address,
       lat: restaurant.lat,
       lng: restaurant.lng,
-      fallbackPhotoUrl: restaurant.fallbackPhotoUrl,
+      cuisine,
+      neighborhood,
+      displayImageUrl: restaurant.displayImageUrl || null,
+      displayImageSourceType: restaurant.displayImageSourceType || IMAGE_SOURCE.PLACEHOLDER,
+      displayImageLastResolvedAt: restaurant.displayImageLastResolvedAt || null,
+      fallbackPhotoUrl: restaurant.displayImageUrl || null,
     });
   } catch (err) {
     console.error('Select restaurant error', err.message);
@@ -817,7 +1126,7 @@ app.post('/api/logs', async (req, res) => {
     return res.status(400).json({ error: 'restaurantId and numeric rating are required' });
   }
 
-  const info = getRestaurantInfo(restaurantId);
+  const info = await getRestaurantInfo(restaurantId);
   if (!info) {
     return res.status(404).json({ error: 'Restaurant not found' });
   }
@@ -829,7 +1138,7 @@ app.post('/api/logs', async (req, res) => {
     placeId,
     logPreviewPhotoUrl,
   );
-  const previewPhotoUrl = (resolvedUrl && resolvedUrl.trim()) ? resolvedUrl.trim() : NEUTRAL_PLACEHOLDER_URL;
+  const previewPhotoUrl = resolvedUrl && resolvedUrl.trim() ? resolvedUrl.trim() : null;
   const previewPhotoUrlAbsolute = toAbsoluteImageUrl(previewPhotoUrl);
 
   if (process.env.NODE_ENV !== 'production') {
@@ -846,10 +1155,12 @@ app.post('/api/logs', async (req, res) => {
     rating,
     notes,
     photos,
-    previewPhotoUrl: previewPhotoUrlAbsolute,
+    previewPhotoUrl: previewPhotoUrlAbsolute || null,
     createdAt,
   };
 
+  // Persist to Supabase + in-memory
+  await db.insertLog(log);
   logs.push(log);
 
   res.json({
@@ -861,35 +1172,81 @@ app.post('/api/logs', async (req, res) => {
     lng: info.lng ?? null,
     rating,
     notes,
-    previewPhotoUrl: previewPhotoUrlAbsolute,
+    previewPhotoUrl: previewPhotoUrlAbsolute || null,
     createdAt,
   });
 });
 
 // 4) Restaurant detail (for Reserve and detail view)
-app.get('/api/restaurants/:restaurantId', (req, res) => {
+app.get('/api/restaurants/:restaurantId', async (req, res) => {
   const restaurantId = req.params.restaurantId;
-  const info = getRestaurantInfo(restaurantId);
+  const info = await getRestaurantInfo(restaurantId);
   if (!info) {
     return res.status(404).json({ error: 'Restaurant not found' });
   }
   const fromDb = findRestaurantById(restaurantId);
-  const placeId = fromDb?.placeId ?? info.placeId ?? null;
+  const placeId = fromDb?.googlePlaceId ?? fromDb?.placeId ?? info.googlePlaceId ?? info.placeId ?? null;
   const debug = String(req.query.debug || '') === '1';
+
+  // Fetch Google Places details for hours, phone, website in parallel with image
+  let placeDetails = null;
+  if (placeId && GOOGLE_PLACES_API_KEY) {
+    try {
+      placeDetails = await googlePlaceDetails(placeId);
+    } catch (err) {
+      console.error('[BiteRight] place details fetch error', err.message);
+    }
+  }
+
+  const hours = placeDetails?.opening_hours?.weekday_text || null;
+  const isOpenNow = placeDetails?.opening_hours?.open_now ?? null;
+  const phoneFromGoogle = placeDetails?.international_phone_number || null;
+  const websiteFromGoogle = placeDetails?.website || null;
+  const priceLevelFromGoogle = typeof placeDetails?.price_level === 'number' ? placeDetails.price_level : null;
+
   resolveRestaurantCardImageWithSource(restaurantId, placeId, undefined)
-    .then(({ url, source }) => {
-      const imageUrl = url && url.trim() ? toAbsoluteImageUrl(url.trim()) : null;
+    .then(({ url, source, resolved }) => {
+      let imageUrl = url && url.trim() ? toAbsoluteImageUrl(url.trim()) : null;
+
+      // If resolver still returned placeholder but we have fresh Google photos, use them
+      if (!imageUrl && placeDetails?.photos && fromDb) {
+        const photoRef = selectBestPlacePhotoReference(placeDetails.photos);
+        if (photoRef) {
+          fromDb.displayImagePhotoReference = photoRef;
+          fromDb.displayImageUrl = buildPhotoProxyUrl(restaurantId);
+          fromDb.displayImageSourceType = IMAGE_SOURCE.GOOGLE;
+          fromDb.displayImageLastResolvedAt = new Date().toISOString();
+          clearRestaurantImageResolutionCache(restaurantId);
+          db.updateRestaurant(restaurantId, {
+            displayImageUrl: fromDb.displayImageUrl,
+            displayImageSourceType: fromDb.displayImageSourceType,
+            displayImageLastResolvedAt: fromDb.displayImageLastResolvedAt,
+            displayImagePhotoReference: photoRef,
+          }).catch(() => {});
+          imageUrl = toAbsoluteImageUrl(fromDb.displayImageUrl);
+          console.log('[BiteRight] Detail endpoint re-resolved image for', info.name);
+        }
+      }
       res.json({
         name: info.name,
-        address: info.address || '',
-        lat: info.lat ?? null,
-        lng: info.lng ?? null,
-        websiteUrl: info.websiteUrl || null,
-        googleMapsUrl: info.googleMapsUrl || null,
-        phone: info.phone || null,
+        address: info.address || placeDetails?.formatted_address || '',
+        lat: info.lat ?? placeDetails?.geometry?.location?.lat ?? null,
+        lng: info.lng ?? placeDetails?.geometry?.location?.lng ?? null,
+        websiteUrl: info.websiteUrl || websiteFromGoogle || null,
+        googleMapsUrl: info.googleMapsUrl || placeDetails?.url || null,
+        phone: info.phone || phoneFromGoogle || null,
         reservationUrl: info.reservationUrl || null,
         placeId: placeId || null,
+        googlePlaceId: resolved?.googlePlaceId || placeId || null,
+        displayImageUrl: imageUrl,
+        displayImageSourceType: resolved?.displayImageSourceType || source || IMAGE_SOURCE.PLACEHOLDER,
+        displayImageLastResolvedAt: resolved?.displayImageLastResolvedAt || null,
+        previewPhotoUrl: imageUrl,
         imageUrl,
+        priceLevel: info.priceLevel ?? priceLevelFromGoogle,
+        neighborhood: info.neighborhood || null,
+        hours,
+        isOpenNow,
         ...(debug ? { imageSource: source } : {}),
       });
     })
@@ -900,11 +1257,19 @@ app.get('/api/restaurants/:restaurantId', (req, res) => {
         address: info.address || '',
         lat: info.lat ?? null,
         lng: info.lng ?? null,
-        websiteUrl: info.websiteUrl || null,
+        websiteUrl: info.websiteUrl || websiteFromGoogle || null,
         googleMapsUrl: info.googleMapsUrl || null,
-        phone: info.phone || null,
+        phone: info.phone || phoneFromGoogle || null,
         reservationUrl: info.reservationUrl || null,
+        placeId: placeId || null,
+        googlePlaceId: placeId || null,
+        displayImageUrl: null,
+        displayImageSourceType: IMAGE_SOURCE.PLACEHOLDER,
+        displayImageLastResolvedAt: null,
+        previewPhotoUrl: null,
         imageUrl: null,
+        hours,
+        isOpenNow,
       });
     });
 });
@@ -912,9 +1277,39 @@ app.get('/api/restaurants/:restaurantId', (req, res) => {
 // 5) Photo proxy (frontend can use /api/restaurants/:id/photo as an Image source)
 app.get('/api/restaurants/:id/photo', async (req, res) => {
   const restaurantId = req.params.id;
-  const restaurant = findRestaurantById(restaurantId);
-  const photoRef = restaurant?.bestFoodPhotoRef || restaurant?.fallbackPhotoRef;
-  if (!restaurant || !photoRef || !GOOGLE_PLACES_API_KEY) {
+  let restaurant = findRestaurantById(restaurantId);
+  if (!restaurant) {
+    restaurant = await db.findRestaurantById(restaurantId);
+  }
+  if (!restaurant && restaurantId.startsWith('ChIJ')) {
+    restaurant = findRestaurantByPlaceId(restaurantId) ?? await db.findRestaurantByPlaceId(restaurantId);
+  }
+  if (!restaurant || !GOOGLE_PLACES_API_KEY) {
+    return res.status(404).end();
+  }
+
+  // Only resolve a photo if none is stored yet (don't override user-cycled picks)
+  let photoRef = restaurant.displayImagePhotoReference;
+  if (!photoRef) {
+    const placeId = restaurant.googlePlaceId || restaurant.placeId;
+    if (placeId) {
+      try {
+        const details = await googlePlaceDetails(placeId);
+        if (details?.photos?.length) {
+          const best = selectBestPlacePhotoReference(details.photos);
+          if (best) {
+            photoRef = best;
+            restaurant.displayImagePhotoReference = best;
+            if (db) {
+              db.updateRestaurant(restaurantId, { displayImagePhotoReference: best }).catch(() => {});
+            }
+          }
+        }
+      } catch (_) { /* fall through */ }
+    }
+  }
+
+  if (!photoRef) {
     return res.status(404).end();
   }
 
@@ -935,6 +1330,1412 @@ app.get('/api/restaurants/:id/photo', async (req, res) => {
     console.error('Photo proxy error', err.message);
     res.status(500).end();
   }
+});
+
+// Track which ranked photo index each restaurant is using (in-memory, survives until restart)
+const photoRankIndex = new Map();
+
+// 5b) Skip current photo and cycle to the next candidate
+app.post('/api/restaurants/:id/next-photo', async (req, res) => {
+  const restaurantId = req.params.id;
+  let restaurant = findRestaurantById(restaurantId);
+  if (!restaurant) {
+    restaurant = await db.findRestaurantById(restaurantId);
+  }
+  if (!restaurant && restaurantId.startsWith('ChIJ')) {
+    restaurant = findRestaurantByPlaceId(restaurantId) ?? await db.findRestaurantByPlaceId(restaurantId);
+  }
+  if (!restaurant) return res.status(404).json({ error: 'Restaurant not found' });
+
+  const placeId = restaurant.googlePlaceId || restaurant.placeId;
+  if (!placeId || !GOOGLE_PLACES_API_KEY) {
+    return res.status(400).json({ error: 'No Google Place ID available' });
+  }
+
+  try {
+    const details = await googlePlaceDetails(placeId);
+    if (!details?.photos?.length) {
+      return res.status(404).json({ error: 'No photos available from Google' });
+    }
+
+    const ranked = rankPlacePhotoCandidates(details.photos);
+
+    // Track position via in-memory map (photo refs are ephemeral)
+    const currentRankIdx = photoRankIndex.get(restaurantId) ?? 0;
+    const nextIdx = (currentRankIdx + 1) % ranked.length;
+    const nextRef = ranked[nextIdx]?.reference;
+
+    if (!nextRef) {
+      return res.status(404).json({ error: 'No alternative photos available' });
+    }
+
+    photoRankIndex.set(restaurantId, nextIdx);
+
+    // Update
+    const now = new Date().toISOString();
+    const updates = {
+      displayImagePhotoReference: nextRef,
+      displayImageUrl: buildPhotoProxyUrl(restaurantId),
+      displayImageSourceType: IMAGE_SOURCE.GOOGLE,
+      displayImageLastResolvedAt: now,
+    };
+    Object.assign(restaurant, updates);
+
+    // Also update in-memory array entry if present
+    const memEntry = findRestaurantById(restaurantId);
+    if (memEntry && memEntry !== restaurant) Object.assign(memEntry, updates);
+
+    // Persist to DB
+    await db.updateRestaurant(restaurantId, updates).catch(() => {});
+
+    clearRestaurantImageResolutionCache(restaurantId);
+
+    console.log(
+      '[BiteRight] Cycled photo for %s: candidate %d/%d',
+      restaurant.name || restaurantId,
+      nextIdx + 1,
+      ranked.length,
+    );
+
+    res.json({
+      ok: true,
+      restaurantId,
+      photoIndex: nextIdx + 1,
+      totalCandidates: ranked.length,
+      imageUrl: toAbsoluteImageUrl(restaurant.displayImageUrl),
+    });
+  } catch (err) {
+    console.error('[BiteRight] next-photo error', err.message);
+    res.status(500).json({ error: 'Failed to cycle photo' });
+  }
+});
+
+// Generic photo reference proxy — serves a Google Places photo by reference string
+app.get('/api/place-photo', async (req, res) => {
+  const ref = String(req.query.ref || '').trim();
+  const maxW = Math.min(1600, Math.max(100, parseInt(req.query.maxW) || 400));
+  if (!ref || !GOOGLE_PLACES_API_KEY) return res.status(404).end();
+  try {
+    const response = await axios.get('https://maps.googleapis.com/maps/api/place/photo', {
+      params: { maxwidth: maxW, photo_reference: ref, key: GOOGLE_PLACES_API_KEY },
+      responseType: 'stream',
+    });
+    res.setHeader('Content-Type', response.headers['content-type'] || 'image/jpeg');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    response.data.pipe(res);
+  } catch (err) {
+    console.error('[BiteRight] place-photo proxy error', err.message);
+    res.status(500).end();
+  }
+});
+
+// ─── Menu scraping helpers ────────────────────────────────────────────────────
+
+/** Try to find a menu link on a restaurant website. */
+/**
+ * Find a menu page URL from a restaurant homepage.
+ * Looks for links whose href or text matches common menu patterns.
+ */
+function findMenuUrl(html, baseUrl) {
+  const $ = cheerio.load(html);
+  const menuPatterns = /\b(menu|food|dining|our-food|eat|dishes)\b/i;
+  const skipPatterns = /\b(login|signup|account|cart|checkout|contact|career|job|blog|news|press|faq|privacy|terms|instagram|facebook|twitter|yelp|doordash|ubereats|grubhub)\b/i;
+
+  const candidates = [];
+  $('a[href]').each((_, el) => {
+    const href = $(el).attr('href') || '';
+    const text = $(el).text().replace(/\s+/g, ' ').trim().toLowerCase();
+    if (!href || href === '#' || href.startsWith('mailto:') || href.startsWith('tel:')) return;
+    if (skipPatterns.test(href)) return;
+
+    const hrefLower = href.toLowerCase();
+    const isMenuLink = menuPatterns.test(text) || menuPatterns.test(hrefLower);
+    if (!isMenuLink) return;
+
+    try {
+      const resolved = new URL(href, baseUrl).href;
+      // Prefer links with "menu" in the path over generic matches
+      const pathScore = hrefLower.includes('/menu') ? 10 : hrefLower.includes('menu') ? 5 : 1;
+      const textScore = text.includes('menu') ? 5 : 1;
+      candidates.push({ url: resolved, score: pathScore + textScore });
+    } catch { /* skip invalid URLs */ }
+  });
+
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates[0].url;
+}
+
+const SCRAPE_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.9',
+};
+
+/**
+ * Scrape a web page and extract structured menu items using cheerio.
+ * Returns array of {title, items} sections, or null if no menu found.
+ */
+async function scrapeMenuFromUrl(pageUrl) {
+  try {
+    const { data: html } = await axios.get(pageUrl, {
+      timeout: 10000,
+      headers: SCRAPE_HEADERS,
+      maxRedirects: 5,
+      responseType: 'text',
+    });
+    if (typeof html !== 'string' || html.length < 100) return null;
+    return parseMenuHtml(html);
+  } catch (err) {
+    console.error('[BiteRight] menu scrape error', pageUrl, err.message);
+    return null;
+  }
+}
+
+// ── Puppeteer: shared browser instance ──
+let _browser = null;
+async function getBrowser() {
+  if (_browser && _browser.connected) return _browser;
+  _browser = await puppeteer.launch({
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+  });
+  return _browser;
+}
+
+/**
+ * Render a page with headless Chrome and extract the fully-rendered HTML.
+ * This handles JS-rendered menus (React, Webflow, WordPress plugins, etc.).
+ */
+async function renderAndScrapeMenu(pageUrl) {
+  let page = null;
+  try {
+    const browser = await getBrowser();
+    page = await browser.newPage();
+
+    // Block images/fonts/media to speed up rendering
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      const type = req.resourceType();
+      if (['image', 'media', 'font', 'stylesheet'].includes(type)) {
+        req.abort();
+      } else {
+        req.continue();
+      }
+    });
+
+    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    await page.goto(pageUrl, { waitUntil: 'networkidle2', timeout: 15000 });
+
+    // Wait a bit for any late JS rendering
+    await page.waitForFunction(() => document.readyState === 'complete', { timeout: 5000 }).catch(() => {});
+
+    const html = await page.content();
+    if (!html || html.length < 200) return null;
+
+    const sections = parseMenuHtml(html);
+    if (sections && sections.length > 0) {
+      console.log('[BiteRight] menu: Puppeteer rendered successfully', { pageUrl, sections: sections.length });
+    }
+    return sections;
+  } catch (err) {
+    console.error('[BiteRight] Puppeteer scrape error', pageUrl, err.message);
+    return null;
+  } finally {
+    if (page) await page.close().catch(() => {});
+  }
+}
+
+const PRICE_RE = /\$\s*(\d{1,4}(?:\.\d{1,2})?)/;
+const SKIP_SECTION_RE = /\b(contact|location|hours|about us|reservat|order online|deliver|follow us|subscribe|newsletter|careers?|testimonial|review|gallery|photos?|privacy|terms)\b/i;
+
+/** Detect dietary tags from text. */
+/** Cap menu to a reasonable size — drop pure-drink sections and limit total. */
+const DRINK_SECTION_RE = /^(cocktails?|beers?|wines?|wine list|ciders?|spirits?|beverages?|drinks?|liqueurs?|liquors?|whiskey|bourbon|vodka|tequila|rum|gin|sake|champagne|sparkling|ros[eé]|red wines?|white wines?|draft|bottled beer|house pour|scotch|brandy|cognac|armagnac|amaro|port|sherry|vermouth|mead|seltzer|sodas?|soft drinks?|non-alcoholic|mocktails?|hot drinks?|cold drinks?|coffee|tea|juice|smoothie|milkshake|happy hour|bar menu|bar bites)/i;
+
+/**
+ * Detect non-food items scraped from corporate/careers/about pages.
+ * Returns true if the item name looks like junk, not a real menu item.
+ */
+const JUNK_ITEM_RE = /\b(career|hiring|apply|employment|invest|community|support|flexible|flexibility|pathway|scholarship|leadership|closed on|our mission|our story|our team|our values|our company|wellbeing|well-being|mental health|professional development|team member|diversity|inclusion|franchise|contact us|get in touch|download|subscribe|newsletter|privacy|terms of|follow us|connect with|social media|next stop|learn more|read more|find a location|mobile app|gift card|rewards program|sign up|log in|register|create account|amenit(y|ies)|delivery partner|other location|nearest|proud to be|membership|operator|owner)\b/i;
+
+const JUNK_SECTION_RE = /\b(investing|careers?|about us|our story|community|values|leadership|team|franchise|press|media|corporate|sustainability|foundation|membership|nearest|proud to be|amenit(y|ies))\b/i;
+
+/**
+ * Looks like a person's name (e.g., "Josh Faretta") rather than a menu item.
+ * Two capitalized words, no food terms. Used as additional junk signal.
+ */
+const PERSON_NAME_RE = /^[A-Z][a-z]+ [A-Z][a-z]+$/;
+const PERSON_POSSESSIVE_RE = /^[A-Z][a-z]+'s /;
+
+/**
+ * Heuristic: does this text look like a real food item?
+ * Food items usually contain food words OR have a price OR have a description.
+ */
+const FOOD_HINT_RE = /\b(chicken|beef|pork|lamb|fish|salmon|tuna|shrimp|crab|lobster|tofu|veggie|vegetable|salad|soup|noodle|rice|pasta|pizza|burger|sandwich|wrap|taco|burrito|quesadilla|sushi|roll|ramen|pho|curry|stew|bbq|grilled|fried|roasted|steamed|baked|sauce|cheese|bread|fries|wings|nuggets|tenders|bowl|plate|platter|special|combo|appetizer|entree|dessert|cake|pie|ice cream|smoothie|shake|bun|biscuit|waffle|pancake|omelette|egg|bacon|sausage|ham|turkey|duck|cod|tilapia|mushroom|spinach|broccoli|carrot|potato|onion|garlic|tomato|avocado|lemon|lime|herb|spice|pepper|chili|honey|maple|chocolate|vanilla|caramel|strawberry|blueberry|apple|banana|mango|coconut|almond|peanut|sesame|truffle|aioli|pesto|marinara|alfredo|teriyaki|hoisin|sriracha|kimchi|tempura|katsu|udon|soba|gyoza|edamame|miso|wasabi|nori|dim sum|bao|dumpling|wonton|spring roll|pad thai|tom yum|larb|naan|paneer|tikka|masala|biryani|samosa|falafel|hummus|kebab|shawarma|gyro|paella|tapas|risotto|gnocchi|carbonara|bolognese|lasagna|panini|focaccia|bruschetta|antipasti|prosciutto|salami|mozzarella|parmesan|gelato|tiramisu|cannoli|crepe|brioche|croissant|baguette|tart|brûlée|mousse|sorbet)\b/i;
+
+/**
+ * Validate menu quality — reject scrapes that are clearly not food menus.
+ * Returns null if the menu is junk, otherwise returns the cleaned sections.
+ */
+function isJunkItem(item) {
+  const name = item.name || '';
+  const desc = item.description || '';
+  if (JUNK_ITEM_RE.test(name) || JUNK_ITEM_RE.test(desc)) return true;
+  if (PERSON_NAME_RE.test(name.trim())) return true;
+  if (PERSON_POSSESSIVE_RE.test(name.trim())) return true;
+  return false;
+}
+
+function looksLikeFood(item) {
+  const text = `${item.name || ''} ${item.description || ''}`;
+  if (FOOD_HINT_RE.test(text)) return true;
+  if (item.price) return true; // priced items are usually food
+  return false;
+}
+
+function validateMenuQuality(sections) {
+  if (!sections || sections.length === 0) return null;
+
+  let totalItems = 0;
+  let junkItems = 0;
+  let foodItems = 0;
+
+  for (const section of sections) {
+    if (JUNK_SECTION_RE.test(section.title)) {
+      junkItems += section.items.length;
+      totalItems += section.items.length;
+      continue;
+    }
+    for (const item of section.items) {
+      totalItems++;
+      if (isJunkItem(item)) junkItems++;
+      else if (looksLikeFood(item)) foodItems++;
+    }
+  }
+
+  if (totalItems === 0) return null;
+
+  const junkRatio = junkItems / totalItems;
+  const foodRatio = foodItems / totalItems;
+
+  // Reject if too much junk
+  if (junkRatio > 0.3) {
+    console.log('[BiteRight] menu: rejected — too many non-food items', {
+      totalItems, junkItems, junkRatio: junkRatio.toFixed(2),
+    });
+    return null;
+  }
+
+  // Reject if too few items actually look like food
+  // (catches scrapes of generic about/contact pages)
+  if (foodRatio < 0.3 && totalItems >= 3) {
+    console.log('[BiteRight] menu: rejected — not enough food-looking items', {
+      totalItems, foodItems, foodRatio: foodRatio.toFixed(2),
+    });
+    return null;
+  }
+
+  // Filter out individual junk sections + items
+  const cleaned = sections
+    .filter((s) => !JUNK_SECTION_RE.test(s.title))
+    .map((s) => ({
+      ...s,
+      items: s.items.filter((item) => !isJunkItem(item)),
+    }))
+    .filter((s) => s.items.length > 0);
+
+  return cleaned.length > 0 ? cleaned : null;
+}
+
+function capMenuSections(sections) {
+  if (!sections || sections.length === 0) return sections;
+
+  // Quality gate — reject corporate/junk content
+  const validated = validateMenuQuality(sections);
+  if (!validated) return [];
+
+  // Separate food from pure drink sections
+  const food = [];
+  const drink = [];
+  for (const s of validated) {
+    if (DRINK_SECTION_RE.test(s.title)) {
+      drink.push(s);
+    } else {
+      food.push(s);
+    }
+  }
+  // Keep all food sections, cap drink sections at 3
+  const result = [...food, ...drink.slice(0, 3)];
+  // Cap total sections at 20
+  return result.slice(0, 20);
+}
+
+function detectDietaryTags(text) {
+  if (!text) return null;
+  const lower = text.toLowerCase();
+  const tags = [];
+  if (/\b(vegetarian|veggie)\b/.test(lower)) tags.push('vegetarian');
+  if (/\bvegan\b/.test(lower)) tags.push('vegan');
+  if (/\b(spicy|hot pepper|chili|jalapeño|habanero)\b/.test(lower)) tags.push('spicy');
+  if (/\b(gluten[\s-]?free|gf|celiac)\b/.test(lower)) tags.push('gluten-free');
+  return tags.length > 0 ? tags : null;
+}
+
+/**
+ * Detect and fetch menus from third-party providers embedded on the restaurant site.
+ * Currently supports: SinglePlatform, Popmenu, BentoBox.
+ */
+async function tryThirdPartyMenuProviders(html, baseUrl) {
+  const $ = cheerio.load(html);
+
+  // ── SinglePlatform ──
+  // Detected by: script src containing "singleplatform" or data-location attribute
+  const spScript = $('script[src*="singleplatform"], script[id="singleplatform-menu"]');
+  if (spScript.length > 0) {
+    // Find the location slug from data-location on any element
+    let locationSlug = null;
+    $('[data-location]').each((_, el) => {
+      locationSlug = $(el).attr('data-location');
+    });
+    // Also check the script tag itself
+    if (!locationSlug) {
+      locationSlug = spScript.attr('data-location');
+    }
+
+    if (locationSlug) {
+      console.log('[BiteRight] menu: detected SinglePlatform embed', { locationSlug });
+      try {
+        const spUrl = `https://places.singleplatform.com/${encodeURIComponent(locationSlug)}/menu`;
+        const { data: spHtml } = await axios.get(spUrl, {
+          timeout: 10000,
+          headers: SCRAPE_HEADERS,
+          maxRedirects: 5,
+          responseType: 'text',
+        });
+        if (typeof spHtml === 'string') {
+          const sections = parseMenuHtml(spHtml);
+          if (sections && sections.length > 0) return sections;
+        }
+      } catch (err) {
+        console.error('[BiteRight] SinglePlatform fetch failed', err.message);
+      }
+    }
+  }
+
+  // ── Popmenu ──
+  // Detected by: script src containing "popmenu" or meta tag
+  const popmenuScript = $('script[src*="popmenu"], [data-popmenu]');
+  if (popmenuScript.length > 0) {
+    // Popmenu typically renders in-page but sometimes has a /menu subpage with data
+    // Look for a menu link on the page
+    const menuUrl = findMenuUrl(html, baseUrl);
+    if (menuUrl) {
+      try {
+        const sections = await scrapeMenuFromUrl(menuUrl);
+        if (sections && sections.length > 0) return sections;
+      } catch { /* ignore */ }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Try to find a restaurant on SinglePlatform by name slug.
+ * Generates common slug variations and checks if the page exists.
+ */
+async function trySinglePlatformByName(name) {
+  const base = name.toLowerCase()
+    .replace(/[''"]/g, '')
+    .replace(/&/g, '-and-')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+
+  // Generate slug variations
+  const variations = new Set([
+    base,
+    base.replace(/-chicago$/, ''),
+    base.replace(/-restaurant$/, ''),
+    base.replace(/-and-/, '--'),  // Girl & The Goat → girl--the-goat
+  ]);
+
+  for (const slug of variations) {
+    try {
+      const url = `https://places.singleplatform.com/${encodeURIComponent(slug)}/menu`;
+      const { data: html } = await axios.get(url, {
+        timeout: 6000,
+        headers: SCRAPE_HEADERS,
+        validateStatus: (s) => s < 500,
+        responseType: 'text',
+      });
+      if (typeof html !== 'string' || !html.includes('ld+json')) continue;
+      const sections = parseMenuHtml(html);
+      if (sections && sections.length > 0) {
+        console.log('[BiteRight] menu: SinglePlatform slug match', { slug });
+        return sections;
+      }
+    } catch { /* continue to next variation */ }
+  }
+
+  return null;
+}
+
+/**
+ * Extract menu from JSON-LD structured data (Schema.org).
+ * Looks for @type Restaurant with hasOfferCatalog, or @type Menu.
+ */
+function extractMenuFromJsonLd($) {
+  const sections = [];
+  const jsonLdScripts = $('script[type="application/ld+json"]');
+  if (jsonLdScripts.length === 0) return null;
+
+  jsonLdScripts.each((_, script) => {
+    try {
+      const data = JSON.parse($(script).html());
+      // Handle both single objects and arrays
+      const items = Array.isArray(data) ? data : [data];
+
+      for (const item of items) {
+        // Restaurant with hasOfferCatalog (most common pattern)
+        if (item.hasOfferCatalog) {
+          extractFromOfferCatalog(item.hasOfferCatalog, sections);
+        }
+        // Direct Menu type
+        if (item['@type'] === 'Menu' && item.hasMenuSection) {
+          const menuSections = Array.isArray(item.hasMenuSection) ? item.hasMenuSection : [item.hasMenuSection];
+          for (const ms of menuSections) {
+            extractFromMenuSection(ms, sections);
+          }
+        }
+        // @graph array (used by some WordPress/BentoBox sites)
+        if (Array.isArray(item['@graph'])) {
+          for (const g of item['@graph']) {
+            if (g.hasOfferCatalog) extractFromOfferCatalog(g.hasOfferCatalog, sections);
+            if (g['@type'] === 'Menu' && g.hasMenuSection) {
+              const ms2 = Array.isArray(g.hasMenuSection) ? g.hasMenuSection : [g.hasMenuSection];
+              for (const m of ms2) extractFromMenuSection(m, sections);
+            }
+          }
+        }
+      }
+    } catch { /* ignore invalid JSON-LD */ }
+  });
+
+  return sections.length > 0 ? sections : null;
+}
+
+/** Recursively extract menu items from a Schema.org OfferCatalog. */
+function extractFromOfferCatalog(catalog, sections) {
+  if (!catalog) return;
+  const catalogs = Array.isArray(catalog) ? catalog : [catalog];
+
+  for (const cat of catalogs) {
+    const elements = cat.itemListElement;
+    if (!Array.isArray(elements) || elements.length === 0) continue;
+
+    // Check if this level contains menu items (Offers) or subcategories (OfferCatalogs)
+    const hasSubCatalogs = elements.some(e => e['@type'] === 'OfferCatalog');
+    const hasOffers = elements.some(e => e['@type'] === 'Offer' && e.itemOffered);
+
+    if (hasSubCatalogs) {
+      // Recurse into subcategories
+      for (const sub of elements) {
+        if (sub['@type'] === 'OfferCatalog') {
+          extractFromOfferCatalog(sub, sections);
+        }
+      }
+    } else if (hasOffers) {
+      const sectionName = cat.name || 'Menu';
+      // Skip non-food sections
+      if (/surcharge|policy|corkage|disclaimer/i.test(sectionName)) return;
+      if (/^(cocktails?|beer|wines?|cider|spirit|beverages?|wines? by the glass)$/i.test(sectionName)) return;
+
+      const items = [];
+      for (const offer of elements) {
+        if (offer['@type'] !== 'Offer' || !offer.itemOffered) continue;
+        const menuItem = offer.itemOffered;
+        const name = (menuItem.name || '').trim();
+        if (!name || name.length < 2) continue;
+
+        const price = offer.price != null && offer.price !== '' && offer.price !== 0
+          ? `$${parseFloat(offer.price).toFixed(2)}`
+          : null;
+        const description = (menuItem.description || '').trim() || null;
+
+        items.push({
+          name: name.substring(0, 80),
+          description: description ? description.substring(0, 200) : null,
+          price,
+          tags: detectDietaryTags(`${name} ${description || ''}`),
+          photoUrl: null,
+        });
+      }
+
+      if (items.length > 0) {
+        sections.push({ title: sectionName, items });
+      }
+    }
+  }
+}
+
+/** Extract from Schema.org MenuSection. */
+function extractFromMenuSection(menuSection, sections) {
+  if (!menuSection) return;
+  const name = menuSection.name || 'Menu';
+  const hasMenuItem = menuSection.hasMenuItem;
+  if (!Array.isArray(hasMenuItem) || hasMenuItem.length === 0) return;
+
+  const items = [];
+  for (const mi of hasMenuItem) {
+    const itemName = (mi.name || '').trim();
+    if (!itemName || itemName.length < 2) continue;
+
+    const price = mi.offers?.price != null && mi.offers.price !== ''
+      ? `$${parseFloat(mi.offers.price).toFixed(2)}`
+      : null;
+    const description = (mi.description || '').trim() || null;
+
+    items.push({
+      name: itemName.substring(0, 80),
+      description: description ? description.substring(0, 200) : null,
+      price,
+      tags: detectDietaryTags(`${itemName} ${description || ''}`),
+      photoUrl: null,
+    });
+  }
+
+  if (items.length > 0) {
+    sections.push({ title: name, items });
+  }
+}
+
+/**
+ * Try to extract menu items using multiple strategies:
+ * 0. JSON-LD structured data (Schema.org Menu / OfferCatalog)
+ * 1. SinglePlatform / third-party embedded menu widgets
+ * 2. Elements with dedicated price classes/attributes
+ * 3. Repeated item containers (cards, list items) with name + price
+ * 4. Heading-based section walk
+ * 5. Tables with item rows
+ * 6. Last resort — any elements with prices
+ */
+function parseMenuHtml(html) {
+  const $ = cheerio.load(html);
+
+  // ─── Strategy 0: JSON-LD structured data ───
+  // Many restaurant sites (via SinglePlatform, BentoBox, etc.) embed full menu
+  // as Schema.org JSON-LD with @type Restaurant / OfferCatalog / MenuItem.
+  const jsonLdSections = extractMenuFromJsonLd($);
+  if (jsonLdSections && jsonLdSections.length > 0) {
+    const totalItems = jsonLdSections.reduce((n, s) => n + s.items.length, 0);
+    if (totalItems >= 2) return jsonLdSections;
+  }
+
+  // ─── Strategy 0b: SinglePlatform embedded widget ───
+  // Detect data-location attribute for SinglePlatform and fetch their hosted page
+  // (handled upstream in the endpoint, not here)
+
+  // Remove non-content elements for HTML-based strategies
+  $('style, nav, footer, header, iframe, noscript, svg, form').remove();
+  $('[class*="site-footer"], [class*="site-header"], [class*="cookie-"], [class*="popup"], [class*="modal"], [id*="cookie"]').remove();
+
+  const sections = [];
+  let currentSection = { title: 'Menu', items: [] };
+
+  // ─── Strategy 1: Look for structured menu containers ───
+  // Many restaurant sites use repeated containers with a consistent structure.
+  // Find elements that look like menu items by checking for price patterns nearby.
+
+  // Gather all text nodes that contain prices, then walk up to find their container
+  const priceElements = [];
+  $('*').each((_, el) => {
+    const $el = $(el);
+    // Only look at leaf-ish elements (no children that also have prices)
+    const ownText = $el.clone().children().remove().end().text().trim();
+    if (PRICE_RE.test(ownText) && ownText.length < 200) {
+      priceElements.push($el);
+    }
+  });
+
+  // If we found price-bearing elements, try to detect menu item containers
+  if (priceElements.length >= 2) {
+    // Walk up from each price element to find a common container pattern
+    // Group by parent to detect repeated structures
+    const parentMap = new Map();
+    for (const $price of priceElements) {
+      // Walk up at most 4 levels to find the item container
+      let $container = $price;
+      for (let i = 0; i < 4; i++) {
+        const $parent = $container.parent();
+        if (!$parent.length || $parent.is('body, html, main, article, section')) break;
+
+        // Check if this parent has siblings with similar structure (repeated items)
+        const siblingCount = $parent.parent().children().filter((_, sib) => {
+          return $(sib).prop('tagName') === $parent.prop('tagName');
+        }).length;
+
+        if (siblingCount >= 2) {
+          $container = $parent;
+          break;
+        }
+        $container = $parent;
+      }
+
+      const parentKey = $container.parent().get(0);
+      if (!parentMap.has(parentKey)) parentMap.set(parentKey, []);
+      parentMap.get(parentKey).push($container);
+    }
+
+    // Process the largest group of siblings (most likely the menu list)
+    let bestGroup = [];
+    for (const [, containers] of parentMap) {
+      if (containers.length > bestGroup.length) bestGroup = containers;
+    }
+
+    // If we have a decent group, extract items from it
+    if (bestGroup.length >= 2) {
+      // Check for section headings above/around items
+      const $listParent = bestGroup[0].parent();
+
+      // Process each item container
+      for (const $item of bestGroup) {
+        const itemText = $item.text().replace(/\s+/g, ' ').trim();
+        const priceMatch = itemText.match(PRICE_RE);
+        if (!priceMatch) continue;
+
+        const price = `$${parseFloat(priceMatch[1]).toFixed(2)}`;
+
+        // Try to isolate name vs description
+        // Look for a heading or bold/strong element as the item name
+        const $nameEl = $item.find('h1, h2, h3, h4, h5, h6, strong, b, [class*="name"], [class*="title"], [class*="item-name"], [class*="dish"]').first();
+        let name = '';
+        let description = '';
+
+        if ($nameEl.length) {
+          name = $nameEl.text().replace(/\s+/g, ' ').trim();
+          // Description is the remaining text minus name and price
+          description = itemText
+            .replace(name, '')
+            .replace(priceMatch[0], '')
+            .replace(/\s+/g, ' ')
+            .replace(/^[\s\-–—·|]+/, '')
+            .trim();
+        } else {
+          // Split at price — name is before, description after
+          const priceIdx = itemText.indexOf(priceMatch[0]);
+          const before = itemText.substring(0, priceIdx).trim();
+          const after = itemText.substring(priceIdx + priceMatch[0].length).trim();
+
+          // Name is typically the first meaningful chunk
+          const lines = before.split(/[.\n|–—]/);
+          name = (lines[0] || '').trim();
+          description = (lines.slice(1).join('. ').trim() || after).replace(/^[\s\-–—·|]+/, '').trim();
+        }
+
+        // Clean up: remove prices that leaked into name
+        name = name.replace(PRICE_RE, '').replace(/\s+/g, ' ').trim();
+
+        if (!name || name.length < 2 || name.length > 120) continue;
+        // Skip items that are clearly not food
+        if (/^\d+$/.test(name) || /^(page|home|back|next|previous|copyright)/i.test(name)) continue;
+
+        currentSection.items.push({
+          name: name.substring(0, 80),
+          description: description && description.length > 2 ? description.substring(0, 200) : null,
+          price,
+          tags: detectDietaryTags(`${name} ${description}`),
+          photoUrl: null,
+        });
+      }
+    }
+  }
+
+  // ─── Strategy 2: Heading-based section walk ───
+  // Walk through headings and collect items with prices under each heading
+  if (currentSection.items.length < 3) {
+    // Reset — strategy 1 didn't yield enough
+    currentSection = { title: 'Menu', items: [] };
+
+    const headings = $('h1, h2, h3, h4');
+    headings.each((_, heading) => {
+      const $h = $(heading);
+      const headingText = $h.text().replace(/\s+/g, ' ').trim();
+
+      if (!headingText || headingText.length > 60 || headingText.length < 2) return;
+      if (SKIP_SECTION_RE.test(headingText)) return;
+      if (PRICE_RE.test(headingText)) return;
+
+      // Save previous section if it has items
+      if (currentSection.items.length > 0) {
+        sections.push(currentSection);
+      }
+      currentSection = { title: headingText, items: [] };
+
+      // Collect siblings after this heading until the next heading
+      let $next = $h.next();
+      let safety = 0;
+      while ($next.length && safety++ < 100) {
+        const tagName = ($next.prop('tagName') || '').toLowerCase();
+        if (/^h[1-4]$/.test(tagName)) break; // hit next section
+
+        const blockText = $next.text().replace(/\s+/g, ' ').trim();
+
+        // If this block itself contains prices, try to extract items from it
+        if (PRICE_RE.test(blockText)) {
+          // Check children for individual items
+          const $children = $next.find('li, tr, [class*="item"], [class*="dish"], [class*="entry"], p, div');
+          let extracted = false;
+
+          if ($children.length >= 2) {
+            $children.each((_, child) => {
+              const childText = $(child).text().replace(/\s+/g, ' ').trim();
+              const pm = childText.match(PRICE_RE);
+              if (!pm || childText.length > 300) return;
+
+              const item = extractMenuItem(childText, pm, $(child));
+              if (item) {
+                currentSection.items.push(item);
+                extracted = true;
+              }
+            });
+          }
+
+          // If no children worked, try the block itself
+          if (!extracted) {
+            // Split by newlines or <br> to find individual items
+            const innerHtml = $next.html() || '';
+            const lines = innerHtml.split(/<br\s*\/?>/gi);
+            for (const line of lines) {
+              const lineText = cheerio.load(line).text().replace(/\s+/g, ' ').trim();
+              const pm = lineText.match(PRICE_RE);
+              if (pm && lineText.length < 300) {
+                const item = extractMenuItemFromText(lineText, pm);
+                if (item) currentSection.items.push(item);
+              }
+            }
+          }
+        }
+
+        $next = $next.next();
+      }
+    });
+  }
+
+  // Push final section
+  if (currentSection.items.length > 0) {
+    sections.push(currentSection);
+  }
+
+  // ─── Strategy 3: Table-based menus ───
+  if (sections.length === 0 || sections.reduce((n, s) => n + s.items.length, 0) < 3) {
+    const tableSections = [];
+    $('table').each((_, table) => {
+      const $table = $(table);
+      const tableSection = { title: 'Menu', items: [] };
+
+      // Check if a heading precedes this table
+      const $prev = $table.prev('h1, h2, h3, h4');
+      if ($prev.length) {
+        const t = $prev.text().replace(/\s+/g, ' ').trim();
+        if (t.length > 1 && t.length < 60 && !SKIP_SECTION_RE.test(t)) {
+          tableSection.title = t;
+        }
+      }
+
+      $table.find('tr').each((_, row) => {
+        const rowText = $(row).text().replace(/\s+/g, ' ').trim();
+        const pm = rowText.match(PRICE_RE);
+        if (!pm || rowText.length > 300) return;
+
+        const cells = $(row).find('td, th');
+        if (cells.length >= 2) {
+          const name = $(cells[0]).text().replace(/\s+/g, ' ').trim();
+          const priceCell = cells.toArray().find(c => PRICE_RE.test($(c).text()));
+          const price = priceCell ? $(priceCell).text().match(PRICE_RE) : pm;
+          const descCells = cells.toArray().filter(c => c !== cells[0] && c !== priceCell);
+          const desc = descCells.map(c => $(c).text().replace(/\s+/g, ' ').trim()).filter(Boolean).join(' ').trim();
+
+          if (name && name.length > 1 && name.length < 120 && price) {
+            tableSection.items.push({
+              name: name.substring(0, 80),
+              description: desc && desc.length > 2 && !PRICE_RE.test(desc) ? desc.substring(0, 200) : null,
+              price: `$${parseFloat(price[1]).toFixed(2)}`,
+              tags: detectDietaryTags(`${name} ${desc}`),
+              photoUrl: null,
+            });
+          }
+        }
+      });
+
+      if (tableSection.items.length >= 2) tableSections.push(tableSection);
+    });
+
+    if (tableSections.length > 0) {
+      // Replace previous results if table extraction found more
+      const tableTotal = tableSections.reduce((n, s) => n + s.items.length, 0);
+      const prevTotal = sections.reduce((n, s) => n + s.items.length, 0);
+      if (tableTotal > prevTotal) {
+        sections.length = 0;
+        sections.push(...tableSections);
+      }
+    }
+  }
+
+  // ─── Strategy 4: Last resort — any elements with prices ───
+  if (sections.reduce((n, s) => n + s.items.length, 0) < 3) {
+    const fallbackSection = { title: 'Menu', items: [] };
+    const seen = new Set();
+
+    // Scan all leaf-level text nodes for price patterns
+    $('p, li, div, span, td, dd').each((_, el) => {
+      const $el = $(el);
+      // Skip if this element contains children that also have prices (avoid dupes)
+      if ($el.find('p, li, div, span, td, dd').filter((_, c) => PRICE_RE.test($(c).text())).length > 0) return;
+
+      const text = $el.text().replace(/\s+/g, ' ').trim();
+      const pm = text.match(PRICE_RE);
+      if (!pm || text.length > 300 || text.length < 4) return;
+
+      const item = extractMenuItemFromText(text, pm);
+      if (item && !seen.has(item.name.toLowerCase())) {
+        seen.add(item.name.toLowerCase());
+        fallbackSection.items.push(item);
+      }
+    });
+
+    if (fallbackSection.items.length >= 3) {
+      const prevTotal = sections.reduce((n, s) => n + s.items.length, 0);
+      if (fallbackSection.items.length > prevTotal) {
+        sections.length = 0;
+        sections.push(fallbackSection);
+      }
+    }
+  }
+
+  // ─── Strategy 5: No-price menu extraction via document-order headings ───
+  // For chain restaurants that don't list prices (Lou Malnati's, Portillo's, etc.).
+  // Uses heading hierarchy: larger headings (H2/H3) = sections, smaller (H4/H5/H6) = items.
+  // Works even when headings are in different DOM branches (Kadence, accordion, etc.).
+  if (sections.reduce((n, s) => n + s.items.length, 0) < 3) {
+    const noPriceSections = [];
+
+    // Collect all headings in document order with their level
+    const allHeadings = [];
+    $('h1, h2, h3, h4, h5, h6').each((_, h) => {
+      const $h = $(h);
+      const level = parseInt(($h.prop('tagName') || 'H6').charAt(1), 10);
+      const text = $h.text().replace(/\s+/g, ' ').trim();
+      if (text.length >= 2 && text.length <= 100) {
+        allHeadings.push({ level, text, $el: $h });
+      }
+    });
+
+    if (allHeadings.length >= 4) {
+      // Determine which levels are sections vs items by counting
+      const levelCounts = {};
+      for (const h of allHeadings) {
+        levelCounts[h.level] = (levelCounts[h.level] || 0) + 1;
+      }
+
+      // The section level has fewer entries than the item level
+      const sortedLevels = Object.entries(levelCounts)
+        .map(([l, c]) => ({ level: parseInt(l), count: c }))
+        .filter(x => x.count >= 2)
+        .sort((a, b) => a.level - b.level);
+
+      if (sortedLevels.length >= 2) {
+        // Section heading = smallest level number with fewer entries
+        // Item heading = larger level number with more entries
+        let sectionLevel = null;
+        let itemLevel = null;
+
+        for (let i = 0; i < sortedLevels.length - 1; i++) {
+          for (let j = i + 1; j < sortedLevels.length; j++) {
+            if (sortedLevels[j].count > sortedLevels[i].count) {
+              sectionLevel = sortedLevels[i].level;
+              itemLevel = sortedLevels[j].level;
+              break;
+            }
+          }
+          if (sectionLevel !== null) break;
+        }
+
+        if (sectionLevel !== null && itemLevel !== null) {
+          let currentNpSection = null;
+
+          for (const h of allHeadings) {
+            if (SKIP_SECTION_RE.test(h.text)) continue;
+            if (/^(menu|order|reservation|gift|about|contact|location|sign|log|join|app|download|follow|our company|our food|support)/i.test(h.text)) continue;
+
+            if (h.level === sectionLevel) {
+              // Save previous section
+              if (currentNpSection && currentNpSection.items.length >= 2) {
+                noPriceSections.push(currentNpSection);
+              }
+              currentNpSection = { title: h.text, items: [] };
+            } else if (h.level === itemLevel && currentNpSection) {
+              // This is a menu item — try to get description from nearby elements
+              let desc = null;
+              // Check for accordion content panel or next sibling
+              const $panel = h.$el.closest('[class*="accordion-pane"], [class*="accordion-panel"]');
+              if ($panel.length) {
+                const panelText = $panel.find('p, [class*="content"], [class*="description"]').first().text().replace(/\s+/g, ' ').trim();
+                if (panelText && panelText.length > 3 && panelText !== h.text) {
+                  desc = panelText.substring(0, 200);
+                }
+              }
+              if (!desc) {
+                // Try next sibling or parent's next sibling text
+                const $nextP = h.$el.nextAll('p, div').first();
+                if ($nextP.length) {
+                  const nextText = $nextP.text().replace(/\s+/g, ' ').trim();
+                  if (nextText.length > 3 && nextText.length < 300) desc = nextText.substring(0, 200);
+                }
+              }
+
+              currentNpSection.items.push({
+                name: h.text.substring(0, 80),
+                description: desc,
+                price: null,
+                tags: detectDietaryTags(`${h.text} ${desc || ''}`),
+                photoUrl: null,
+              });
+            }
+          }
+          // Save last section
+          if (currentNpSection && currentNpSection.items.length >= 2) {
+            noPriceSections.push(currentNpSection);
+          }
+        }
+      }
+    }
+
+    if (noPriceSections.length > 0) {
+      const npTotal = noPriceSections.reduce((n, s) => n + s.items.length, 0);
+      const prevTotal = sections.reduce((n, s) => n + s.items.length, 0);
+      if (npTotal > prevTotal && npTotal >= 4) {
+        sections.length = 0;
+        sections.push(...noPriceSections);
+      }
+    }
+  }
+
+  // Deduplicate items within each section
+  for (const section of sections) {
+    const seen = new Set();
+    section.items = section.items.filter(item => {
+      const key = item.name.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  // Remove empty sections
+  const finalSections = sections.filter(s => s.items.length > 0);
+  return finalSections.length > 0 ? finalSections : null;
+}
+
+/** Extract a menu item from a DOM element + price match. */
+function extractMenuItem(text, priceMatch, $el) {
+  const price = `$${parseFloat(priceMatch[1]).toFixed(2)}`;
+
+  // Try to find a name element
+  const $nameEl = $el.find('h1, h2, h3, h4, h5, h6, strong, b, [class*="name"], [class*="title"]').first();
+  let name = '';
+  let description = '';
+
+  if ($nameEl.length) {
+    name = $nameEl.text().replace(/\s+/g, ' ').trim();
+    description = text.replace(name, '').replace(priceMatch[0], '').replace(/\s+/g, ' ').replace(/^[\s\-–—·|]+/, '').trim();
+  } else {
+    return extractMenuItemFromText(text, priceMatch);
+  }
+
+  name = name.replace(PRICE_RE, '').replace(/\s+/g, ' ').trim();
+  if (!name || name.length < 2 || name.length > 120) return null;
+  if (/^\d+$/.test(name) || /^(page|home|back|next|copyright)/i.test(name)) return null;
+
+  return {
+    name: name.substring(0, 80),
+    description: description && description.length > 2 ? description.substring(0, 200) : null,
+    price,
+    tags: detectDietaryTags(`${name} ${description}`),
+    photoUrl: null,
+  };
+}
+
+/** Extract a menu item from plain text + price match. */
+function extractMenuItemFromText(text, priceMatch) {
+  const price = `$${parseFloat(priceMatch[1]).toFixed(2)}`;
+  const priceIdx = text.indexOf(priceMatch[0]);
+  const before = text.substring(0, priceIdx).trim();
+  const after = text.substring(priceIdx + priceMatch[0].length).trim();
+
+  // Name is the first meaningful chunk before the price
+  const parts = before.split(/[.\n|–—]/);
+  let name = (parts[0] || '').trim();
+  let description = (parts.slice(1).join('. ').trim() || after).replace(/^[\s\-–—·|]+/, '').trim();
+
+  // If name is very short and we have after-price text, the name might be after the price
+  if (name.length < 3 && after.length > 3) {
+    const afterParts = after.split(/[.\n|–—]/);
+    name = (afterParts[0] || '').trim();
+    description = afterParts.slice(1).join('. ').trim();
+  }
+
+  name = name.replace(PRICE_RE, '').replace(/\s+/g, ' ').trim();
+  if (!name || name.length < 2 || name.length > 120) return null;
+  if (/^\d+$/.test(name) || /^(page|home|back|next|copyright)/i.test(name)) return null;
+
+  return {
+    name: name.substring(0, 80),
+    description: description && description.length > 2 ? description.substring(0, 200) : null,
+    price,
+    tags: detectDietaryTags(`${name} ${description}`),
+    photoUrl: null,
+  };
+}
+
+// ─── Curated chain menus ──────────────────────────────────────────────────
+// For chains whose websites don't list menus in scrape-friendly form, we
+// return a curated short menu of their most popular items.
+const CHAIN_MENUS = {
+  'chick-fil-a': {
+    sections: [
+      {
+        title: 'Chicken',
+        items: [
+          { name: 'Chick-fil-A Chicken Sandwich', description: 'Boneless breast of chicken, hand-breaded, pressure-cooked, on a toasted buttered bun with pickles', price: null, tags: null, photoUrl: null },
+          { name: 'Spicy Chicken Sandwich', description: 'Same classic, with a peppery blend of seasonings for a spicy kick', price: null, tags: ['spicy'], photoUrl: null },
+          { name: 'Deluxe Chicken Sandwich', description: 'Add lettuce, tomato, and American cheese', price: null, tags: null, photoUrl: null },
+          { name: 'Grilled Chicken Sandwich', description: 'Lemon-herb marinated chicken on a toasted multigrain bun', price: null, tags: null, photoUrl: null },
+          { name: 'Chick-fil-A Nuggets', description: 'Bite-sized pieces of boneless chicken breast, hand-breaded', price: null, tags: null, photoUrl: null },
+          { name: 'Chick-n-Strips', description: 'Hand-breaded chicken tenderloins', price: null, tags: null, photoUrl: null },
+        ],
+      },
+      {
+        title: 'Sides',
+        items: [
+          { name: 'Waffle Potato Fries', description: 'Crispy waffle-cut fries with sea salt', price: null, tags: null, photoUrl: null },
+          { name: 'Mac & Cheese', description: 'Creamy blend of cheeses baked in-restaurant', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Side Salad', description: 'Fresh mixed greens with grape tomatoes', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Fruit Cup', description: 'Mandarin oranges, apples, strawberries, and blueberries', price: null, tags: ['vegan'], photoUrl: null },
+        ],
+      },
+      {
+        title: 'Beverages & Desserts',
+        items: [
+          { name: 'Chick-fil-A Lemonade', description: 'Freshly-squeezed lemonade', price: null, tags: null, photoUrl: null },
+          { name: 'Frosted Lemonade', description: 'Lemonade with vanilla soft-serve', price: null, tags: null, photoUrl: null },
+          { name: 'Sweet Tea', description: 'Brewed fresh daily', price: null, tags: null, photoUrl: null },
+          { name: 'Cookies & Cream Milkshake', description: 'Hand-spun with Oreo cookie pieces', price: null, tags: null, photoUrl: null },
+          { name: 'Chocolate Chunk Cookie', description: 'Baked fresh in restaurant', price: null, tags: null, photoUrl: null },
+        ],
+      },
+    ],
+  },
+  // Add more chains here as needed: mcdonalds, taco-bell, panera, etc.
+};
+
+const CHAIN_PATTERNS = [
+  { re: /chick[\s-]?fil[\s-]?a/i, key: 'chick-fil-a' },
+];
+
+function getChainMenu(restaurantName) {
+  if (!restaurantName) return null;
+  for (const { re, key } of CHAIN_PATTERNS) {
+    if (re.test(restaurantName) && CHAIN_MENUS[key]) {
+      return CHAIN_MENUS[key];
+    }
+  }
+  return null;
+}
+
+// 6) Menu endpoint — returns structured menu data, photos, or empty state
+app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
+  const restaurantId = req.params.restaurantId;
+  const fromDb = findRestaurantById(restaurantId) || (restaurantId.startsWith('ChIJ') ? findRestaurantByPlaceId(restaurantId) : null);
+  const info = await getRestaurantInfo(restaurantId);
+  // If the restaurantId itself is a Google placeId (starts with ChIJ), use it directly
+  const placeId = fromDb?.googlePlaceId ?? fromDb?.placeId ?? info?.googlePlaceId ?? info?.placeId
+    ?? (restaurantId.startsWith('ChIJ') ? restaurantId : null);
+
+  const result = {
+    sections: [],
+    menuPhotos: [],
+    source: null, // 'scraped' | 'photos' | null
+  };
+
+  // Resolve website URL and restaurant name from multiple sources
+  let websiteUrl = info?.websiteUrl || fromDb?.websiteUrl || null;
+  let restaurantName = info?.name || fromDb?.name || null;
+  let homepageHtml = null;
+
+  // If we have a Google placeId and API key, enrich from Google Places
+  if (placeId && GOOGLE_PLACES_API_KEY) {
+    try {
+      const url = 'https://maps.googleapis.com/maps/api/place/details/json';
+      const { data } = await axios.get(url, {
+        params: {
+          place_id: placeId,
+          key: GOOGLE_PLACES_API_KEY,
+          fields: 'name,website,url,photos',
+        },
+      });
+      if (data.status === 'OK' && data.result) {
+        const place = data.result;
+        if (place.website) websiteUrl = place.website;
+        if (place.name) restaurantName = place.name;
+      }
+    } catch (err) {
+      console.log('[BiteRight] menu: Google Places lookup failed, continuing with static data', err.message);
+    }
+  }
+
+  if (!websiteUrl && !restaurantName) {
+    return res.json(result);
+  }
+
+  // ── Priority 0: Curated chain menu ──
+  // Many fast-food chains don't list menus on their corporate sites in
+  // scrape-friendly form. For known chains, return a curated short menu.
+  const chainMenu = getChainMenu(restaurantName);
+  if (chainMenu) {
+    result.sections = chainMenu.sections;
+    result.source = 'curated';
+    console.log('[BiteRight] menu: using curated chain menu', { restaurantId, restaurantName });
+    return res.json(result);
+  }
+
+  try {
+
+    // ── Priority 1: Scrape the restaurant website for structured menu ──
+    if (websiteUrl) {
+      console.log('[BiteRight] menu: attempting website scrape', { restaurantId, websiteUrl });
+      let menuSections = null;
+
+      // 1a. Fetch the homepage/website once — use it for JSON-LD, link finding, and provider detection
+      try {
+        const resp = await axios.get(websiteUrl, {
+          timeout: 10000,
+          headers: SCRAPE_HEADERS,
+          maxRedirects: 5,
+          responseType: 'text',
+        });
+        if (typeof resp.data === 'string') homepageHtml = resp.data;
+      } catch { /* ignore */ }
+
+      // 1b. Follow menu links found on homepage FIRST (dedicated menu page is better than homepage)
+      if (homepageHtml) {
+        const menuPageUrl = findMenuUrl(homepageHtml, websiteUrl);
+        if (menuPageUrl && menuPageUrl !== websiteUrl) {
+          console.log('[BiteRight] menu: following menu link', { menuPageUrl });
+          menuSections = await scrapeMenuFromUrl(menuPageUrl);
+
+          // If the menu link page didn't have menu items, check if it links deeper
+          if (!menuSections) {
+            try {
+              const { data: subHtml } = await axios.get(menuPageUrl, {
+                timeout: 8000,
+                headers: SCRAPE_HEADERS,
+                maxRedirects: 5,
+                responseType: 'text',
+              });
+              if (typeof subHtml === 'string') {
+                // Check for SinglePlatform embed on the menu page
+                menuSections = await tryThirdPartyMenuProviders(subHtml, menuPageUrl);
+                // Follow deeper menu links
+                if (!menuSections) {
+                  const deeperUrl = findMenuUrl(subHtml, menuPageUrl);
+                  if (deeperUrl && deeperUrl !== menuPageUrl && deeperUrl !== websiteUrl) {
+                    console.log('[BiteRight] menu: following deeper menu link', { deeperUrl });
+                    menuSections = await scrapeMenuFromUrl(deeperUrl);
+                  }
+                }
+              }
+            } catch { /* ignore */ }
+          }
+        }
+      }
+
+      // 1c. Try common menu URL paths
+      if (!menuSections) {
+        const commonMenuPaths = ['/menu', '/food', '/our-menu', '/food-menu', '/dining', '/eat'];
+        try {
+          const origin = new URL(websiteUrl).origin;
+          for (const path of commonMenuPaths) {
+            const directUrl = origin + path;
+            menuSections = await scrapeMenuFromUrl(directUrl);
+            if (menuSections && menuSections.length > 0) {
+              console.log('[BiteRight] menu: found via direct path', { directUrl });
+              break;
+            }
+          }
+        } catch { /* ignore URL parse errors */ }
+      }
+
+      // 1d. Detect third-party menu providers (SinglePlatform, Popmenu, etc.)
+      if (!menuSections && homepageHtml) {
+        menuSections = await tryThirdPartyMenuProviders(homepageHtml, websiteUrl);
+      }
+
+      // 1e. Try parsing the homepage itself as last resort (may have JSON-LD or inline menu)
+      if (!menuSections && homepageHtml) {
+        menuSections = parseMenuHtml(homepageHtml);
+      }
+
+      if (menuSections && menuSections.length > 0) {
+        menuSections = capMenuSections(menuSections);
+        const totalItems = menuSections.reduce((n, s) => n + s.items.length, 0);
+        if (totalItems >= 2) {
+          result.sections = menuSections;
+          result.source = 'scraped';
+          console.log('[BiteRight] menu: scraped successfully', {
+            restaurantId,
+            sectionCount: menuSections.length,
+            totalItems,
+          });
+          return res.json(result);
+        }
+        console.log('[BiteRight] menu: scrape found too few items', { restaurantId, totalItems });
+      }
+    }
+
+    // ── Priority 2: Try SinglePlatform by name as last resort ──
+    // Some restaurants have data on SinglePlatform but don't embed the widget on their site.
+    if (restaurantName) {
+      let spSections = await trySinglePlatformByName(restaurantName);
+      if (spSections && spSections.length > 0) {
+        spSections = capMenuSections(spSections);
+        const totalItems = spSections.reduce((n, s) => n + s.items.length, 0);
+        if (totalItems >= 2) {
+          result.sections = spSections;
+          result.source = 'scraped';
+          console.log('[BiteRight] menu: found via SinglePlatform name lookup', { restaurantId, restaurantName, totalItems });
+          return res.json(result);
+        }
+      }
+    }
+
+    // ── Priority 3: Puppeteer (headless Chrome) for JS-rendered menus ──
+    if (websiteUrl) {
+      console.log('[BiteRight] menu: trying Puppeteer render', { restaurantId });
+
+      // Try the website itself, then common menu paths
+      const urlsToTry = [websiteUrl];
+      try {
+        const origin = new URL(websiteUrl).origin;
+        urlsToTry.push(origin + '/menu', origin + '/our-menu');
+        // Also add any menu link we found earlier
+        if (homepageHtml) {
+          const menuLink = findMenuUrl(homepageHtml, websiteUrl);
+          if (menuLink && !urlsToTry.includes(menuLink)) urlsToTry.push(menuLink);
+        }
+      } catch { /* ignore */ }
+
+      for (const tryUrl of urlsToTry) {
+        let puppeteerSections = await renderAndScrapeMenu(tryUrl);
+        if (puppeteerSections && puppeteerSections.length > 0) {
+          puppeteerSections = capMenuSections(puppeteerSections);
+          const totalItems = puppeteerSections.reduce((n, s) => n + s.items.length, 0);
+          if (totalItems >= 2) {
+            result.sections = puppeteerSections;
+            result.source = 'scraped';
+            console.log('[BiteRight] menu: Puppeteer found menu', { restaurantId, url: tryUrl, totalItems });
+            return res.json(result);
+          }
+        }
+      }
+    }
+
+    // ── Priority 4: Google Places menu photos as visual backup ──
+    // When no structured menu is found, try to get menu-type photos from Google.
+    if (placeId && GOOGLE_PLACES_API_KEY) {
+      try {
+        const url = 'https://maps.googleapis.com/maps/api/place/details/json';
+        const { data } = await axios.get(url, {
+          params: {
+            place_id: placeId,
+            key: GOOGLE_PLACES_API_KEY,
+            fields: 'photos',
+          },
+        });
+        if (data.status === 'OK' && data.result?.photos?.length) {
+          // Google doesn't tag photos as "menu" vs "food", but we can include
+          // up to 3 photos as a visual fallback the user can zoom into
+          const photos = data.result.photos.slice(0, 3).map((p) => ({
+            url: `https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photoreference=${p.photo_reference}&key=${GOOGLE_PLACES_API_KEY}`,
+            width: p.width || 800,
+            height: p.height || 600,
+          }));
+          if (photos.length > 0) {
+            result.menuPhotos = photos;
+            result.source = 'photos';
+            console.log('[BiteRight] menu: using Google Places photos as backup', { restaurantId, photoCount: photos.length });
+            return res.json(result);
+          }
+        }
+      } catch (err) {
+        console.log('[BiteRight] menu: Google photos fallback failed', err.message);
+      }
+    }
+
+    console.log('[BiteRight] menu: no structured menu found', { restaurantId });
+    res.json(result);
+  } catch (err) {
+    console.error('[BiteRight] menu fetch error', err.message);
+    res.json(result);
+  }
+});
+
+// 7) Admin: re-harvest food photos for all known restaurants (clears cached bad photos)
+app.post('/api/admin/reharvest-photos', async (req, res) => {
+  const results = [];
+  for (const restaurant of restaurants) {
+    // Clear cached photos to force re-resolution
+    const oldUrl = restaurant.displayImageUrl || null;
+    restaurant.displayImageUrl = null;
+    restaurant.displayImageSourceType = IMAGE_SOURCE.PLACEHOLDER;
+    restaurant.displayImageLastResolvedAt = null;
+    restaurant.displayImagePhotoReference = null;
+    clearRestaurantImageResolutionCache(restaurant.restaurantId);
+
+    let newUrl = null;
+    let source = 'ERROR';
+    try {
+      const { url, source: s } = await resolveRestaurantCardImageWithSource(
+        restaurant.restaurantId,
+        restaurant.placeId,
+        undefined,
+      );
+      newUrl = url || null;
+      source = s;
+      // Persist updated photo reference to Supabase
+      if (db && restaurant.restaurantId) {
+        await db.updateRestaurant(restaurant.restaurantId, {
+          displayImageUrl: restaurant.displayImageUrl,
+          displayImageSourceType: restaurant.displayImageSourceType,
+          displayImageLastResolvedAt: restaurant.displayImageLastResolvedAt,
+          displayImagePhotoReference: restaurant.displayImagePhotoReference,
+        }).catch(() => {});
+      }
+    } catch (err) {
+      console.error('[Reharvest] Error for %s: %s', restaurant.restaurantId, err.message);
+    }
+    results.push({
+      restaurantId: restaurant.restaurantId,
+      name: restaurant.name,
+      oldUrl,
+      newUrl,
+      source,
+      improved: !oldUrl && !!newUrl,
+    });
+  }
+  console.log('[Reharvest] Done. Processed %d restaurants.', results.length);
+  res.json({ ok: true, count: results.length, results });
 });
 
 // --- Tonight: Group Session + Swipe + Matches --------------------------------
@@ -1032,6 +2833,46 @@ async function geocodeAutocomplete(query) {
   if (geocodeAutocompleteCache[key]) return geocodeAutocompleteCache[key];
   if (!GOOGLE_PLACES_API_KEY) return [];
   try {
+    // Try Places Autocomplete first — better at resolving streets and neighborhoods
+    const placesUrl = 'https://maps.googleapis.com/maps/api/place/autocomplete/json';
+    const placesResp = await axios.get(placesUrl, {
+      params: {
+        input: query.trim(),
+        key: GOOGLE_PLACES_API_KEY,
+        types: 'geocode',
+        // Bias toward Chicago area
+        location: '41.8781,-87.6298',
+        radius: 50000,
+      },
+    });
+    const predictions = placesResp.data?.predictions || [];
+    if (predictions.length > 0) {
+      // Resolve coords for top predictions via Place Details
+      const results = [];
+      for (const pred of predictions.slice(0, 5)) {
+        try {
+          const details = await googlePlaceDetails(pred.place_id);
+          if (details?.geometry?.location) {
+            const loc = details.geometry.location;
+            const label = pred.description || details.formatted_address || query.trim();
+            results.push({ label, lat: loc.lat, lng: loc.lng });
+          }
+        } catch {
+          // skip this prediction
+        }
+      }
+      if (results.length > 0) {
+        console.log('[BiteRight] Geocode autocomplete resolved via Places API', {
+          query: query.trim(),
+          resultCount: results.length,
+          topResult: { label: results[0].label, lat: results[0].lat, lng: results[0].lng },
+        });
+        geocodeAutocompleteCache[key] = results;
+        return results;
+      }
+    }
+
+    // Fallback: standard Geocoding API
     const url = 'https://maps.googleapis.com/maps/api/geocode/json';
     const { data } = await axios.get(url, {
       params: { address: query.trim(), key: GOOGLE_PLACES_API_KEY },
@@ -1043,6 +2884,11 @@ async function geocodeAutocomplete(query) {
       const loc = r.geometry.location;
       const label = r.formatted_address || r.address_components?.[0]?.long_name || query.trim();
       return { label, lat: loc.lat, lng: loc.lng };
+    });
+    console.log('[BiteRight] Geocode autocomplete resolved via Geocoding API fallback', {
+      query: query.trim(),
+      resultCount: results.length,
+      topResult: results[0] ? { label: results[0].label, lat: results[0].lat, lng: results[0].lng } : null,
     });
     geocodeAutocompleteCache[key] = results;
     return results;
@@ -1082,7 +2928,7 @@ function isSessionExpired(session) {
 
 // POST /api/tonight/sessions
 app.post('/api/tonight/sessions', (req, res) => {
-  const { sessionName, locationBias } = req.body || {};
+  const { sessionName, locationBias, settings } = req.body || {};
   let code;
   do {
     code = generateSessionCode();
@@ -1090,8 +2936,9 @@ app.post('/api/tonight/sessions', (req, res) => {
 
   const now = new Date();
   const expiresAt = new Date(now.getTime() + SESSION_EXPIRY_HOURS * 60 * 60 * 1000);
-  const hostUserId = 'user_' + Date.now();
-  const sessionId = 'sess_' + Date.now();
+  const ts = Date.now();
+  const hostUserId = 'user_' + ts;
+  const sessionId = 'sess_' + ts;
 
   const session = {
     id: sessionId,
@@ -1100,9 +2947,22 @@ app.post('/api/tonight/sessions', (req, res) => {
     sessionName: sessionName || null,
     locationBias: locationBias || null,
     status: 'ACTIVE',
+    started: false,
     createdAt: now.toISOString(),
     expiresAt: expiresAt.toISOString(),
-    participants: [{ participantId: 'p_' + Date.now(), userId: hostUserId }],
+    hostParticipantId: 'p_' + ts,
+    participants: [{ participantId: 'p_' + ts, userId: hostUserId, displayName: 'Host', doneSwiping: false }],
+    settings: {
+      location: settings?.location || null,
+      locationLat: settings?.locationLat ?? null,
+      locationLng: settings?.locationLng ?? null,
+      searchRadius: [1, 3, 5, 10].includes(settings?.searchRadius) ? settings.searchRadius : 3,
+      priceRange: Array.isArray(settings?.priceRange) ? settings.priceRange : [],
+      cuisines: Array.isArray(settings?.cuisines) ? settings.cuisines : [],
+      deckSize: [10, 15, 20].includes(settings?.deckSize) ? settings.deckSize : 15,
+      deadline: settings?.deadline || null,
+      nominatedRestaurants: [],
+    },
   };
   groupSessions.push(session);
 
@@ -1114,7 +2974,110 @@ app.post('/api/tonight/sessions', (req, res) => {
     shareUrl,
     expiresAt: session.expiresAt,
     participantId: hostParticipantId,
+    hostUserId,
+    settings: session.settings,
   });
+});
+
+// PUT /api/tonight/sessions/:code/settings — host updates session settings
+app.put('/api/tonight/sessions/:code/settings', (req, res) => {
+  const session = findSessionByCode(req.params.code);
+  if (!session) return res.status(404).json({ error: 'Session not found or expired' });
+  if (isSessionExpired(session)) return res.status(410).json({ error: 'Session expired' });
+  if (session.started) return res.status(409).json({ error: 'Session already started' });
+
+  const { location, locationLat, locationLng, searchRadius, priceRange, cuisines, deckSize, deadline } = req.body || {};
+  if (location !== undefined) session.settings.location = location;
+  if (locationLat !== undefined) session.settings.locationLat = locationLat;
+  if (locationLng !== undefined) session.settings.locationLng = locationLng;
+  if ([1, 3, 5, 10].includes(searchRadius)) session.settings.searchRadius = searchRadius;
+  if (Array.isArray(priceRange)) session.settings.priceRange = priceRange;
+  if (Array.isArray(cuisines)) session.settings.cuisines = cuisines;
+  if ([10, 15, 20].includes(deckSize)) session.settings.deckSize = deckSize;
+  if (deadline !== undefined) session.settings.deadline = deadline;
+
+  res.json({ ok: true, settings: session.settings });
+});
+
+// POST /api/tonight/sessions/:code/nominate — any member adds a restaurant
+app.post('/api/tonight/sessions/:code/nominate', (req, res) => {
+  console.log('[BiteRight] Nominate request code=%s body=%j', req.params.code, req.body);
+  const session = findSessionByCode(req.params.code);
+  if (!session) return res.status(404).json({ error: 'Session not found or expired' });
+  if (isSessionExpired(session)) return res.status(410).json({ error: 'Session expired' });
+  if (session.started) return res.status(409).json({ error: 'Session already started' });
+
+  const { restaurantId, name, address, participantId } = req.body || {};
+  if (!restaurantId || !name) return res.status(400).json({ error: 'restaurantId and name required' });
+
+  const already = session.settings.nominatedRestaurants.find((n) => n.restaurantId === restaurantId);
+  if (already) return res.json({ ok: true, alreadyNominated: true, nominated: session.settings.nominatedRestaurants });
+
+  session.settings.nominatedRestaurants.push({ restaurantId, name, address: address || '', nominatedBy: participantId || null });
+  res.json({ ok: true, nominated: session.settings.nominatedRestaurants });
+});
+
+// DELETE /api/tonight/sessions/:code/nominate/:restaurantId — remove a nominated restaurant
+app.delete('/api/tonight/sessions/:code/nominate/:restaurantId', (req, res) => {
+  const session = findSessionByCode(req.params.code);
+  if (!session) return res.status(404).json({ error: 'Session not found or expired' });
+  if (session.started) return res.status(409).json({ error: 'Session already started' });
+
+  session.settings.nominatedRestaurants = session.settings.nominatedRestaurants.filter(
+    (n) => n.restaurantId !== req.params.restaurantId,
+  );
+  res.json({ ok: true, nominated: session.settings.nominatedRestaurants });
+});
+
+// POST /api/tonight/sessions/:code/start — host locks settings and starts swiping
+app.post('/api/tonight/sessions/:code/start', (req, res) => {
+  const session = findSessionByCode(req.params.code);
+  if (!session) return res.status(404).json({ error: 'Session not found or expired' });
+  if (isSessionExpired(session)) return res.status(410).json({ error: 'Session expired' });
+  if (session.started) return res.json({ ok: true, alreadyStarted: true });
+
+  session.started = true;
+  res.json({ ok: true, started: true, settings: session.settings });
+});
+
+// GET /api/tonight/sessions/:code/state — get full session state for setup screen
+app.get('/api/tonight/sessions/:code/state', (req, res) => {
+  const session = findSessionByCode(req.params.code);
+  if (!session) return res.status(404).json({ error: 'Session not found or expired' });
+  if (isSessionExpired(session)) return res.status(410).json({ error: 'Session expired' });
+
+  // Count swipe progress per participant
+  const participantProgress = session.participants.map((p) => {
+    const swipeCount = tonightSwipes.filter((s) => s.sessionId === session.id && s.participantId === p.participantId).length;
+    return { participantId: p.participantId, displayName: p.displayName || 'Member', doneSwiping: p.doneSwiping || false, swipeCount };
+  });
+
+  res.json({
+    sessionId: session.id,
+    code: session.code,
+    hostUserId: session.hostUserId,
+    hostParticipantId: session.hostParticipantId,
+    started: session.started || false,
+    participantCount: session.participants.length,
+    participants: participantProgress,
+    settings: session.settings,
+  });
+});
+
+// POST /api/tonight/sessions/:code/done — participant marks themselves done swiping
+app.post('/api/tonight/sessions/:code/done', (req, res) => {
+  const session = findSessionByCode(req.params.code);
+  if (!session) return res.status(404).json({ error: 'Session not found or expired' });
+
+  const { participantId } = req.body || {};
+  const participant = session.participants.find((p) => p.participantId === participantId);
+  if (!participant) return res.status(403).json({ error: 'Not a participant' });
+
+  participant.doneSwiping = true;
+  const doneCount = session.participants.filter((p) => p.doneSwiping).length;
+  const allDone = doneCount === session.participants.length;
+
+  res.json({ ok: true, doneCount, totalParticipants: session.participants.length, allDone });
 });
 
 // POST /api/tonight/sessions/:code/join
@@ -1145,6 +3108,42 @@ app.post('/api/tonight/sessions/:code/join', (req, res) => {
   });
 });
 
+/** Generate a personalized one-liner for the swipe card based on user history. Returns null if no data. */
+function generateWhyLine(restaurant, userId, ctx) {
+  const { savedRestaurants, logs } = ctx;
+  const cuisine = (restaurant.cuisine || '').split('·')[0].trim().toLowerCase();
+
+  // Check if user has saved restaurants of the same cuisine
+  if (cuisine && Array.isArray(savedRestaurants)) {
+    const savedSameCuisine = savedRestaurants.filter(
+      (s) => s.userId === userId && (s.cuisine || '').toLowerCase().includes(cuisine),
+    );
+    if (savedSameCuisine.length >= 2) return `You've saved ${savedSameCuisine.length} ${cuisine} spots`;
+    if (savedSameCuisine.length === 1) return `You saved a ${cuisine} spot before`;
+  }
+
+  // Check visit history for similar cuisine
+  if (cuisine && Array.isArray(logs)) {
+    const visitedSameCuisine = logs.filter(
+      (l) => l.userId === userId && (l.cuisine || '').toLowerCase().includes(cuisine),
+    );
+    if (visitedSameCuisine.length >= 2) return `You've visited ${visitedSameCuisine.length} ${cuisine} places`;
+    if (visitedSameCuisine.length === 1) return `You've been to a ${cuisine} spot`;
+  }
+
+  // Price match
+  const pl = restaurant.priceLevel;
+  if (pl && Array.isArray(savedRestaurants)) {
+    const savedSamePrice = savedRestaurants.filter(
+      (s) => s.userId === userId && s.priceLevel === pl,
+    );
+    const priceLabel = '$'.repeat(pl);
+    if (savedSamePrice.length >= 3) return `Matches your ${priceLabel} preference`;
+  }
+
+  return null;
+}
+
 // GET /api/tonight/sessions/:code/pool — ranked, variety-constrained, paginated. Optional participantId for personalization.
 app.get('/api/tonight/sessions/:code/pool', async (req, res) => {
   const session = findSessionByCode(req.params.code);
@@ -1159,13 +3158,87 @@ app.get('/api/tonight/sessions/:code/pool', async (req, res) => {
   const participantId = req.query.participantId || session.participants?.[0]?.participantId || null;
   const participant = session.participants?.find((p) => p.participantId === participantId);
   const userId = participant?.userId || 'default';
-  const lat = 41.88;
-  const lng = -87.63;
+  const lat = session.settings.locationLat ?? 41.88;
+  const lng = session.settings.locationLng ?? -87.63;
+  const radiusMiles = session.settings.searchRadius || 3;
+  // ── Build pool from Google Places when available, else fall back to demo data ──
+  let poolSource = TONIGHT_POOL;
+  const sessionCuisines = session.settings.cuisines || [];
+  if (GOOGLE_PLACES_API_KEY) {
+    try {
+      const radiusMeters = radiusMiles * 1609.34;
+      const keyword = sessionCuisines.length > 0
+        ? cuisineChipToNearbyKeyword(sessionCuisines[0])
+        : '';
+      const textQuery = keyword
+        ? `${keyword} restaurants`
+        : 'restaurants';
+      const [nearbyRaw, textRaw] = await Promise.all([
+        googlePlacesNearbyRestaurants(lat, lng, radiusMeters, keyword || undefined),
+        googlePlacesTextSearch(textQuery, lat, lng, radiusMeters),
+      ]);
+      // Merge + dedupe by placeId (same logic as Discover)
+      const mergedMap = new Map();
+      for (const p of nearbyRaw) { if (p.placeId) mergedMap.set(p.placeId, p); }
+      for (const p of textRaw) {
+        if (!p.placeId) continue;
+        const existing = mergedMap.get(p.placeId);
+        if (!existing) { mergedMap.set(p.placeId, p); }
+        else {
+          const richness = (e) =>
+            (e.rating != null ? 1 : 0) + (e.userRatingsTotal != null ? 1 : 0) +
+            (e.priceLevel != null ? 1 : 0) + (e.photoRef ? 1 : 0);
+          if (richness(p) > richness(existing)) mergedMap.set(p.placeId, p);
+        }
+      }
+      const merged = Array.from(mergedMap.values()).filter((p) => isFoodPlace(p.types));
+      if (merged.length > 0) {
+        // Convert Google Places results to pool items
+        poolSource = merged.map((p, idx) => {
+          let restaurant = findRestaurantByPlaceId(p.placeId);
+          if (!restaurant) {
+            const restaurantId = `g_${String(p.placeId || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 18) || `${Date.now()}_${idx}`}`;
+            restaurant = {
+              restaurantId,
+              placeId: p.placeId,
+              googlePlaceId: p.placeId,
+              name: p.name,
+              address: p.address,
+              lat: p.lat ?? lat,
+              lng: p.lng ?? lng,
+              displayImageUrl: null,
+              displayImageSourceType: IMAGE_SOURCE.PLACEHOLDER,
+              displayImageLastResolvedAt: null,
+              createdAt: new Date().toISOString(),
+            };
+            restaurants.push(restaurant);
+          }
+          const allCuisines = [...deriveCuisinesFromPlace(p.types, p.name, '')];
+          return {
+            restaurantId: restaurant.restaurantId,
+            name: p.name,
+            address: p.address,
+            lat: p.lat ?? lat,
+            lng: p.lng ?? lng,
+            rating: p.rating ?? 4,
+            cuisine: mapFoodCategory(p.types, p.name),
+            cuisines: allCuisines,
+            neighborhood: (p.address || '').split(',')[0] || '',
+            priceLevel: p.priceLevel ?? null,
+            isOpenNow: p.isOpenNow ?? null,
+          };
+        });
+      }
+    } catch (err) {
+      console.warn('[BiteRight] Tonight pool Google Places fetch failed, using demo pool:', err.message);
+    }
+  }
+
   const ranked = getTonightPoolRanked({
-    pool: TONIGHT_POOL,
+    pool: poolSource,
     lat,
     lng,
-    radiusMiles: 10,
+    radiusMiles,
     participantId,
     sessionId: session.id,
     tonightSwipes,
@@ -1173,9 +3246,24 @@ app.get('/api/tonight/sessions/:code/pool', async (req, res) => {
     groupSessions,
     negativeFeedback,
     distanceMiles,
+    cuisines: sessionCuisines,
+    priceRange: session.settings.priceRange || [],
+    deckSize: session.settings.deckSize || 0,
   });
+  // Prepend nominated restaurants so they always appear in the swipe pool
+  const nominatedItems = (session.settings.nominatedRestaurants || []).map((n) => ({
+    restaurantId: n.restaurantId,
+    name: n.name,
+    address: n.address || '',
+    lat,
+    lng,
+    nominated: true,
+  }));
+  const nominatedIds = new Set(nominatedItems.map((n) => n.restaurantId));
+  const combined = [...nominatedItems, ...ranked.filter((r) => !nominatedIds.has(r.restaurantId))];
+
   const start = page * pageSize;
-  const slice = ranked.slice(start, start + pageSize);
+  const slice = combined.slice(start, start + pageSize);
   const tonightCtx = { savedRestaurants, tonightSwipes, logs, friends, groupSessions, userDisplayNames };
   const pool = await Promise.all(
     slice.map(async (r) => {
@@ -1190,16 +3278,20 @@ app.get('/api/tonight/sessions/:code/pool', async (req, res) => {
         restaurants.push({
           restaurantId: r.restaurantId,
           placeId: null,
+          googlePlaceId: null,
           name: r.name,
           address: r.address || '',
           lat: r.lat,
           lng: r.lng,
+          displayImageUrl: null,
+          displayImageSourceType: IMAGE_SOURCE.PLACEHOLDER,
+          displayImageLastResolvedAt: null,
           createdAt: new Date().toISOString(),
         });
         fromDb = findRestaurantById(r.restaurantId);
       }
       const rawUrl = await resolveRestaurantCardImage(r.restaurantId, fromDb?.placeId ?? null, null);
-      const abs = toAbsoluteImageUrl(rawUrl);
+      const abs = rawUrl ? toAbsoluteImageUrl(rawUrl) : null;
       const socialProofBadge =
         getSocialProofBadge(r.restaurantId, userId, {
           ...tonightCtx,
@@ -1210,17 +3302,29 @@ app.get('/api/tonight/sessions/:code/pool', async (req, res) => {
         restaurantId: r.restaurantId,
         name: r.name,
         address: r.address,
+        cuisine: r.cuisine || null,
+        neighborhood: r.neighborhood || null,
+        priceLevel: r.priceLevel ?? null,
         placeId: fromDb?.placeId ?? null,
+        googlePlaceId: fromDb?.googlePlaceId ?? fromDb?.placeId ?? null,
+        displayImageUrl: abs,
+        displayImageSourceType: fromDb?.displayImageSourceType ?? IMAGE_SOURCE.PLACEHOLDER,
+        displayImageLastResolvedAt: fromDb?.displayImageLastResolvedAt ?? null,
         previewPhotoUrl: abs,
         imageUrl: abs,
         socialProofBadge,
         groupSignal,
+        distanceMi: (r.lat != null && r.lng != null) ? Math.round(distanceMiles(lat, lng, r.lat, r.lng) * 10) / 10 : null,
+        whyLine: generateWhyLine(r, userId, tonightCtx),
+        recommendedDishes: getRecommendedDishes(r.cuisine, r.name),
+        isOpenNow: r.isOpenNow ?? null,
+        rating: r.rating ?? null,
       };
     }),
   );
   res.json({
     pool,
-    total: ranked.length,
+    total: combined.length,
     page,
     pageSize,
   });
@@ -1228,7 +3332,7 @@ app.get('/api/tonight/sessions/:code/pool', async (req, res) => {
 
 // POST /api/tonight/sessions/:code/swipe (idempotent upsert per participantId + restaurantId).
 // If action===LIKE and userId provided, upsert SavedRestaurant. Guests (participantId only): no save; MVP does not persist saves for guests.
-app.post('/api/tonight/sessions/:code/swipe', (req, res) => {
+app.post('/api/tonight/sessions/:code/swipe', async (req, res) => {
   const session = findSessionByCode(req.params.code);
   if (!session) {
     return res.status(404).json({ error: 'Session not found or expired' });
@@ -1266,15 +3370,18 @@ app.post('/api/tonight/sessions/:code/swipe', (req, res) => {
 
   let saved = false;
   if (action === 'LIKE' && userId) {
-    const existingSaved = savedRestaurants.find((s) => s.userId === userId && s.restaurantId === restaurantId);
+    const existingSaved = await db.findSavedRestaurant(userId, restaurantId)
+      || savedRestaurants.find((s) => s.userId === userId && s.restaurantId === restaurantId);
     if (!existingSaved) {
-      savedRestaurants.push({
+      const savedEntry = {
         id: 'saved_' + Date.now(),
         userId,
         restaurantId,
         savedAt: new Date().toISOString(),
         source: 'TONIGHT',
-      });
+      };
+      await db.insertSavedRestaurant(savedEntry);
+      savedRestaurants.push(savedEntry);
       saved = true;
     }
   }
@@ -1285,16 +3392,17 @@ app.post('/api/tonight/sessions/:code/swipe', (req, res) => {
 // --- Saved restaurants (Profile) --------------------------------------------
 
 // GET /api/users/:userId/saved?sort=location|distance&lat=&lng=
-app.get('/api/users/:userId/saved', (req, res) => {
+app.get('/api/users/:userId/saved', async (req, res) => {
   const userId = req.params.userId;
   const sort = (req.query.sort || 'location').toLowerCase();
   const lat = parseFloat(req.query.lat);
   const lng = parseFloat(req.query.lng);
 
-  const saved = savedRestaurants.filter((s) => s.userId === userId);
-  const withInfo = saved
-    .map((s) => {
-      const info = getRestaurantInfo(s.restaurantId);
+  // Load from Supabase, fall back to in-memory
+  const saved = await db.getSavedRestaurants(userId);
+  const withInfo = (await Promise.all(saved
+    .map(async (s) => {
+      const info = await getRestaurantInfo(s.restaurantId);
       const snap = s.snapshot || null;
       if (!info && !snap) return null;
       const name = info?.name || snap?.name || 'Saved place';
@@ -1303,8 +3411,10 @@ app.get('/api/users/:userId/saved', (req, res) => {
       const neighborhood = info?.neighborhood ?? snap?.neighborhood ?? null;
       const lat = info?.lat ?? snap?.lat ?? null;
       const lng = info?.lng ?? snap?.lng ?? null;
-      const previewPhotoUrl =
-        toAbsoluteImageUrl(info?.previewPhotoUrl || snap?.previewPhotoUrl || null) || null;
+      const resolvedDisplayImageUrl =
+        toAbsoluteImageUrl(
+          info?.displayImageUrl || info?.previewPhotoUrl || snap?.previewPhotoUrl || null,
+        ) || null;
       const canonicalId = info?.restaurantId || s.restaurantId;
       const placeId = info?.placeId || (String(s.restaurantId).startsWith('ChIJ') ? s.restaurantId : null);
       return {
@@ -1316,12 +3426,15 @@ app.get('/api/users/:userId/saved', (req, res) => {
         neighborhood,
         lat,
         lng,
-        previewPhotoUrl,
+        googlePlaceId: info?.googlePlaceId || placeId || null,
+        displayImageUrl: resolvedDisplayImageUrl,
+        displayImageSourceType: info?.displayImageSourceType || IMAGE_SOURCE.PLACEHOLDER,
+        displayImageLastResolvedAt: info?.displayImageLastResolvedAt || null,
+        previewPhotoUrl: resolvedDisplayImageUrl,
         savedAt: s.savedAt,
         source: (s.source === 'swipe' || s.source === 'TONIGHT') ? 'swipe' : 'manual',
       };
-    })
-    .filter(Boolean);
+    }))).filter(Boolean);
 
   if (sort === 'distance' && Number.isFinite(lat) && Number.isFinite(lng)) {
     function dist(a, b) {
@@ -1345,7 +3458,7 @@ app.get('/api/users/:userId/saved', (req, res) => {
 });
 
 // POST /api/users/:userId/saved — add saved restaurant (manual or any source)
-app.post('/api/users/:userId/saved', (req, res) => {
+app.post('/api/users/:userId/saved', async (req, res) => {
   const userId = req.params.userId;
   const body = req.body || {};
   const { restaurantId, source, name, photo, cuisine, neighborhood, address, lat, lng, cuisines } = body;
@@ -1364,21 +3477,26 @@ app.post('/api/users/:userId/saved', (req, res) => {
     });
   }
   let canonicalId = restaurantId;
-  const byPlace = String(restaurantId).startsWith('ChIJ') ? findRestaurantByPlaceId(restaurantId) : null;
+  const byPlace = String(restaurantId).startsWith('ChIJ') ? await findRestaurantByPlaceIdAsync(restaurantId) : null;
   if (byPlace) canonicalId = byPlace.restaurantId;
 
-  const existing = savedRestaurants.find(
-    (s) => s.userId === userId && (s.restaurantId === restaurantId || s.restaurantId === canonicalId),
-  );
+  // Check Supabase first, then in-memory
+  const existing = await db.findSavedRestaurant(userId, canonicalId)
+    || (canonicalId !== restaurantId ? await db.findSavedRestaurant(userId, restaurantId) : null)
+    || savedRestaurants.find(
+      (s) => s.userId === userId && (s.restaurantId === restaurantId || s.restaurantId === canonicalId),
+    );
   if (existing) {
     if (name && typeof name === 'string') {
-      existing.snapshot = {
+      const updatedSnapshot = {
         ...(existing.snapshot || {}),
         name,
         previewPhotoUrl: photo || existing.snapshot?.previewPhotoUrl,
         neighborhood: neighborhood ?? existing.snapshot?.neighborhood,
         address: address ?? existing.snapshot?.address,
       };
+      existing.snapshot = updatedSnapshot;
+      await db.updateSavedRestaurant(existing.id, { snapshot: updatedSnapshot });
     }
     if (process.env.NODE_ENV !== 'production') {
       console.log('[BiteRight][Saved] POST result alreadySaved', { userId, restaurantId: canonicalId });
@@ -1396,14 +3514,17 @@ app.post('/api/users/:userId/saved', (req, res) => {
     cuisines: Array.isArray(cuisines) ? cuisines.filter((x) => typeof x === 'string') : undefined,
   };
   const hasSnap = snap.name || snap.previewPhotoUrl || snap.neighborhood || snap.address || snap.cuisines?.length;
-  savedRestaurants.push({
+  const savedEntry = {
     id: 'saved_' + Date.now(),
     userId,
     restaurantId: canonicalId,
     savedAt: new Date().toISOString(),
     source: source === 'swipe' || source === 'manual' ? source : 'manual',
     snapshot: hasSnap ? snap : undefined,
-  });
+  };
+  // Persist to Supabase + in-memory
+  await db.insertSavedRestaurant(savedEntry);
+  savedRestaurants.push(savedEntry);
   if (process.env.NODE_ENV !== 'production') {
     console.log('[BiteRight][Saved] POST result saved', { userId, restaurantId: canonicalId });
   }
@@ -1411,13 +3532,14 @@ app.post('/api/users/:userId/saved', (req, res) => {
 });
 
 // Negative feedback on recommendations: hide / suggest_less
-app.post('/api/users/:userId/negative-feedback', (req, res) => {
+app.post('/api/users/:userId/negative-feedback', async (req, res) => {
   const userId = req.params.userId;
   const { restaurantId, actionType } = req.body || {};
-  if (!restaurantId || (actionType !== 'hide' && actionType !== 'suggest_less')) {
+  const validActions = ['hide', 'suggest_less', 'suggest_less_cuisine', 'suggest_less_price', 'suggest_less_location'];
+  if (!restaurantId || !validActions.includes(actionType)) {
     return res.status(400).json({ error: 'restaurantId and valid actionType required' });
   }
-  const info = getRestaurantInfo(restaurantId);
+  const info = await getRestaurantInfo(restaurantId);
   if (!info) {
     return res.status(404).json({ error: 'Restaurant not found' });
   }
@@ -1439,19 +3561,26 @@ app.post('/api/users/:userId/negative-feedback', (req, res) => {
 });
 
 // DELETE /api/users/:userId/saved/:restaurantId — remove saved restaurant
-app.delete('/api/users/:userId/saved/:restaurantId', (req, res) => {
+app.delete('/api/users/:userId/saved/:restaurantId', async (req, res) => {
   const userId = req.params.userId;
   const rawId = req.params.restaurantId;
   let canonical = rawId;
-  const byPlace = String(rawId).startsWith('ChIJ') ? findRestaurantByPlaceId(rawId) : null;
+  const byPlace = String(rawId).startsWith('ChIJ') ? await findRestaurantByPlaceIdAsync(rawId) : null;
   if (byPlace) canonical = byPlace.restaurantId;
+
+  // Delete from Supabase
+  const deleted = await db.deleteSavedRestaurant(userId, canonical)
+    || (canonical !== rawId ? await db.deleteSavedRestaurant(userId, rawId) : false);
+
+  // Also remove from in-memory
   const index = savedRestaurants.findIndex(
     (s) => s.userId === userId && (s.restaurantId === rawId || s.restaurantId === canonical),
   );
-  if (index === -1) {
+  if (index !== -1) savedRestaurants.splice(index, 1);
+
+  if (!deleted && index === -1) {
     return res.status(404).json({ error: 'Saved restaurant not found' });
   }
-  savedRestaurants.splice(index, 1);
   res.json({ ok: true, removed: true });
 });
 
@@ -1513,7 +3642,7 @@ app.get('/api/geo/autocomplete', async (req, res) => {
 
 // GET /api/tonight/sessions/:code/matches
 // Match = liked by ALL participants (strict-all). Optional: threshold mode via query ?threshold=0.7
-app.get('/api/tonight/sessions/:code/matches', (req, res) => {
+app.get('/api/tonight/sessions/:code/matches', async (req, res) => {
   const session = findSessionByCode(req.params.code);
   if (!session) {
     return res.status(404).json({ error: 'Session not found or expired' });
@@ -1546,12 +3675,15 @@ app.get('/api/tonight/sessions/:code/matches', (req, res) => {
     if (passCount > 0) continue;
     if (likeCount >= likesRequired) {
       const percentMatch = totalParticipants > 0 ? (likeCount / totalParticipants) * 100 : 100;
+      const placeId = findRestaurantById(rest.restaurantId)?.googlePlaceId ?? findRestaurantById(rest.restaurantId)?.placeId ?? null;
+      const resolvedUrl = await resolveRestaurantCardImage(rest.restaurantId, placeId, undefined);
       matches.push({
         restaurantId: rest.restaurantId,
         name: rest.name,
         address: rest.address,
         percentMatch: Math.round(percentMatch),
-        previewPhotoUrl: toAbsoluteImageUrl(rest.previewPhotoUrl) || rest.previewPhotoUrl,
+        displayImageUrl: resolvedUrl ? toAbsoluteImageUrl(resolvedUrl) : null,
+        previewPhotoUrl: resolvedUrl ? toAbsoluteImageUrl(resolvedUrl) : null,
       });
     }
   }
@@ -1579,7 +3711,8 @@ async function attachImageAndPlaceId(rec, userId, ctx) {
     mappedCat ||
     '';
   const rawUrl = await resolveRestaurantCardImage(rec.restaurantId, placeId, undefined);
-  const finalImageUrl = toAbsoluteImageUrl(rawUrl || NEUTRAL_PLACEHOLDER_URL);
+  const finalImageUrl = rawUrl ? toAbsoluteImageUrl(rawUrl) : null;
+  const restaurantRow = findRestaurantById(rec.restaurantId);
   const socialProofBadge =
     getSocialProofBadge(rec.restaurantId, userId, {
       savedRestaurants: ctx?.savedRestaurants,
@@ -1591,6 +3724,7 @@ async function attachImageAndPlaceId(rec, userId, ctx) {
       similarTasteSignal: rec.similarTasteSignal,
       cuisine: rec.cuisine,
     }) || null;
+  const staticInfo = STATIC_RESTAURANTS[rec.restaurantId];
   return {
     restaurant: {
       id: rec.restaurantId,
@@ -1600,7 +3734,13 @@ async function attachImageAndPlaceId(rec, userId, ctx) {
       cuisine: displayCuisine,
       cuisines: derivedCuisines.length ? derivedCuisines : mappedCat ? [mappedCat] : [],
       priceLevel: rec.priceLevel ?? 2,
+      lat: restaurantRow?.lat ?? staticInfo?.lat ?? null,
+      lng: restaurantRow?.lng ?? staticInfo?.lng ?? null,
       placeId,
+      googlePlaceId: restaurantRow?.googlePlaceId ?? placeId ?? null,
+      displayImageUrl: finalImageUrl,
+      displayImageSourceType: restaurantRow?.displayImageSourceType ?? IMAGE_SOURCE.PLACEHOLDER,
+      displayImageLastResolvedAt: restaurantRow?.displayImageLastResolvedAt ?? null,
       // Normalize with Feed's successful field name.
       previewPhotoUrl: finalImageUrl,
       // Keep backward-compatible alias for existing Discover consumers.
@@ -1616,94 +3756,393 @@ async function attachImageAndPlaceId(rec, userId, ctx) {
  * Discover from Google Nearby (optionally biased with cuisine keyword + post-filter).
  * @returns {Promise<{ isColdStart: boolean; discoverMode: string; sections: object; recommendations: any[]; location: object; radiusMiles: number }>}
  */
+// DEBUG: helper to trace a specific restaurant through the pipeline
+function _debugNormalizeName(name = '') {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+function _debugTarget(targetName, restaurants, stage) {
+  const norm = _debugNormalizeName(targetName);
+  const target = restaurants.find((r) =>
+    _debugNormalizeName(r.name).includes(norm)
+  );
+  if (!target) {
+    console.log(`[DEBUG:${stage}] ${targetName} NOT FOUND (${restaurants.length} candidates)`);
+    return;
+  }
+  console.log(`[DEBUG:${stage}] ${targetName} FOUND`, {
+    name: target.name,
+    cuisine: target.cuisine,
+    subcategories: target.subcategories,
+    address: target.address,
+    distanceMeters: target.distanceMeters,
+    rating: target.rating,
+    reviewCount: target.userRatingsTotal,
+  });
+}
+
 async function buildGooglePlaceDiscover(lat, lng, radiusMiles, userId, cuisineFilter, meta) {
   const keyword = cuisineFilter ? cuisineChipToNearbyKeyword(cuisineFilter) : '';
+  const searchTerm = (meta?.search || '').trim();
   console.log('[BiteRight][Discover] Google Places discover', {
     ...meta,
     cuisineReceived: cuisineFilter || null,
     nearbyKeyword: keyword || null,
+    searchTerm: searchTerm || null,
   });
 
-  const nearbyRaw = await googlePlacesNearbyRestaurants(
-    lat,
-    lng,
-    radiusMiles * 1609.34,
-    keyword || undefined,
-  );
-  let nearby = nearbyRaw.filter((p) => isFoodPlace(p.types));
+  // ── Hybrid candidate fetch: Nearby Search + Text Search in parallel ──
+  const radiusMeters = radiusMiles * 1609.34;
+
+  // When the search term matches a known cuisine alias, use it as a Nearby
+  // Search keyword so we get the same broad results as the old cuisine chips.
+  const SEARCH_TO_NEARBY_KEYWORD = {
+    ramen: 'ramen', sushi: 'sushi', tacos: 'mexican', pizza: 'pizza',
+    'bubble tea': 'boba tea', boba: 'boba tea', brunch: 'brunch',
+    pho: 'pho', wings: 'wings', burger: 'burger', burgers: 'burger', curry: 'curry',
+    'dim sum': 'dim sum', bbq: 'barbecue', steak: 'steakhouse',
+    seafood: 'seafood', korean: 'korean', thai: 'thai', chinese: 'chinese',
+    indian: 'indian', mediterranean: 'mediterranean', japanese: 'japanese',
+    italian: 'italian', mexican: 'mexican', french: 'french', greek: 'greek',
+    dessert: 'dessert', desserts: 'dessert', 'ice cream': 'ice cream',
+    coffee: 'coffee', cafe: 'coffee', bakery: 'bakery',
+  };
+  const searchNearbyKeyword = searchTerm
+    ? (SEARCH_TO_NEARBY_KEYWORD[searchTerm.toLowerCase()] || '')
+    : '';
+
+  // ── Occasion → search keyword mapping ─────────────────────────────────
+  const OCCASION_SEARCH_KEYWORD = {
+    brunch: 'brunch', lunch: 'lunch', dinner: 'dinner restaurant',
+    bars: 'bar cocktail', dessert: 'dessert', coffee: 'coffee cafe',
+    late_night: 'late night food',
+  };
+  const occasionKeyword = meta?.occasion ? (OCCASION_SEARCH_KEYWORD[meta.occasion] || '') : '';
+  const occasionNearbyKeyword = occasionKeyword ? occasionKeyword.split(' ')[0] : '';
+
+  const nearbyKeyword = keyword || searchNearbyKeyword || occasionNearbyKeyword;
+
+  // Combine free-text search term with cuisine keyword + occasion for the Text Search query.
+  const combinedKeyword = [searchTerm, keyword, occasionKeyword].filter(Boolean).join(' ');
+  const textQuery = combinedKeyword
+    ? (meta?.query ? `${combinedKeyword} restaurants near ${meta.query}` : `${combinedKeyword} restaurants`)
+    : (meta?.query ? `restaurants near ${meta.query}` : 'restaurants');
+
+  // Run Nearby Search when we have a keyword for it (cuisine filter OR recognized search term OR occasion).
+  const runNearby = !searchTerm || !!searchNearbyKeyword || !!occasionKeyword;
+  // "best of" query surfaces top-rated places that standard queries miss.
+  const bestOfKeyword = nearbyKeyword || searchTerm || occasionNearbyKeyword || '';
+  // When radius is large (>2mi), also run a focused nearby search at 2mi to
+  // capture dense local results that Google might skip in the wider search.
+  const FOCUSED_RADIUS_METERS = 2 * 1609.34; // 2 miles
+  const needsFocusedSearch = radiusMeters > FOCUSED_RADIUS_METERS * 1.2;
+
+  const [nearbyRaw, textRaw, bestOfRaw, nearbyFocusedRaw] = await Promise.all([
+    runNearby ? googlePlacesNearbyRestaurants(lat, lng, radiusMeters, nearbyKeyword || undefined) : Promise.resolve([]),
+    googlePlacesTextSearch(textQuery, lat, lng, radiusMeters, { skipTypeFilter: !!searchTerm }),
+    bestOfKeyword ? googlePlacesBestOfSearch(bestOfKeyword, lat, lng, radiusMeters) : Promise.resolve([]),
+    needsFocusedSearch && runNearby ? googlePlacesNearbyRestaurants(lat, lng, FOCUSED_RADIUS_METERS, nearbyKeyword || undefined) : Promise.resolve([]),
+  ]);
+
+  // DEBUG: tracing La Luna through pipeline — raw fetch
+  _debugTarget('La Luna', nearbyRaw, 'RAW_FETCH_NEARBY');
+  _debugTarget('La Luna', textRaw, 'RAW_FETCH_TEXT');
+
+  console.log('[BiteRight][Discover] hybrid fetch counts', {
+    nearbyRaw: nearbyRaw.length,
+    textRaw: textRaw.length,
+    bestOfRaw: bestOfRaw.length,
+    nearbyFocusedRaw: nearbyFocusedRaw.length,
+  });
+
+  // Merge + dedupe all sources: prefer the entry with richer metadata.
+  // Tag results from text/best-of search so we can trust Google's relevance later.
+  const textPlaceIds = new Set(textRaw.map((p) => p.placeId).filter(Boolean));
+  const bestOfPlaceIds = new Set(bestOfRaw.map((p) => p.placeId).filter(Boolean));
+
+  const mergedMap = new Map();
+  const richness = (e) =>
+    (e.rating != null ? 1 : 0) +
+    (e.userRatingsTotal != null ? 1 : 0) +
+    (e.priceLevel != null ? 1 : 0) +
+    (e.photoRef ? 1 : 0) +
+    (e.types?.length || 0);
+  for (const source of [nearbyRaw, textRaw, bestOfRaw, nearbyFocusedRaw]) {
+    for (const p of source) {
+      if (!p.placeId) continue;
+      const existing = mergedMap.get(p.placeId);
+      if (!existing) {
+        mergedMap.set(p.placeId, { ...p, _fromSearchQuery: textPlaceIds.has(p.placeId) || bestOfPlaceIds.has(p.placeId) });
+      } else if (richness(p) > richness(existing)) {
+        mergedMap.set(p.placeId, { ...p, _fromSearchQuery: existing._fromSearchQuery || textPlaceIds.has(p.placeId) || bestOfPlaceIds.has(p.placeId) });
+      }
+    }
+  }
+  const mergedRaw = Array.from(mergedMap.values());
+
+  // When search term is active, trust Google's text search results more broadly.
+  let nearby = searchTerm
+    ? mergedRaw.filter((p) => !p.types?.some((t) => ['lodging', 'hospital', 'school', 'bank', 'gym'].includes(t)))
+    : mergedRaw.filter((p) => isFoodPlace(p.types));
+
+  // DEBUG: tracing La Luna through pipeline — after isFoodPlace filter
+  _debugTarget('La Luna', nearby, 'AFTER_FOOD_FILTER');
   const discoverCtx = { savedRestaurants, tonightSwipes, logs, friends, groupSessions, userDisplayNames };
 
-  let recs = nearby.map((p, idx) => {
+  // ── Ensure each Google Place has a local restaurant record ────────
+  const placeInputs = nearby.map((p, idx) => {
     let restaurant = findRestaurantByPlaceId(p.placeId);
     if (!restaurant) {
       const restaurantId = `g_${String(p.placeId || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 18) || `${Date.now()}_${idx}`}`;
       restaurant = {
         restaurantId,
         placeId: p.placeId,
+        googlePlaceId: p.placeId,
         name: p.name,
         address: p.address,
         lat: p.lat ?? lat,
         lng: p.lng ?? lng,
-        fallbackPhotoRef: p.photoRef || undefined,
-        fallbackPhotoUrl: p.photoRef ? buildPhotoProxyUrl(restaurantId) : undefined,
-        bestFoodPhotoRef: p.photoRef || undefined,
-        bestFoodPhotoUrl: p.photoRef ? buildPhotoProxyUrl(restaurantId) : undefined,
+        displayImageUrl: null,
+        displayImageSourceType: IMAGE_SOURCE.PLACEHOLDER,
+        displayImageLastResolvedAt: null,
         createdAt: new Date().toISOString(),
       };
       restaurants.push(restaurant);
     }
-
-    const score = p.rating != null ? Math.min(99, Math.round((p.rating / 5) * 100)) : Math.max(55, 88 - idx);
     return {
+      ...p,
       restaurantId: restaurant.restaurantId,
-      name: p.name,
-      address: p.address,
-      neighborhood: p.address ? String(p.address).split(',')[0].trim() : null,
       cuisine: mapFoodCategory(p.types, p.name),
-      types: p.types,
-      priceLevel: p.priceLevel ?? 2,
-      percentMatch: score,
-      explanations: ['Recommended nearby'],
-      distance: 0,
-      inRadius: true,
-      similarTasteSignal: false,
+      photos: p.photoRef ? [p.photoRef] : [],
     };
   });
 
+  // DEBUG: tracing La Luna through pipeline — before ranking
+  _debugTarget('La Luna', placeInputs, 'BEFORE_RANKING');
+
+  // ── Run ranking pipeline (score → curate → diversify → reasons) ──
+  const ranked = rankPlaces(placeInputs, { lat, lng }, {
+    locationQuery: meta?.query || null,
+    radiusMiles,
+  });
+
+  // DEBUG: tracing La Luna through pipeline — after ranking
+  _debugTarget('La Luna', ranked, 'AFTER_RANKING');
+
+  // Attach restaurantId back from placeInputs and pass through new fields
+  function mapRankedToRec(r, idx) {
+    const input = placeInputs.find((p) => p.name === r.name && p.address === r.address) || placeInputs[idx];
+    return {
+      restaurantId: input?.restaurantId || `g_ranked_${idx}`,
+      name: r.name,
+      address: r.address,
+      neighborhood: r.neighborhood,
+      cuisine: r.cuisine,
+      types: r.types || [],
+      priceLevel: r.priceLevel,
+      percentMatch: r.percentMatch,
+      explanations: r.explanations,
+      heroLabel: r.heroLabel || null,
+      cardTags: r.cardTags || [],
+      distance: r.distance,
+      inRadius: r.inRadius,
+      similarTasteSignal: r.similarTasteSignal,
+      // Preserve _scoring for section re-ranking
+      _scoring: r._scoring,
+      _baseScore: r._baseScore,
+      _finalScore: r._finalScore,
+      // Carry through search origin tag for relevance filter
+      _fromSearchQuery: input?._fromSearchQuery || false,
+    };
+  }
+
+  let recs = ranked.map(mapRankedToRec);
+
+  // ── Cuisine post-filter (preserves existing logic) ──────────────
   if (cuisineFilter) {
+    const GENERIC_LABELS = new Set(['Restaurant', 'Takeout', '']);
     recs = recs.filter((rec) => {
       const derived = deriveCuisinesFromPlace(rec.types || [], rec.name, rec.cuisine);
-      const included = restaurantMatchesCuisineFilter(derived, cuisineFilter);
+      const matchesFilter = restaurantMatchesCuisineFilter(derived, cuisineFilter, rec.name, rec.cuisine);
+
+      if (matchesFilter) return true;
+
+      // When a keyword was sent to Google, trust results that have no specific
+      // conflicting cuisine (e.g. "Koji" for sushi has generic types only).
+      // But filter out results that are clearly a DIFFERENT cuisine.
+      if (keyword) {
+        const specificLabels = derived.filter((l) => !GENERIC_LABELS.has(l));
+        if (specificLabels.length === 0) {
+          console.log('[BiteRight][Discover] inclusion', {
+            name: rec.name, derivedCuisines: derived, selectedCuisine: cuisineFilter,
+            included: true, reason: 'trusted-google-keyword (no conflicting cuisine)',
+          });
+          return true;
+        }
+      }
+
       console.log('[BiteRight][Discover] inclusion', {
-        name: rec.name,
-        derivedCuisines: derived,
-        selectedCuisine: cuisineFilter,
-        included,
-        reason: included ? 'cuisine-match' : 'filtered-out',
+        name: rec.name, derivedCuisines: derived, selectedCuisine: cuisineFilter,
+        included: false, reason: 'filtered-out',
       });
-      return included;
+      return false;
     });
   }
 
-  recs = recs.slice(0, 30);
+  // ── Search relevance post-filter ─────────────────────────────────
+  // When a free-text search term is active, drop results that clearly
+  // don't match the search intent.
+  if (searchTerm) {
+    // Expand search term to related cuisine/type aliases so "ramen" matches
+    // restaurants tagged as "japanese" by Google, etc.
+    const SEARCH_ALIASES = {
+      ramen: ['ramen', 'japanese', 'noodle', 'udon', 'soba'],
+      sushi: ['sushi', 'japanese', 'omakase', 'sashimi', 'nigiri'],
+      tacos: ['taco', 'mexican', 'taqueria', 'burrito'],
+      pizza: ['pizza', 'pizzeria', 'neapolitan', 'deep dish'],
+      pho: ['pho', 'vietnamese', 'noodle'],
+      burger: ['burger', 'hamburger', 'american', 'diner'],
+      'bubble tea': ['bubble tea', 'boba', 'tea', 'taiwanese'],
+      boba: ['boba', 'bubble tea', 'tea', 'taiwanese'],
+      brunch: ['brunch', 'breakfast', 'cafe', 'pancake', 'waffle', 'eggs'],
+      wings: ['wings', 'chicken', 'american', 'sports bar'],
+      curry: ['curry', 'indian', 'thai', 'japanese'],
+      'dim sum': ['dim sum', 'chinese', 'dumpling', 'cantonese'],
+      bbq: ['bbq', 'barbecue', 'smokehouse', 'brisket'],
+      steak: ['steak', 'steakhouse', 'chophouse', 'prime'],
+      seafood: ['seafood', 'fish', 'oyster', 'lobster', 'crab'],
+      korean: ['korean', 'kbbq', 'bibimbap', 'bulgogi'],
+      thai: ['thai', 'pad thai', 'curry', 'tom yum'],
+      chinese: ['chinese', 'dim sum', 'szechuan', 'cantonese', 'dumpling'],
+      indian: ['indian', 'curry', 'tandoor', 'biryani', 'masala'],
+      mediterranean: ['mediterranean', 'hummus', 'kebab', 'shawarma', 'falafel', 'greek'],
+      dessert: ['dessert', 'dessert_shop', 'ice cream', 'bakery', 'gelato', 'cobbler', 'cupcake', 'donut', 'sweets', 'frozen yogurt', 'cake', 'pie', 'pastry', 'cookie', 'milkshake', 'fudge', 'brownie', 'macaron'],
+      desserts: ['dessert', 'dessert_shop', 'ice cream', 'bakery', 'gelato', 'cobbler', 'cupcake', 'donut', 'sweets', 'frozen yogurt', 'cake', 'pie', 'pastry', 'cookie', 'milkshake', 'fudge', 'brownie', 'macaron'],
+      'ice cream': ['ice cream', 'ice_cream_shop', 'gelato', 'frozen yogurt', 'dessert', 'dessert_shop'],
+    };
+    const searchLower = searchTerm.toLowerCase();
+    const expanded = SEARCH_ALIASES[searchLower] || [searchLower];
+
+    const beforeCount = recs.length;
+    recs = recs.filter((rec) => {
+      // If Google returned this result specifically for our search query
+      // (text search or best-of search), trust Google's relevance ranking.
+      // This catches places like Au Cheval (famous burger spot) whose name
+      // and types don't contain "burger" but Google knows it's relevant.
+      if (rec._fromSearchQuery) return true;
+
+      const haystack = [
+        rec.name,
+        rec.cuisine,
+        ...(rec.types || []),
+        ...deriveCuisinesFromPlace(rec.types || [], rec.name, rec.cuisine),
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      // Result matches if ANY expanded alias appears in its metadata
+      return expanded.some((alias) => haystack.includes(alias));
+    });
+    console.log('[BiteRight][Discover] search relevance filter', {
+      searchTerm,
+      expandedAliases: expanded,
+      before: beforeCount,
+      after: recs.length,
+    });
+  }
+
+  // DEBUG: tracing La Luna through pipeline — after cuisine post-filter
+  _debugTarget('La Luna', recs, 'AFTER_CUISINE_FILTER');
+
+  // ── Occasion filter ─────────────────────────────────────────────────
+  // Maps occasion labels to Google Place types, cuisine labels, and name keywords
+  // so we can filter and boost relevant results.
+  const occasionParam = meta?.occasion;
+  if (occasionParam) {
+    const OCCASION_TYPE_MAP = {
+      brunch:     { types: ['breakfast_restaurant', 'brunch_restaurant', 'cafe'], keywords: /\b(brunch|breakfast|pancake|waffle|eggs|benedict|mimosa|cafe)\b/i },
+      lunch:      { types: ['restaurant', 'cafe', 'meal_takeaway'], keywords: /\b(lunch|sandwich|salad|soup|deli|cafe|bistro)\b/i },
+      dinner:     { types: ['restaurant', 'fine_dining_restaurant', 'steak_house'], keywords: /\b(dinner|fine dining|steakhouse|bistro|trattoria|supper)\b/i },
+      bars:       { types: ['bar', 'night_club', 'wine_bar'], keywords: /\b(bar|cocktail|lounge|pub|taproom|brewery|wine bar|speakeasy|tavern)\b/i },
+      dessert:    { types: ['dessert_shop', 'ice_cream_shop', 'bakery'], keywords: /\b(dessert|ice cream|gelato|bakery|cake|pie|cupcake|donut|pastry|cookie|cobbler|sweets)\b/i },
+      coffee:     { types: ['cafe', 'coffee_shop'], keywords: /\b(coffee|cafe|espresso|latte|tea|matcha)\b/i },
+      late_night: { types: ['bar', 'night_club', 'meal_takeaway'], keywords: /\b(late night|24.hour|after hours|bar|lounge|diner|taco|pizza|wings)\b/i },
+    };
+    const occasionConfig = OCCASION_TYPE_MAP[occasionParam];
+    if (occasionConfig) {
+      const typeSet = new Set(occasionConfig.types);
+      const beforeOccasion = recs.length;
+
+      // Score each result: higher = better occasion match
+      const scored = recs.map((rec) => {
+        const types = rec.types || [];
+        const haystack = [rec.name, rec.cuisine, ...(rec.cuisines || [])].filter(Boolean).join(' ');
+        let score = 0;
+        if (types.some((t) => typeSet.has(t))) score += 2;
+        if (occasionConfig.keywords.test(haystack)) score += 2;
+        // Partial match: restaurant type is food-related
+        if (types.some((t) => t.includes('restaurant'))) score += 0.5;
+        return { rec, score };
+      });
+
+      // Keep results with any occasion signal, then fill with generics
+      const matched = scored.filter((s) => s.score >= 2).sort((a, b) => b.score - a.score).map((s) => s.rec);
+      const fallback = scored.filter((s) => s.score > 0 && s.score < 2).sort((a, b) => b.score - a.score).map((s) => s.rec);
+      recs = matched.length >= 3 ? matched : [...matched, ...fallback];
+
+      console.log('[BiteRight][Discover] occasion filter', {
+        occasion: occasionParam,
+        before: beforeOccasion,
+        matched: matched.length,
+        after: recs.length,
+      });
+    }
+  }
+
+  // ── Sort mode: override ranking order if "nearest" requested ──────
+  if (meta?.sortMode === 'nearest') {
+    recs.sort((a, b) => (a.distance ?? Infinity) - (b.distance ?? Infinity));
+  }
+
+  recs = recs.slice(0, 50);
+
+  // Build differentiated sections using different weight profiles.
+  // "Top Picks" leans on quality+curation, "Trending" leans on popularity.
+  const topRated = rankForSection(recs, 'top_rated');
+  const trending = rankForSection(recs, 'trending');
+
+  // Deduplicate: remove trending items that already appear in top picks
+  const topPickIds = new Set(topRated.slice(0, 8).map(r => r.restaurantId));
+  const trendingFiltered = trending.filter(r => !topPickIds.has(r.restaurantId));
 
   const sections = {
-    topPicksForYou: recs.slice(0, 8),
+    topPicksForYou: topRated.slice(0, 8),
     becauseYouLiked: [],
-    trendingWithSimilarUsers: recs.slice(8, 16),
+    trendingWithSimilarUsers: trendingFiltered.slice(0, 8),
     allNearby: recs,
   };
 
-  const topPicksForYou = await Promise.all(
-    (sections.topPicksForYou || []).map((rec) => attachImageAndPlaceId(rec, userId, discoverCtx)),
-  );
-  const becauseYouLiked = await Promise.all(
-    (sections.becauseYouLiked || []).map((rec) => attachImageAndPlaceId(rec, userId, discoverCtx)),
-  );
-  const trendingWithSimilarUsers = await Promise.all(
-    (sections.trendingWithSimilarUsers || []).map((rec) => attachImageAndPlaceId(rec, userId, discoverCtx)),
-  );
-  const allNearby = await Promise.all((sections.allNearby || []).map((rec) => attachImageAndPlaceId(rec, userId, discoverCtx)));
+  // Attach images with concurrency limit to avoid flooding Google API
+  const CONCURRENCY_T = 6;
+  async function mapConcurrentT(items, fn) {
+    const results = new Array(items.length);
+    let idx = 0;
+    async function worker() {
+      while (idx < items.length) {
+        const i = idx++;
+        results[i] = await fn(items[i]);
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY_T, items.length) }, () => worker()));
+    return results;
+  }
+
+  const attachT = (rec) => attachImageAndPlaceId(rec, userId, discoverCtx);
+  const [topPicksForYou, becauseYouLiked, trendingWithSimilarUsers, allNearby] = await Promise.all([
+    mapConcurrentT(sections.topPicksForYou || [], attachT),
+    mapConcurrentT(sections.becauseYouLiked || [], attachT),
+    mapConcurrentT(sections.trendingWithSimilarUsers || [], attachT),
+    mapConcurrentT(sections.allNearby || [], attachT),
+  ]);
 
   console.log('[BiteRight][Discover] Google response summary', {
     ...meta,
@@ -1729,7 +4168,7 @@ function filterRecommendationSectionsByCuisine(sections, cuisineFilter) {
   function filterRecList(list) {
     return (list || []).filter((rec) => {
       const derived = deriveCuisinesFromPlace(rec.types || [], rec.name, rec.cuisine);
-      const included = restaurantMatchesCuisineFilter(derived, cuisineFilter);
+      const included = restaurantMatchesCuisineFilter(derived, cuisineFilter, rec.name, rec.cuisine);
       console.log('[BiteRight][Discover] pool inclusion', {
         name: rec.name,
         derivedCuisines: derived,
@@ -1754,6 +4193,9 @@ app.get('/api/discover', async (req, res) => {
   const radiusMiles = Math.min(50, Math.max(0.5, parseFloat(req.query.radiusMiles) || 10));
   const userId = (req.query.userId || 'default').trim() || 'default';
   const cuisineQuery = (req.query.cuisine || '').trim() || null;
+  const searchQuery = (req.query.search || '').trim() || null;
+  const sortMode = (req.query.sortMode || 'best').toLowerCase();
+  const occasion = (req.query.occasion || '').trim().toLowerCase() || null;
   let lat = parseFloat(req.query.lat);
   let lng = parseFloat(req.query.lng);
 
@@ -1780,14 +4222,15 @@ app.get('/api/discover', async (req, res) => {
   }
 
   if (mode === 'location') {
-    console.log('[BiteRight][Discover] location request params', {
+    console.log('[BiteRight][Discover] location request — resolved coordinates', {
       mode,
       userId,
       query: (req.query.query || '').trim() || null,
       cuisine: cuisineQuery,
-      lat,
-      lng,
+      resolvedLat: lat,
+      resolvedLng: lng,
       radiusMiles,
+      coordSource: Number.isFinite(parseFloat(req.query.lat)) ? 'client' : 'server-geocoded',
     });
   } else if (cuisineQuery) {
     console.log('[BiteRight][Discover] nearby request params', {
@@ -1807,24 +4250,31 @@ app.get('/api/discover', async (req, res) => {
       const payload = await buildGooglePlaceDiscover(lat, lng, radiusMiles, userId, cuisineQuery, {
         mode,
         query: (req.query.query || '').trim() || null,
+        search: searchQuery,
+        sortMode,
+        occasion,
       });
       return res.json(payload);
     } catch (err) {
-      console.error('[BiteRight][Discover] location nearby search error', err.message);
+      console.error('[BiteRight][Discover] location nearby search error', err.message, err.stack);
       return res.status(502).json({ error: 'Failed to load location-based restaurants' });
     }
   }
 
-  // Nearby + cuisine: use Google keyword search so lists differ by chip (when API key is set).
-  if (mode === 'nearby' && cuisineQuery && GOOGLE_PLACES_API_KEY) {
+  // Nearby mode with Google API key: use hybrid fetch (Nearby + Text Search).
+  // Handles both cuisine-filtered and unfiltered requests.
+  if (mode === 'nearby' && GOOGLE_PLACES_API_KEY) {
     try {
       const payload = await buildGooglePlaceDiscover(lat, lng, radiusMiles, userId, cuisineQuery, {
         mode: 'nearby',
+        search: searchQuery,
+        sortMode,
+        occasion,
       });
       return res.json(payload);
     } catch (err) {
-      console.error('[BiteRight][Discover] nearby+cuisine search error', err.message);
-      return res.status(502).json({ error: 'Failed to load cuisine-filtered restaurants' });
+      console.error('[BiteRight][Discover] nearby search error', err.message, err.stack);
+      // Fall through to local pool recommendations below
     }
   }
 
@@ -1838,7 +4288,7 @@ app.get('/api/discover', async (req, res) => {
     groupSessions,
     negativeFeedback,
     pool: TONIGHT_POOL,
-    getRestaurantInfo,
+    getRestaurantInfo: getRestaurantInfoSync,
     distanceMiles,
   });
 
@@ -1893,10 +4343,28 @@ app.get('/api/discover', async (req, res) => {
     sections = filterRecommendationSectionsByCuisine(sections, cuisineQuery);
   }
 
-  const topPicksForYou = await Promise.all((sections.topPicksForYou || []).map((rec) => attachImageAndPlaceId(rec, userId, discoverCtx)));
-  const becauseYouLiked = await Promise.all((sections.becauseYouLiked || []).map((rec) => attachImageAndPlaceId(rec, userId, discoverCtx)));
-  const trendingWithSimilarUsers = await Promise.all((sections.trendingWithSimilarUsers || []).map((rec) => attachImageAndPlaceId(rec, userId, discoverCtx)));
-  const allNearby = await Promise.all((sections.allNearby || []).map((rec) => attachImageAndPlaceId(rec, userId, discoverCtx)));
+  // Attach images with concurrency limit to avoid flooding Google API
+  const CONCURRENCY = 6;
+  async function mapWithConcurrency(items, fn) {
+    const results = new Array(items.length);
+    let idx = 0;
+    async function worker() {
+      while (idx < items.length) {
+        const i = idx++;
+        results[i] = await fn(items[i]);
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, items.length) }, () => worker()));
+    return results;
+  }
+
+  const attach = (rec) => attachImageAndPlaceId(rec, userId, discoverCtx);
+  const [topPicksForYou, becauseYouLiked, trendingWithSimilarUsers, allNearby] = await Promise.all([
+    mapWithConcurrency(sections.topPicksForYou || [], attach),
+    mapWithConcurrency(sections.becauseYouLiked || [], attach),
+    mapWithConcurrency(sections.trendingWithSimilarUsers || [], attach),
+    mapWithConcurrency(sections.allNearby || [], attach),
+  ]);
 
   res.json({
     isColdStart: result.isColdStart,
@@ -1913,6 +4381,247 @@ app.get('/api/discover', async (req, res) => {
   });
 });
 
+// ── GET /api/nearby-after — "Next stop" smart recommendations near a restaurant ───
+app.get('/api/nearby-after', async (req, res) => {
+  const lat = parseFloat(req.query.lat);
+  const lng = parseFloat(req.query.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return res.status(400).json({ error: 'lat and lng required' });
+  }
+  const radiusMiles = Math.min(2, Math.max(0.3, parseFloat(req.query.radiusMiles) || 0.75));
+  const radiusMeters = radiusMiles * 1609.34;
+  const limit = Math.min(8, Math.max(1, parseInt(req.query.limit) || 6));
+
+  const hour = new Date().getHours();
+  const isEvening = hour >= 17 || hour < 4;
+
+  // ── V1 Scoring: time-of-day category preferences ──
+  // Categories: drinks (bars/cocktails/wine), coffee, dessert
+  // Weights shift by time of day so results always contain a mix
+  const TIME_CATEGORY_WEIGHTS = {
+    drinks:  hour >= 21 || hour < 4 ? 1.0 : hour >= 17 ? 0.8 : hour >= 14 ? 0.3 : 0.1,
+    coffee:  hour >= 6 && hour < 11 ? 1.0 : hour >= 11 && hour < 14 ? 0.7 : hour >= 14 && hour < 17 ? 0.5 : 0.15,
+    dessert: hour >= 19 || hour < 2 ? 0.7 : hour >= 14 ? 0.6 : 0.3,
+  };
+
+  try {
+    console.log('[BiteRight] next-stop request', { lat, lng, radiusMiles, hour, isEvening, weights: TIME_CATEGORY_WEIGHTS });
+
+    // Always fetch ALL categories in parallel for a diverse mix
+    const [drinksNearby, drinksText, coffeeNearby, coffeeText, dessertNearby, dessertText] = await Promise.all([
+      googlePlacesNearbyRestaurants(lat, lng, radiusMeters, 'bar cocktail lounge wine'),
+      googlePlacesTextSearch('bars cocktail lounges wine bars', lat, lng, radiusMeters, { skipTypeFilter: true }),
+      googlePlacesNearbyRestaurants(lat, lng, radiusMeters, 'coffee cafe espresso'),
+      googlePlacesTextSearch('coffee shops cafes', lat, lng, radiusMeters, { skipTypeFilter: true }),
+      googlePlacesNearbyRestaurants(lat, lng, radiusMeters, 'dessert ice cream bakery'),
+      googlePlacesTextSearch('dessert ice cream bakery', lat, lng, radiusMeters, { skipTypeFilter: true }),
+    ]);
+
+    console.log('[BiteRight] next-stop raw counts', {
+      drinks: drinksNearby.length + drinksText.length,
+      coffee: coffeeNearby.length + coffeeText.length,
+      dessert: dessertNearby.length + dessertText.length,
+    });
+
+    // Tag each result with its source category before merging
+    const tagCategory = (arr, cat) => arr.map((p) => ({ ...p, _srcCategory: cat }));
+    const allRaw = [
+      ...tagCategory(drinksNearby, 'drinks'), ...tagCategory(drinksText, 'drinks'),
+      ...tagCategory(coffeeNearby, 'coffee'), ...tagCategory(coffeeText, 'coffee'),
+      ...tagCategory(dessertNearby, 'dessert'), ...tagCategory(dessertText, 'dessert'),
+    ];
+
+    // Merge and dedupe — keep first occurrence's category
+    const seen = new Set();
+    const merged = [];
+    for (const p of allRaw) {
+      const key = p.placeId || p.name;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(p);
+    }
+
+    // ── Fallback: use in-memory restaurants if Google returned nothing ──
+    if (merged.length === 0) {
+      const R = 3958.8;
+      const toRad = (d) => (d * Math.PI) / 180;
+
+      const fallbackSpots = restaurants
+        .filter((r) => r.lat != null && r.lng != null)
+        .map((r) => {
+          const dLat = toRad(r.lat - lat);
+          const dLng = toRad(r.lng - lng);
+          const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat)) * Math.cos(toRad(r.lat)) * Math.sin(dLng / 2) ** 2;
+          const distMi = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+          const category = classifyCategory(r.types || [], r.name || '');
+          return { ...r, _distMi: distMi, _cat: category };
+        })
+        .filter((r) => r._distMi <= radiusMiles && r._cat !== 'exclude')
+        .sort((a, b) => a._distMi - b._distMi)
+        .slice(0, limit)
+        .map((r) => ({
+          restaurantId: r.restaurantId || r.placeId,
+          name: r.name,
+          distanceMi: Math.round(r._distMi * 10) / 10,
+          vibeTag: categoryLabel(r._cat),
+          category: r._cat,
+          rating: r.rating || null,
+          isOpenNow: null,
+          imageUrl: null,
+          address: r.address || null,
+        }));
+
+      console.log('[BiteRight] next-stop using in-memory fallback', { count: fallbackSpots.length });
+      return res.json({ spots: fallbackSpots, isEvening });
+    }
+
+    // ── Strict category filter BEFORE ranking ──
+    // Only drinks / coffee / dessert survive. Everything else is excluded.
+    const filtered = [];
+    for (const p of merged) {
+      const types = p.types || [];
+      // Use the search-source tag first, then fall back to type/name classification
+      const cat = classifyCategory(types, p.name || '');
+      // If the source tag is one of the allowed categories, trust it;
+      // otherwise use the classifier result. Either way, exclude if not valid.
+      const category = (p._srcCategory && p._srcCategory !== 'exclude')
+        ? p._srcCategory
+        : cat;
+      if (category === 'exclude') continue;
+      filtered.push({ ...p, _resolvedCategory: category });
+    }
+
+    // Compute distance and V1 score for each spot
+    const R = 3958.8;
+    const toRad = (d) => (d * Math.PI) / 180;
+
+    const scored = filtered.map((p) => {
+      const pLat = p.lat;
+      const pLng = p.lng;
+      let distMi = null;
+      if (pLat != null && pLng != null) {
+        const dLat = toRad(pLat - lat);
+        const dLng = toRad(pLng - lng);
+        const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat)) * Math.cos(toRad(pLat)) * Math.sin(dLng / 2) ** 2;
+        distMi = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      }
+
+      const category = p._resolvedCategory;
+      const isOpenNow = p.openNow ?? null;
+
+      // ── V1 Score ──
+      const categoryWeight = TIME_CATEGORY_WEIGHTS[category] || 0.3;
+      const distScore = distMi != null ? Math.max(0, 1 - distMi / radiusMiles) : 0.5;
+      const openScore = isOpenNow === true ? 1.0 : isOpenNow === false ? 0.0 : 0.5;
+      const ratingScore = p.rating ? Math.min(1, (p.rating - 3.0) / 2.0) : 0.4;
+      const score = categoryWeight * 0.4 + distScore * 0.3 + openScore * 0.15 + ratingScore * 0.15;
+
+      // Prefer stored image (consistent with restaurant detail) over Nearby Search photo
+      const known = p.placeId ? findRestaurantByPlaceId(p.placeId) : null;
+      let imageUrl = null;
+      if (known?.displayImageUrl) {
+        imageUrl = toAbsoluteImageUrl(known.displayImageUrl);
+      } else if (p.photoRef) {
+        imageUrl = toAbsoluteImageUrl(`/api/place-photo?ref=${encodeURIComponent(p.photoRef)}&maxW=400`);
+      }
+
+      return {
+        restaurantId: p.placeId || `after_${p.name}`,
+        name: p.name || 'Unknown',
+        distanceMi: distMi != null ? Math.round(distMi * 10) / 10 : null,
+        vibeTag: categoryLabel(category),
+        category,
+        rating: p.rating || null,
+        isOpenNow,
+        imageUrl,
+        address: p.address || null,
+        _score: score,
+        _category: category,
+      };
+    }).filter((s) => s.distanceMi == null || s.distanceMi <= radiusMiles);
+
+    // Sort by score descending
+    scored.sort((a, b) => b._score - a._score);
+
+    // ── Category diversity: ensure at least 1 from each available category ──
+    const catBuckets = { drinks: [], coffee: [], dessert: [] };
+    for (const s of scored) {
+      if (catBuckets[s._category]) catBuckets[s._category].push(s);
+    }
+    const finalSpots = [];
+    const usedIds = new Set();
+
+    // First pass: guarantee 1 from each non-empty category
+    for (const cat of ['drinks', 'coffee', 'dessert']) {
+      if (catBuckets[cat].length > 0 && finalSpots.length < limit) {
+        const pick = catBuckets[cat][0];
+        finalSpots.push(pick);
+        usedIds.add(pick.restaurantId);
+      }
+    }
+
+    // Fill remaining slots by score
+    for (const s of scored) {
+      if (finalSpots.length >= limit) break;
+      if (usedIds.has(s.restaurantId)) continue;
+      finalSpots.push(s);
+      usedIds.add(s.restaurantId);
+    }
+
+    // Clean internal fields
+    const spots = finalSpots.map(({ _score, _category, ...rest }) => rest);
+
+    console.log('[BiteRight] next-stop result', { merged: merged.length, filtered: filtered.length, scored: scored.length, spots: spots.length });
+    return res.json({ spots, isEvening });
+  } catch (err) {
+    console.error('[BiteRight] next-stop error:', err.message);
+    return res.status(502).json({ error: 'Failed to load nearby spots' });
+  }
+});
+
+// ── Strict category classification for Next stop ──
+// Returns 'drinks' | 'coffee' | 'dessert' | 'exclude'.
+// Anything that isn't confidently one of the three allowed buckets gets excluded.
+const DRINKS_TYPES = new Set(['bar', 'night_club', 'wine_bar']);
+const DRINKS_NAME_RE = /\b(bar|cocktail|lounge|speakeasy|wine|pub|brewery|taproom|tavern|beer hall|beer garden)\b/i;
+
+const COFFEE_TYPES = new Set(['coffee_shop', 'cafe']);
+const COFFEE_NAME_RE = /\b(coffee|cafe|café|espresso|tea house|tea room)\b/i;
+
+const DESSERT_TYPES = new Set(['dessert_shop', 'ice_cream_shop', 'bakery']);
+const DESSERT_NAME_RE = /\b(dessert|ice cream|gelato|bakery|patisserie|pâtisserie|pastry|donut|doughnut|cupcake|frozen yogurt|froyo|crêpe|crepe)\b/i;
+
+// Types that signal "this is a regular restaurant, not a next-stop place"
+const RESTAURANT_TYPES = new Set(['restaurant', 'meal_takeaway', 'meal_delivery', 'food']);
+
+function classifyCategory(types, name) {
+  const nameLower = (name || '').toLowerCase();
+  const typeSet = new Set(types || []);
+
+  // Check coffee first — cafes that also serve food are "coffee" for Next stop
+  if ([...COFFEE_TYPES].some((t) => typeSet.has(t)) || COFFEE_NAME_RE.test(nameLower)) return 'coffee';
+
+  // Check dessert
+  if ([...DESSERT_TYPES].some((t) => typeSet.has(t)) || DESSERT_NAME_RE.test(nameLower)) return 'dessert';
+
+  // Check drinks
+  if ([...DRINKS_TYPES].some((t) => typeSet.has(t)) || DRINKS_NAME_RE.test(nameLower)) return 'drinks';
+
+  // Everything else is excluded — generic restaurants, food spots, etc.
+  return 'exclude';
+}
+
+// User-facing label for the card. Only the three allowed categories.
+const CATEGORY_LABELS = {
+  drinks: 'Drinks \u{1F378}',
+  coffee: 'Coffee \u2615',
+  dessert: 'Dessert \u{1F370}',
+};
+
+function categoryLabel(category) {
+  return CATEGORY_LABELS[category] || null;
+}
+
 const server = app.listen(PORT, () => {
   console.log(`BiteRight backend listening on http://localhost:${PORT}`);
   if (GOOGLE_PLACES_API_KEY) {
@@ -1927,4 +4636,3 @@ server.on('error', (err) => {
     console.error(err);
   }
 });
-

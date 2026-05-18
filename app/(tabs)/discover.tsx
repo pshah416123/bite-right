@@ -1,69 +1,77 @@
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
+import {
+  Animated,
+  Modal,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ActivityIndicator } from 'react-native';
-import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
-import { useDiscover } from '~/src/hooks/useDiscover';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useDiscover, type DiscoverSectionItems } from '~/src/hooks/useDiscover';
 import { RestaurantCard } from '~/src/components/RestaurantCard';
-import { DiscoverLocationBar, type DiscoverSelectedLocation } from '~/src/components/DiscoverLocationBar';
+import { POPULAR_LOCATIONS, type DiscoverSelectedLocation } from '~/src/components/DiscoverLocationBar';
 import { useSavedRestaurants } from '~/src/context/SavedRestaurantsContext';
 import { colors } from '~/src/theme/colors';
 import { apiClient } from '~/src/api/client';
-import { getDiscover, type DiscoverRecommendation, type DiscoverSections } from '~/src/api/discover';
+import { getDiscover, type DiscoverRecommendation, type DiscoverSections, type DiscoverSortMode, type DiscoverOccasion } from '~/src/api/discover';
 import type { DiscoverItem } from '~/src/components/RestaurantCard';
-import { resolveRestaurantDisplayImage } from '~/src/utils/restaurantImage';
+import Slider from '@react-native-community/slider';
 
-function getSectionTitlesAndSubtitle(mode: 'trending' | 'blended' | 'clustered') {
-  if (mode === 'trending') {
-    return {
-      topPicksForYou: 'Trending near you',
-      topPicksSubtitle: 'Popular and highly rated nearby',
-      becauseYouLiked: 'Because you liked',
-      becauseYouLikedSubtitle: 'More like your favorites',
-      trendingWithSimilarUsers: 'Top rated nearby',
-      trendingSubtitle: 'Popular this week',
-      allNearby: 'All nearby restaurants',
-      allNearbySubtitle: 'Browse all within your radius',
-    };
-  }
-  if (mode === 'blended') {
-    return {
-      topPicksForYou: 'For your taste',
-      topPicksSubtitle: 'Blended with your preferences and nearby',
-      becauseYouLiked: 'Because you liked',
-      becauseYouLikedSubtitle: 'Restaurant-to-restaurant picks',
-      trendingWithSimilarUsers: 'Popular nearby',
-      trendingSubtitle: 'Saved by people with similar taste',
-      allNearby: 'All nearby restaurants',
-      allNearbySubtitle: 'More in your radius',
-    };
-  }
-  return {
-    topPicksForYou: 'Top picks for you',
-    topPicksSubtitle: 'Generated from your taste and similar users',
-    becauseYouLiked: 'More like your favorites',
-    becauseYouLikedSubtitle: 'Restaurant-to-restaurant picks',
-    trendingWithSimilarUsers: 'Trending with similar users',
-    trendingSubtitle: 'Saved and liked by users like you',
-    allNearby: 'All nearby restaurants',
-    allNearbySubtitle: 'Browse all within your radius',
-  };
-}
+// ─── Cuisine chips (dynamically ordered — "For you" first, then by popularity) ─
+const CUISINE_CHIPS = [
+  { label: 'For you', emoji: '\u2728' },
+  { label: 'Ramen', emoji: '\u{1F35C}' },
+  { label: 'Sushi', emoji: '\u{1F363}' },
+  { label: 'Tacos', emoji: '\u{1F32E}' },
+  { label: 'Pizza', emoji: '\u{1F355}' },
+  { label: 'Coffee', emoji: '\u2615' },
+  { label: 'Burgers', emoji: '\u{1F354}' },
+  { label: 'Dessert', emoji: '\u{1F370}' },
+  { label: 'Thai', emoji: '\u{1F966}' },
+  { label: 'Indian', emoji: '\u{1F35B}' },
+];
 
-type DiscoverSectionItems = {
-  topPicksForYou: DiscoverItem[];
-  becauseYouLiked: DiscoverItem[];
-  trendingWithSimilarUsers: DiscoverItem[];
-  allNearby: DiscoverItem[];
-};
+const TRENDING_CATEGORIES = [
+  { label: 'Ramen', icon: 'restaurant-outline' as const },
+  { label: 'Pizza', icon: 'pizza-outline' as const },
+  { label: 'Sushi', icon: 'fish-outline' as const },
+  { label: 'Coffee', icon: 'cafe-outline' as const },
+  { label: 'Tacos', icon: 'fast-food-outline' as const },
+];
 
-const EMPTY_DISCOVER_SECTIONS: DiscoverSectionItems = {
+// ─── Filter chips (personality-driven, not dropdown-style) ──────────────────
+
+const VIBE_CHIPS: { label: string; emoji: string; sort?: DiscoverSortMode; occasion?: DiscoverOccasion; prices?: number[] }[] = [
+  { label: 'Popular', emoji: '\u{1F525}', sort: 'popular' },
+  { label: 'Budget', emoji: '\u{1F4B8}', prices: [1, 2] },
+  { label: 'Date night', emoji: '\u{1F377}', occasion: 'dinner' },
+  { label: 'New spots', emoji: '\u{1F195}', sort: 'new' },
+  { label: 'Late night', emoji: '\u{1F319}', occasion: 'late_night' },
+];
+
+// Radius range: 1–30 mi (slider only, no presets)
+
+// ─── Rotating search placeholders ──────────────────────────────────────────
+const SEARCH_PLACEHOLDERS = [
+  'What are you craving tonight?',
+  'Find your next favorite spot',
+  'Hungry? Let\u2019s find something good',
+  'Tacos, ramen, or something new?',
+];
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+const EMPTY_SECTIONS: DiscoverSectionItems = {
   topPicksForYou: [],
   becauseYouLiked: [],
   trendingWithSimilarUsers: [],
   allNearby: [],
 };
-
-type SelectedLocation = DiscoverSelectedLocation;
 
 function ensureAbsoluteImageUrl(url: string | undefined): string | undefined {
   if (!url || url.startsWith('http')) return url;
@@ -82,7 +90,15 @@ function recToItem(rec: DiscoverRecommendation): DiscoverItem {
       cuisines: rec.restaurant.cuisines,
       neighborhood: rec.restaurant.neighborhood,
       priceLevel: rec.restaurant.priceLevel,
+      lat: rec.restaurant.lat ?? null,
+      lng: rec.restaurant.lng ?? null,
       placeId: rec.restaurant.placeId,
+      googlePlaceId: rec.restaurant.googlePlaceId,
+      displayImageUrl: ensureAbsoluteImageUrl(
+        rec.restaurant.displayImageUrl ?? rec.restaurant.imageUrl ?? rec.restaurant.previewPhotoUrl,
+      ),
+      displayImageSourceType: rec.restaurant.displayImageSourceType ?? null,
+      displayImageLastResolvedAt: rec.restaurant.displayImageLastResolvedAt ?? null,
       previewPhotoUrl: ensureAbsoluteImageUrl(rec.restaurant.previewPhotoUrl),
       imageUrl: ensureAbsoluteImageUrl(rec.restaurant.imageUrl),
     },
@@ -93,7 +109,7 @@ function recToItem(rec: DiscoverRecommendation): DiscoverItem {
 }
 
 function sectionsToItems(sections: DiscoverSections | undefined): DiscoverSectionItems {
-  if (!sections) return EMPTY_DISCOVER_SECTIONS;
+  if (!sections) return EMPTY_SECTIONS;
   return {
     topPicksForYou: (sections.topPicksForYou || []).map(recToItem),
     becauseYouLiked: (sections.becauseYouLiked || []).map(recToItem),
@@ -102,621 +118,982 @@ function sectionsToItems(sections: DiscoverSections | undefined): DiscoverSectio
   };
 }
 
-export default function DiscoverScreen() {
-  const [selectedCuisine, setSelectedCuisine] = useState<string | null>(null);
-  const {
-    sections,
-    loading,
-    error,
-    filterMode,
-    setFilterMode,
-    isColdStart,
-    discoverMode,
-  } = useDiscover('you', { cuisine: selectedCuisine });
-  const { isSaved } = useSavedRestaurants();
-  const sectionLabels = getSectionTitlesAndSubtitle(discoverMode);
-  const [selectedLocation, setSelectedLocation] = useState<SelectedLocation | null>(null);
+type GeoSuggestion = { label: string; lat: number; lng: number };
 
-  const [locationResultsLoading, setLocationResultsLoading] = useState(false);
-  const [locationResultsError, setLocationResultsError] = useState<string | null>(null);
-  // Location "source of truth": full dataset for the selected location (cached).
-  const [allRestaurants, setAllRestaurants] = useState<DiscoverSectionItems>(EMPTY_DISCOVER_SECTIONS);
-  const [visibleRestaurants, setVisibleRestaurants] = useState<DiscoverSectionItems>(EMPTY_DISCOVER_SECTIONS);
-  const locationCacheRef = useRef<Record<string, DiscoverSectionItems>>({});
+function priceLabel(levels: number[]): string {
+  if (levels.length === 0) return 'Price';
+  return levels.map((l) => '$'.repeat(l)).join(', ');
+}
 
-  /** Last nearby sections without a cuisine filter — keeps chip row stable while a chip is active. */
-  const baselineNearbySectionsRef: MutableRefObject<DiscoverSectionItems> = useRef(EMPTY_DISCOVER_SECTIONS);
+function radiusLabel(mi: number): string {
+  return mi < 1 ? `${mi} mi` : `${Math.round(mi)} mi`;
+}
 
-  const getLocationCacheKey = (loc: SelectedLocation, cuisine: string | null) => {
-    const labelKey = (loc.label || '').trim().toLowerCase();
-    // Round coords so the "same" location doesn't produce new cache entries due to tiny jitter.
-    const latKey = Number.isFinite(loc.lat) ? loc.lat.toFixed(3) : '0';
-    const lngKey = Number.isFinite(loc.lng) ? loc.lng.toFixed(3) : '0';
-    const c = (cuisine || '').trim().toLowerCase();
-    return `${labelKey}|${latKey}|${lngKey}|${c}`;
+/** Simple urban heuristic: if we're in a dense area, default to smaller radius. */
+function defaultRadius(lat?: number, lng?: number): number {
+  // Major dense US cities (rough bbox checks)
+  if (lat != null && lng != null) {
+    const dense = (
+      (lat > 40.5 && lat < 40.9 && lng > -74.1 && lng < -73.7) || // NYC
+      (lat > 41.7 && lat < 42.0 && lng > -87.8 && lng < -87.5) || // Chicago
+      (lat > 37.7 && lat < 37.85 && lng > -122.55 && lng < -122.35) || // SF
+      (lat > 34.0 && lat < 34.1 && lng > -118.35 && lng < -118.15) || // LA Downtown
+      (lat > 47.55 && lat < 47.7 && lng > -122.4 && lng < -122.25) || // Seattle
+      (lat > 42.3 && lat < 42.4 && lng > -71.15 && lng < -71.0) // Boston
+    );
+    if (dense) return 1;
+  }
+  return 5;
+}
+
+// Apply client-side price filter to sections
+function filterByPrice(sections: DiscoverSectionItems, prices: number[]): DiscoverSectionItems {
+  if (prices.length === 0) return sections;
+  const priceSet = new Set(prices);
+  const filter = (items: DiscoverItem[]) =>
+    items.filter((item) => {
+      const pl = item.restaurant.priceLevel;
+      return pl != null && priceSet.has(pl);
+    });
+  return {
+    topPicksForYou: filter(sections.topPicksForYou),
+    becauseYouLiked: filter(sections.becauseYouLiked),
+    trendingWithSimilarUsers: filter(sections.trendingWithSimilarUsers),
+    allNearby: filter(sections.allNearby),
   };
+}
 
-  const showLoading = filterMode === 'location' ? locationResultsLoading : loading;
+// ─── Screen ─────────────────────────────────────────────────────────────────
 
-  useEffect(() => {
-    if (filterMode === 'nearby' && !selectedCuisine) {
-      baselineNearbySectionsRef.current = sections;
-    }
-  }, [filterMode, selectedCuisine, sections]);
+export default function DiscoverScreen() {
+  const insets = useSafeAreaInsets();
 
-  // Chips are built from the broad list (not the cuisine-filtered API subset).
-  const cuisineChipsSource =
-    filterMode === 'location' ? allRestaurants : selectedCuisine ? baselineNearbySectionsRef.current : sections;
-
-  function extractCuisineLabel(cuisine: string): string {
-    // "Sushi · Omakase" -> "Sushi"
-    const raw = (cuisine || '').trim();
-    if (!raw) return '';
-    return raw.split(/[·•]/)[0]?.trim() || raw;
-  }
-
-  const FOOD_CHIP_ALLOWLIST = new Set([
-    'Italian',
-    'Mexican',
-    'Chinese',
-    'Indian',
-    'Thai',
-    'Japanese',
-    'Korean',
-    'Mediterranean',
-    'American',
-    'Pizza',
-    'Burgers',
-    'Sushi',
-    'Bakery',
-    'Dessert',
-    'Coffee',
-    'Vegetarian',
-    'Vegan',
-    'Brunch',
-    'Seafood',
-    'BBQ',
-  ]);
-
-  const DEFAULT_FOOD_CHIPS = [
-    'Italian',
-    'Mexican',
-    'Chinese',
-    'Japanese',
-    'Indian',
-    'Thai',
-    'Korean',
-    'Mediterranean',
-    'American',
-    'Sushi',
-    'Pizza',
-    'Burgers',
-    'Seafood',
-    'BBQ',
-    'Brunch',
-    'Vegan',
-    'Vegetarian',
-    'Bakery',
-    'Coffee',
-    'Dessert',
-  ];
-
-  const CUISINE_KEYWORDS: Array<{ re: RegExp; label: string }> = [
-    { re: /\bitalian|pasta|trattoria|ristorante\b/i, label: 'Italian' },
-    { re: /\bmexican|taco|taqueria|burrito\b/i, label: 'Mexican' },
-    { re: /\bchinese|dim\s*sum|szechuan|sichuan\b/i, label: 'Chinese' },
-    { re: /\bindian|curry\b/i, label: 'Indian' },
-    { re: /\bthai\b/i, label: 'Thai' },
-    { re: /\bjapanese|ramen|izakaya\b/i, label: 'Japanese' },
-    { re: /\bkorean\b/i, label: 'Korean' },
-    { re: /\bmediterranean|greek|falafel\b/i, label: 'Mediterranean' },
-    { re: /\bamerican|diner|grill\b/i, label: 'American' },
-    { re: /\bsushi|omakase\b/i, label: 'Sushi' },
-    { re: /\bburger|hamburger\b/i, label: 'Burgers' },
-    { re: /\bpizza|pizzeria\b/i, label: 'Pizza' },
-    { re: /\bbakery|boulangerie\b/i, label: 'Bakery' },
-    { re: /\bcoffee|cafe|espresso|roast\b/i, label: 'Coffee' },
-    { re: /\bdessert|gelato|ice cream|boba|tea|juice\b/i, label: 'Dessert' },
-    { re: /\bvegan\b/i, label: 'Vegan' },
-    { re: /\bvegetarian\b/i, label: 'Vegetarian' },
-    { re: /\bbrunch|breakfast\b/i, label: 'Brunch' },
-    { re: /\bseafood|oyster|fish\b/i, label: 'Seafood' },
-    { re: /\bbbq|barbecue|smokehouse\b/i, label: 'BBQ' },
-  ];
-
-  function inferCuisineCandidates(item: DiscoverItem): string[] {
-    const out = new Set<string>();
-    const cuisineText = `${item.restaurant.cuisine || ''}`;
-    const nameText = `${item.restaurant.name || ''}`;
-    const combined = `${cuisineText} ${nameText}`;
-
-    // Use category text from backend first if it already matches a curated cuisine.
-    const explicit = extractCuisineLabel(cuisineText);
-    if (explicit && FOOD_CHIP_ALLOWLIST.has(explicit) && explicit !== 'Restaurant') {
-      out.add(explicit);
-    }
-
-    // Infer from name + category text keywords (secondary signal).
-    for (const { re, label } of CUISINE_KEYWORDS) {
-      if (re.test(combined) && FOOD_CHIP_ALLOWLIST.has(label)) {
-        out.add(label);
-      }
-    }
-
-    // Bakery places should also carry dessert intent.
-    if (out.has('Bakery')) out.add('Dessert');
-
-    return Array.from(out);
-  }
-
-  function getDerivedCuisines(item: DiscoverItem): string[] {
-    const existing = Array.isArray(item.restaurant.cuisines) ? item.restaurant.cuisines : [];
-    if (existing.length > 0) return existing;
-    return inferCuisineCandidates(item);
-  }
-
-  function getLocationIdentityKey(loc: SelectedLocation) {
-    const labelKey = (loc.label || '').trim().toLowerCase();
-    const latKey = Number.isFinite(loc.lat) ? loc.lat.toFixed(3) : '0';
-    const lngKey = Number.isFinite(loc.lng) ? loc.lng.toFixed(3) : '0';
-    return `${labelKey}|${latKey}|${lngKey}`;
-  }
-
-  const selectedLocationLabel = selectedLocation?.label ?? null;
-  const selectedLocationCacheKey = selectedLocation
-    ? getLocationCacheKey(selectedLocation, selectedCuisine)
-    : null;
-
-  // Keep filtering consistent when switching modes/locations.
-  useEffect(() => {
-    setSelectedCuisine(null);
-  }, [filterMode, selectedLocationLabel]);
-
-  const cuisineChips = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const item of cuisineChipsSource.allNearby) {
-      const candidates = getDerivedCuisines(item);
-      for (const label of candidates) {
-        // First inferred cuisine per item gets slightly higher weight.
-        const weight = candidates[0] === label ? 2 : 1;
-        counts[label] = (counts[label] || 0) + weight;
-      }
-    }
-
-    const ranked = Object.entries(counts)
-      .sort((a, b) => b[1] - a[1])
-      .filter(([label]) => FOOD_CHIP_ALLOWLIST.has(label))
-      .slice(0, 10)
-      .map(([label]) => label);
-
-    // Keep a richer row: fill from curated defaults if detected cuisines are sparse.
-    const MIN_CHIPS = 6;
-    if (ranked.length >= MIN_CHIPS) return ranked;
-
-    const filled = [...ranked];
-    for (const label of DEFAULT_FOOD_CHIPS) {
-      if (!FOOD_CHIP_ALLOWLIST.has(label)) continue;
-      if (filled.includes(label)) continue;
-      filled.push(label);
-      if (filled.length >= MIN_CHIPS) break;
-    }
-    return filled.slice(0, 10);
-  }, [cuisineChipsSource.allNearby]);
-
-  // Lists come from the API with `cuisine` query applied (no client soft-fallback).
-  const visibleSections = filterMode === 'location' ? visibleRestaurants : sections;
+  // ── Search ─────────────────────────────────────────────────────────────
+  const [searchInput, setSearchInput] = useState('');
+  const [activeSearch, setActiveSearch] = useState('');
+  const [searchFocused, setSearchFocused] = useState(false);
+  const searchInputRef = useRef<TextInput>(null);
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    if (filterMode !== 'location') return;
-    setVisibleRestaurants(allRestaurants);
-  }, [filterMode, allRestaurants]);
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    const trimmed = searchInput.trim();
+    searchDebounceRef.current = setTimeout(() => setActiveSearch(trimmed), 350);
+    return () => { if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current); };
+  }, [searchInput]);
 
-  const hasAnyCards =
-    visibleSections.allNearby.length > 0 ||
-    visibleSections.topPicksForYou.length > 0 ||
-    visibleSections.becauseYouLiked.length > 0 ||
-    visibleSections.trendingWithSimilarUsers.length > 0;
+  // ── Filters ────────────────────────────────────────────────────────────
+  const [sortMode, setSortMode] = useState<DiscoverSortMode>('best');
+  const [selectedPrices, setSelectedPrices] = useState<number[]>([]);
+  const [radiusMiles, setRadiusMiles] = useState<number | null>(null); // null = use default
+  const [selectedOccasion, setSelectedOccasion] = useState<DiscoverOccasion | null>(null);
+  const [activeVibeIndex, setActiveVibeIndex] = useState<number | null>(null);
+  const [pendingRadius, setPendingRadius] = useState(5);
+  const radiusSlideAnim = useRef(new Animated.Value(0)).current;
 
-  const handleCommitLocation = useCallback(
-    (loc: SelectedLocation) => {
-      const trimmed = loc.label.trim();
-      if (!trimmed) return;
-      const nextLocation = { ...loc, label: trimmed };
-      setLocationResultsError(null);
-      if (filterMode === 'location') {
-        const nextId = getLocationIdentityKey(nextLocation);
-        const prevId = selectedLocation ? getLocationIdentityKey(selectedLocation) : null;
-        if (nextId !== prevId) {
-          setVisibleRestaurants(EMPTY_DISCOVER_SECTIONS);
-        }
-      }
-      setSelectedLocation(nextLocation);
-    },
-    [filterMode, selectedLocation],
-  );
-
-  const handleLocationInputDiverged = useCallback(() => {
-    setSelectedLocation(null);
-    setAllRestaurants(EMPTY_DISCOVER_SECTIONS);
-    setVisibleRestaurants(EMPTY_DISCOVER_SECTIONS);
-    setLocationResultsError(null);
+  // Rotating placeholder
+  const [placeholderIdx, setPlaceholderIdx] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setPlaceholderIdx((i) => (i + 1) % SEARCH_PLACEHOLDERS.length), 4000);
+    return () => clearInterval(id);
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
+  // ── Base hook: GPS + default nearby results ────────────────────────────
+  const {
+    sections: baseSections,
+    loading: baseLoading,
+    error: baseError,
+    isColdStart,
+    userCoords,
+  } = useDiscover('you');
+  const { isSaved } = useSavedRestaurants();
 
-    async function loadLocationRestaurants(loc: SelectedLocation, cuisine: string | null) {
-      const cacheKey = getLocationCacheKey(loc, cuisine);
-      const cached = locationCacheRef.current[cacheKey];
-      console.log('[DiscoverLocation] discover fetch state', {
-        label: loc.label,
-        placeId: loc.placeId ?? null,
-        lat: loc.lat,
-        lng: loc.lng,
-        selectedCuisine: cuisine,
-        cacheKey,
-        cacheHit: !!cached,
+  // Initialize default radius from location
+  useEffect(() => {
+    if (radiusMiles == null && userCoords) {
+      setRadiusMiles(defaultRadius(userCoords.lat, userCoords.lng));
+    }
+  }, [userCoords, radiusMiles]);
+
+  const effectiveRadius = radiusMiles ?? defaultRadius(userCoords?.lat, userCoords?.lng);
+
+  // ── Location override ──────────────────────────────────────────────────
+  const [customLocation, setCustomLocation] = useState<DiscoverSelectedLocation | null>(null);
+  const [locationPickerOpen, setLocationPickerOpen] = useState(false);
+  const [locationInput, setLocationInput] = useState('');
+  const [geoSuggestions, setGeoSuggestions] = useState<GeoSuggestion[]>([]);
+  const [geoLoading, setGeoLoading] = useState(false);
+  const geoReqRef = useRef(0);
+
+  const effectiveCoords = useMemo(() => {
+    if (customLocation) return { lat: customLocation.lat, lng: customLocation.lng };
+    return userCoords;
+  }, [customLocation, userCoords]);
+
+  const locationLabel = customLocation?.label ?? (userCoords ? 'Current location' : null);
+  const locationName = customLocation?.label ?? null;
+
+  // ── Overlay results (search and/or custom location) ────────────────────
+  const [overlayResults, setOverlayResults] = useState<DiscoverSectionItems>(EMPTY_SECTIONS);
+  const [overlayLoading, setOverlayLoading] = useState(false);
+
+  const needsOverlay = Boolean(activeSearch || customLocation || sortMode !== 'best' || radiusMiles != null || selectedOccasion);
+
+  // Single unified fetch when search, location, sort, or radius changes
+  useEffect(() => {
+    if (!needsOverlay) {
+      setOverlayResults(EMPTY_SECTIONS);
+      setOverlayLoading(false);
+      return;
+    }
+    const coords = effectiveCoords;
+    if (!coords) return;
+
+    let cancelled = false;
+    setOverlayLoading(true);
+
+    getDiscover({
+      mode: customLocation ? 'location' : 'nearby',
+      userId: 'default',
+      lat: coords.lat,
+      lng: coords.lng,
+      query: customLocation?.label,
+      radiusMiles: effectiveRadius,
+      search: activeSearch || undefined,
+      sortMode,
+      occasion: selectedOccasion,
+    })
+      .then((res) => {
+        if (cancelled) return;
+        setOverlayResults(sectionsToItems(res.sections));
+      })
+      .catch(() => {
+        if (!cancelled) setOverlayResults(EMPTY_SECTIONS);
+      })
+      .finally(() => {
+        if (!cancelled) setOverlayLoading(false);
       });
 
-      setLocationResultsLoading(true);
-      // Avoid showing a mixed list while the new dataset is loading.
-      setVisibleRestaurants(EMPTY_DISCOVER_SECTIONS);
+    return () => { cancelled = true; };
+  }, [needsOverlay, activeSearch, effectiveCoords, customLocation, sortMode, effectiveRadius, selectedOccasion]);
 
-      if (cached) {
-        if (cancelled) return;
-        setAllRestaurants(cached);
-        setLocationResultsLoading(false);
-        return;
-      }
-
+  // ── Geo autocomplete ───────────────────────────────────────────────────
+  useEffect(() => {
+    if (!locationPickerOpen) return;
+    const q = locationInput.trim();
+    if (!q) { setGeoSuggestions([]); setGeoLoading(false); return; }
+    setGeoLoading(true);
+    const reqId = ++geoReqRef.current;
+    const t = setTimeout(async () => {
       try {
-        // Fetch real backend Discover sections for this location.
-        // Images come from the backend resolver (photo URLs / fallbacks).
-        console.log('[DiscoverLocation] request params sent to /api/discover', {
-          mode: 'location',
-          userId: 'default',
-          query: loc.label,
-          lat: loc.lat,
-          lng: loc.lng,
-          radiusMiles: 10,
-          cuisine: cuisine || null,
+        const { data } = await apiClient.get<{ results: GeoSuggestion[] }>('/api/geo/autocomplete', {
+          params: { query: q },
         });
-        const res = await getDiscover({
-          mode: 'location',
-          userId: 'default',
-          query: loc.label,
-          radiusMiles: 10,
-          lat: loc.lat,
-          lng: loc.lng,
-          cuisine,
-        });
-        console.log('[DiscoverLocation] backend response summary', {
-          discoverMode: res.discoverMode ?? null,
-          responseLat: res.location?.lat ?? null,
-          responseLng: res.location?.lng ?? null,
-          topPicks: res.sections?.topPicksForYou?.length ?? 0,
-          trending: res.sections?.trendingWithSimilarUsers?.length ?? 0,
-          allNearby: res.sections?.allNearby?.length ?? 0,
-          sampleNames: (res.sections?.allNearby || []).slice(0, 3).map((r) => r.restaurant?.name),
-        });
-
-        if (cancelled) return;
-        const sectionsItems = sectionsToItems(res.sections);
-        // Normalize so cards always share Feed's preferred resolved image field.
-        const normalize = (item: DiscoverItem): DiscoverItem => {
-          const resolved = resolveRestaurantDisplayImage({
-            previewPhotoUrl: item.restaurant.previewPhotoUrl,
-            imageUrl: item.restaurant.imageUrl,
-          }).url;
-          const derivedCuisines =
-            item.restaurant.cuisines && item.restaurant.cuisines.length > 0
-              ? item.restaurant.cuisines
-              : inferCuisineCandidates(item);
-          return {
-            ...item,
-            restaurant: {
-              ...item.restaurant,
-              cuisines: derivedCuisines,
-              previewPhotoUrl: resolved,
-              imageUrl: resolved,
-            },
-          };
-        };
-        const normalizedSections: DiscoverSectionItems = {
-          topPicksForYou: sectionsItems.topPicksForYou.map(normalize),
-          becauseYouLiked: sectionsItems.becauseYouLiked.map(normalize),
-          trendingWithSimilarUsers: sectionsItems.trendingWithSimilarUsers.map(normalize),
-          allNearby: sectionsItems.allNearby.map(normalize),
-        };
-        locationCacheRef.current[cacheKey] = normalizedSections;
-        setAllRestaurants(normalizedSections);
-        setLocationResultsError(null);
-      } catch (err) {
-        if (cancelled) return;
-        const message =
-          err instanceof Error
-            ? err.message
-            : 'Could not load restaurants for this location.';
-        setLocationResultsError(message);
-        setAllRestaurants(EMPTY_DISCOVER_SECTIONS);
+        if (geoReqRef.current !== reqId) return;
+        setGeoSuggestions(Array.isArray(data?.results) ? data.results : []);
+      } catch {
+        if (geoReqRef.current !== reqId) return;
+        setGeoSuggestions([]);
       } finally {
-        if (cancelled) return;
-        setLocationResultsLoading(false);
+        if (geoReqRef.current !== reqId) return;
+        setGeoLoading(false);
       }
+    }, 300);
+    return () => clearTimeout(t);
+  }, [locationPickerOpen, locationInput]);
+
+  const selectLocation = useCallback((loc: DiscoverSelectedLocation) => {
+    setCustomLocation(loc);
+    setLocationInput('');
+  }, []);
+
+  // ── Unified location sheet ──────────────────────────────────────────────
+  const openLocationSheet = () => {
+    setPendingRadius(effectiveRadius);
+    setLocationPickerOpen(true);
+    Animated.spring(radiusSlideAnim, { toValue: 1, useNativeDriver: true, tension: 65, friction: 11 }).start();
+  };
+
+  const closeLocationSheet = () => {
+    Animated.timing(radiusSlideAnim, { toValue: 0, duration: 220, useNativeDriver: true }).start(() => {
+      setLocationPickerOpen(false);
+      setLocationInput('');
+    });
+  };
+
+  const applyLocationSheet = () => {
+    setRadiusMiles(pendingRadius);
+    closeLocationSheet();
+  };
+
+  const radiusSheetTranslate = radiusSlideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [400, 0],
+  });
+
+  // ── Toggle vibe chip ─────────────────────────────────────────────────────
+  const toggleVibeChip = (index: number) => {
+    if (activeVibeIndex === index) {
+      // Deactivate
+      setActiveVibeIndex(null);
+      setSortMode('best');
+      setSelectedPrices([]);
+      setSelectedOccasion(null);
+    } else {
+      // Activate this chip
+      setActiveVibeIndex(index);
+      const chip = VIBE_CHIPS[index];
+      setSortMode(chip.sort ?? 'best');
+      setSelectedPrices(chip.prices ?? []);
+      setSelectedOccasion(chip.occasion ?? null);
     }
+  };
 
-    if (filterMode !== 'location') {
-      setAllRestaurants(EMPTY_DISCOVER_SECTIONS);
-      setVisibleRestaurants(EMPTY_DISCOVER_SECTIONS);
-      setLocationResultsError(null);
-      setLocationResultsLoading(false);
-      return;
-    }
+  // ── Resolved display state ─────────────────────────────────────────────
+  const rawSections = needsOverlay ? overlayResults : baseSections;
+  const visibleSections = filterByPrice(rawSections, selectedPrices);
+  const showLoading = needsOverlay ? overlayLoading : baseLoading;
 
-    if (!selectedLocation || !selectedLocationCacheKey) {
-      setAllRestaurants(EMPTY_DISCOVER_SECTIONS);
-      setVisibleRestaurants(EMPTY_DISCOVER_SECTIONS);
-      setLocationResultsError(null);
-      setLocationResultsLoading(false);
-      return;
-    }
+  const hasAnyCards =
+    visibleSections.topPicksForYou.length > 0 ||
+    visibleSections.becauseYouLiked.length > 0 ||
+    visibleSections.trendingWithSimilarUsers.length > 0 ||
+    visibleSections.allNearby.length > 0;
 
-    loadLocationRestaurants(selectedLocation, selectedCuisine);
+  const hasActiveFilters = selectedPrices.length > 0 || sortMode !== 'best' || selectedOccasion != null || (radiusMiles != null && radiusMiles !== defaultRadius(userCoords?.lat, userCoords?.lng));
 
-    return () => {
-      cancelled = true;
-    };
-  }, [filterMode, selectedLocationCacheKey, selectedCuisine]);
+  const clearAllFilters = () => {
+    setSortMode('best');
+    setSelectedPrices([]);
+    setRadiusMiles(null);
+    setSelectedOccasion(null);
+    setActiveVibeIndex(null);
+  };
 
-  const cuisineHeading = selectedCuisine ? `${selectedCuisine}` : null;
+  // ── Dynamic headings (personality-driven) ─────────────────────────────
+  const loc = locationName;
+  const radiusStr = effectiveRadius < 1 ? `${effectiveRadius} miles` : `${Math.round(effectiveRadius)} miles`;
+  const activeVibeLabel = activeVibeIndex != null ? VIBE_CHIPS[activeVibeIndex].label : null;
 
-  const topPicksTitle =
-    filterMode === 'location' && selectedLocation
-      ? cuisineHeading
-        ? `Trending ${cuisineHeading} in ${selectedLocation.label}`
-        : `Trending in ${selectedLocation.label}`
-      : cuisineHeading
-        ? `Trending ${cuisineHeading}`
-        : sectionLabels.topPicksForYou;
+  // Build context-aware heading prefix
+  const searchContext = activeSearch || null;
 
-  const topPicksSubtitle =
-    filterMode === 'location' && selectedLocation
-      ? cuisineHeading
-        ? `Popular and highly rated ${cuisineHeading} in this area`
-        : 'Popular and highly rated in this area'
-      : cuisineHeading
-        ? `Popular picks for ${cuisineHeading}`
-        : sectionLabels.topPicksSubtitle;
+  const topPicksTitle = searchContext
+    ? loc ? `${searchContext} in ${loc}` : `${searchContext} near you`
+    : activeVibeLabel
+    ? `${activeVibeLabel} spots`
+    : loc ? `You\u2019ll love these` : 'You\u2019ll probably love these \u{1F440}';
 
-  const locationHeading = filterMode === 'location' && selectedLocation ? selectedLocation.label : null;
-  const trendingTitle = locationHeading
-    ? cuisineHeading
-      ? `Top rated ${cuisineHeading} in ${locationHeading}`
-      : `Top rated in ${locationHeading}`
-    : cuisineHeading
-      ? `Top rated ${cuisineHeading}`
-      : sectionLabels.trendingWithSimilarUsers;
+  const topPicksSub = activeSearch
+    ? `Showing results for \u201C${activeSearch}\u201D`
+    : activeVibeLabel ? `${activeVibeLabel} picks curated for you`
+    : isColdStart ? 'Popular picks while we learn your taste' : 'Handpicked based on your taste';
 
-  const trendingSubtitle = locationHeading
-    ? cuisineHeading
-      ? `Popular ${cuisineHeading} in this area`
-      : 'Popular in this area'
-    : cuisineHeading
-      ? `Popular ${cuisineHeading} picks`
-      : sectionLabels.trendingSubtitle;
+  const trendingTitle = searchContext
+    ? loc ? `More ${searchContext} in ${loc}` : `More ${searchContext}`
+    : 'Hot near you \u{1F525}';
 
-  const allLocationsTitle = locationHeading
-    ? cuisineHeading
-      ? `Top picks for ${cuisineHeading} in ${locationHeading}`
-      : `Top picks in ${locationHeading}`
-    : cuisineHeading
-      ? `Top picks for ${cuisineHeading}`
-      : sectionLabels.allNearby;
+  const trendingSub = activeSearch ? 'Top rated matches' : 'People like you are loving these';
 
-  const allLocationsSubtitle = locationHeading
-    ? cuisineHeading
-      ? `Browse ${cuisineHeading} restaurants in ${locationHeading}`
-      : `Browse restaurants in ${locationHeading}`
-    : cuisineHeading
-      ? `Browse ${cuisineHeading} restaurants`
-      : sectionLabels.allNearbySubtitle;
+  const allTitle = searchContext
+    ? loc ? `All ${searchContext} in ${loc}` : `All ${searchContext} nearby`
+    : 'More to explore';
 
-  const cuisineFilterRow =
-    cuisineChips.length > 0 ? (
-      <View style={styles.cuisineFilterRowWrap}>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.cuisineFilterRowScroll}
-        >
-          {cuisineChips.map((c) => {
-            const active = selectedCuisine === c;
-            return (
-              <TouchableOpacity
-                key={c}
-                style={[styles.cuisineChip, active && styles.cuisineChipActive]}
-                onPress={() =>
-                  setSelectedCuisine((prev) => {
-                    const next = prev === c ? null : c;
-                    if (__DEV__) console.log('[Discover] cuisine chip selected', { chip: c, next });
-                    return next;
-                  })
-                }
-                activeOpacity={0.85}
-                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              >
-                <Text style={[styles.cuisineChipText, active && styles.cuisineChipTextActive]}>
-                  {c}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </ScrollView>
-      </View>
-    ) : null;
+  const allSub = activeSearch
+    ? `Within ${radiusStr}`
+    : `Everything within ${radiusStr}`;
 
+  // ── Render ─────────────────────────────────────────────────────────────
   return (
     <SafeAreaView style={styles.safe}>
       <View style={styles.header}>
-        <Text style={styles.title}>Discover</Text>
-        <Text style={styles.subtitle}>
-          {filterMode === 'location'
-            ? selectedLocation
-              ? `Popular picks for ${selectedLocation.label}`
-              : 'Find restaurants for a neighborhood or city'
-            : isColdStart
-              ? 'Popular picks while we learn your taste'
-              : 'People who like what you like also liked these'}
-        </Text>
-        <DiscoverLocationBar
-          filterMode={filterMode}
-          onFilterModeChange={setFilterMode}
-          selectedLocation={selectedLocation}
-          onCommitLocation={handleCommitLocation}
-          onLocationInputDiverged={handleLocationInputDiverged}
-          cuisineRow={cuisineFilterRow}
-        />
+        {!searchFocused && (
+          <View style={styles.topRow}>
+            <Text style={styles.title}>Discover</Text>
+            <TouchableOpacity
+              style={styles.locationPill}
+              onPress={openLocationSheet}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="location-sharp" size={13} color={colors.accent} />
+              <Text style={styles.locationPillLabel} numberOfLines={1}>
+                {customLocation?.label ?? (userCoords ? 'Near you' : 'Set location')}
+              </Text>
+              <View style={styles.locationPillDot} />
+              <Text style={styles.locationPillRadius}>{radiusLabel(effectiveRadius)}</Text>
+              <Ionicons name="chevron-down" size={12} color={colors.textMuted} />
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* Search bar — hero element with location merged in */}
+        <View style={[styles.searchBarWrap, searchFocused && styles.searchBarFocused]}>
+          <Ionicons name="search-outline" size={18} color={searchFocused ? colors.accent : colors.textMuted} />
+          <TextInput
+            ref={searchInputRef}
+            value={searchInput}
+            onChangeText={setSearchInput}
+            placeholder={SEARCH_PLACEHOLDERS[placeholderIdx]}
+            placeholderTextColor={colors.textFaint}
+            style={styles.searchInput}
+            returnKeyType="search"
+            onFocus={() => setSearchFocused(true)}
+            onSubmitEditing={() => { setActiveSearch(searchInput.trim()); setSearchFocused(false); }}
+          />
+          {searchInput.length > 0 && (
+            <TouchableOpacity
+              onPress={() => { setSearchInput(''); setActiveSearch(''); }}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              style={styles.searchClear}
+            >
+              <Ionicons name="close-circle" size={18} color={colors.textMuted} />
+            </TouchableOpacity>
+          )}
+          {searchFocused && (
+            <TouchableOpacity
+              onPress={() => { setSearchFocused(false); searchInputRef.current?.blur(); }}
+              hitSlop={8}
+              style={styles.searchCancelBtn}
+            >
+              <Text style={styles.searchCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {/* ── Search focus panel ── */}
+        {searchFocused && !searchInput.trim() && (
+          <ScrollView style={styles.focusPanel} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+            {/* Change location */}
+            <TouchableOpacity
+              style={styles.focusLocationRow}
+              onPress={() => { setSearchFocused(false); searchInputRef.current?.blur(); openLocationSheet(); }}
+              activeOpacity={0.6}
+            >
+              <Ionicons name="location-sharp" size={14} color={colors.accent} />
+              <Text style={styles.focusLocationText} numberOfLines={1}>
+                {locationLabel ?? 'Set your location'}
+              </Text>
+              <Text style={styles.focusLocationChange}>Change</Text>
+            </TouchableOpacity>
+
+            {/* Trending categories */}
+            <Text style={styles.focusSectionTitle}>Trending nearby</Text>
+            <View style={styles.focusCategoryGrid}>
+              {TRENDING_CATEGORIES.map((cat) => (
+                <TouchableOpacity
+                  key={cat.label}
+                  style={styles.focusCategoryChip}
+                  onPress={() => { setSearchInput(cat.label); setActiveSearch(cat.label); setSearchFocused(false); searchInputRef.current?.blur(); }}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name={cat.icon} size={16} color={colors.accent} />
+                  <Text style={styles.focusCategoryText}>{cat.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {/* Popular searches */}
+            <Text style={styles.focusSectionTitle}>Popular searches</Text>
+            {['Best brunch', 'Date night', 'Late night eats', 'Cheap eats'].map((term) => (
+              <TouchableOpacity
+                key={term}
+                style={styles.focusSearchRow}
+                onPress={() => { setSearchInput(term); setActiveSearch(term); setSearchFocused(false); searchInputRef.current?.blur(); }}
+                activeOpacity={0.6}
+              >
+                <Ionicons name="trending-up-outline" size={16} color={colors.textFaint} />
+                <Text style={styles.focusSearchText}>{term}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        )}
+
+        {/* Sorting tabs — lightweight text, secondary to cuisine chips */}
+        {!searchFocused && (
+          <View style={styles.sortRow}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.sortTabs}>
+              {VIBE_CHIPS.map((chip, i) => {
+                const active = activeVibeIndex === i;
+                return (
+                  <TouchableOpacity
+                    key={chip.label}
+                    style={[styles.sortTab, active && styles.sortTabActive]}
+                    onPress={() => toggleVibeChip(i)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={[styles.sortTabText, active && styles.sortTabTextActive]}>
+                      {chip.emoji} {chip.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+            {hasActiveFilters && (
+              <TouchableOpacity onPress={clearAllFilters} activeOpacity={0.7} style={styles.clearAllBtn} hitSlop={8}>
+                <Ionicons name="close-circle" size={14} color={colors.textFaint} />
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
+
+        {/* Cuisine chips with leading "For you" */}
+        {!searchFocused && (
+          <View style={styles.chipsRow}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsScroll}>
+              {CUISINE_CHIPS.map((chip) => {
+                const isForYou = chip.label === 'For you';
+                const active = isForYou
+                  ? !activeSearch
+                  : activeSearch.toLowerCase() === chip.label.toLowerCase();
+                return (
+                  <TouchableOpacity
+                    key={chip.label}
+                    style={[styles.chip, active && styles.chipActive]}
+                    onPress={() => {
+                      if (isForYou) { setSearchInput(''); setActiveSearch(''); }
+                      else if (active) { setSearchInput(''); setActiveSearch(''); }
+                      else { setSearchInput(chip.label); setActiveSearch(chip.label); }
+                    }}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={[styles.chipEmoji, active && styles.chipEmojiActive]}>{chip.emoji}</Text>
+                    <Text style={[styles.chipText, active && styles.chipTextActive]}>{chip.label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </View>
+        )}
       </View>
-      {showLoading ? (
+
+      {/* ── Content ─────────────────────────────────────────────────────── */}
+      {searchFocused ? null : showLoading ? (
         <View style={styles.centered}>
           <ActivityIndicator size="large" color={colors.accent} />
         </View>
+      ) : !locationLabel ? (
+        <View style={styles.centered}>
+          <Ionicons name="location-outline" size={40} color={colors.textMuted} />
+          <Text style={styles.emptyMessage}>Set your location to start exploring</Text>
+          <TouchableOpacity onPress={openLocationSheet} style={styles.setLocationBtn}>
+            <Text style={styles.setLocationBtnText}>Set location</Text>
+          </TouchableOpacity>
+        </View>
       ) : (
         <>
-          {error ? (
+          {baseError && !activeSearch && (
             <View style={styles.errorBanner}>
-              <Text style={styles.errorBannerText}>{error}</Text>
+              <Text style={styles.errorBannerText}>{baseError}</Text>
             </View>
-          ) : null}
-          {filterMode === 'location' && locationResultsError ? (
-            <View style={styles.errorBanner}>
-              <Text style={styles.errorBannerText}>
-                {`Could not load location results. ${locationResultsError}`}
-              </Text>
-            </View>
-          ) : null}
+          )}
           {hasAnyCards ? (
-        <ScrollView
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-        >
-          {visibleSections.topPicksForYou.length > 0 && (
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>{topPicksTitle}</Text>
-              <Text style={styles.sectionSubtitle}>{topPicksSubtitle}</Text>
-              {visibleSections.topPicksForYou.map((item) => (
-                <RestaurantCard
-                  key={item.restaurant.id}
-                  item={item}
-                  saved={isSaved(item.restaurant.placeId ?? item.restaurant.id)}
-                />
-              ))}
-            </View>
-          )}
-          {visibleSections.becauseYouLiked.length > 0 && (
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>{sectionLabels.becauseYouLiked}</Text>
-              <Text style={styles.sectionSubtitle}>{sectionLabels.becauseYouLikedSubtitle}</Text>
-              {visibleSections.becauseYouLiked.map((item) => (
-                <RestaurantCard
-                  key={item.restaurant.id}
-                  item={item}
-                  saved={isSaved(item.restaurant.placeId ?? item.restaurant.id)}
-                />
-              ))}
-            </View>
-          )}
-          {visibleSections.trendingWithSimilarUsers.length > 0 && (
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>{trendingTitle}</Text>
-              <Text style={styles.sectionSubtitle}>{trendingSubtitle}</Text>
-              {visibleSections.trendingWithSimilarUsers.map((item) => (
-                <RestaurantCard
-                  key={item.restaurant.id}
-                  item={item}
-                  saved={isSaved(item.restaurant.placeId ?? item.restaurant.id)}
-                />
-              ))}
-            </View>
-          )}
-          {(() => {
-            const seenIds = new Set([
-              ...visibleSections.topPicksForYou.map((i) => i.restaurant.id),
-              ...visibleSections.becauseYouLiked.map((i) => i.restaurant.id),
-              ...visibleSections.trendingWithSimilarUsers.map((i) => i.restaurant.id),
-            ]);
-            const remainingNearby = visibleSections.allNearby.filter((item) => !seenIds.has(item.restaurant.id));
-            if (remainingNearby.length === 0 && visibleSections.allNearby.length > 0) return null;
-            return (
-              <View style={styles.section}>
-                <Text style={styles.sectionTitle}>{allLocationsTitle}</Text>
-                <Text style={styles.sectionSubtitle}>
-                  {remainingNearby.length < visibleSections.allNearby.length
-                    ? locationHeading
-                      ? cuisineHeading
-                        ? `More top picks for ${cuisineHeading} in ${locationHeading}`
-                        : `More top picks in ${locationHeading}`
-                      : 'More in your radius'
-                    : allLocationsSubtitle}
-                </Text>
-                {(remainingNearby.length > 0 ? remainingNearby : visibleSections.allNearby).map((item) => (
-                  <RestaurantCard
-                    key={item.restaurant.id}
-                    item={item}
-                    saved={isSaved(item.restaurant.placeId ?? item.restaurant.id)}
-                  />
-                ))}
-              </View>
-            );
-          })()}
-        </ScrollView>
+            <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+              {visibleSections.topPicksForYou.length > 0 && (
+                <View style={styles.section}>
+                  <Text style={styles.sectionTitle}>{topPicksTitle}</Text>
+                  <Text style={styles.sectionSubtitle}>{topPicksSub}</Text>
+                  {visibleSections.topPicksForYou.map((item, i) => (
+                    <RestaurantCard key={item.restaurant.id} item={item} saved={isSaved(item.restaurant.placeId ?? item.restaurant.id)} userCoords={effectiveCoords} animDelay={i * 60} />
+                  ))}
+                </View>
+              )}
+              {visibleSections.becauseYouLiked.length > 0 && (
+                <View style={styles.section}>
+                  <Text style={styles.sectionTitle}>Because you have taste {'\u{1F48E}'}</Text>
+                  <Text style={styles.sectionSubtitle}>More like your favorites</Text>
+                  {visibleSections.becauseYouLiked.map((item) => (
+                    <RestaurantCard key={item.restaurant.id} item={item} saved={isSaved(item.restaurant.placeId ?? item.restaurant.id)} userCoords={effectiveCoords} />
+                  ))}
+                </View>
+              )}
+              {visibleSections.trendingWithSimilarUsers.length > 0 && (
+                <View style={styles.section}>
+                  <Text style={styles.sectionTitle}>{trendingTitle}</Text>
+                  <Text style={styles.sectionSubtitle}>{trendingSub}</Text>
+                  {visibleSections.trendingWithSimilarUsers.map((item) => (
+                    <RestaurantCard key={item.restaurant.id} item={item} saved={isSaved(item.restaurant.placeId ?? item.restaurant.id)} userCoords={effectiveCoords} />
+                  ))}
+                </View>
+              )}
+              {(() => {
+                const seenIds = new Set([
+                  ...visibleSections.topPicksForYou.map((i) => i.restaurant.id),
+                  ...visibleSections.becauseYouLiked.map((i) => i.restaurant.id),
+                  ...visibleSections.trendingWithSimilarUsers.map((i) => i.restaurant.id),
+                ]);
+                const remaining = visibleSections.allNearby.filter((item) => !seenIds.has(item.restaurant.id));
+                if (remaining.length === 0 && visibleSections.allNearby.length > 0) return null;
+                return (
+                  <View style={styles.section}>
+                    <Text style={styles.sectionTitle}>{allTitle}</Text>
+                    <Text style={styles.sectionSubtitle}>{allSub}</Text>
+                    {(remaining.length > 0 ? remaining : visibleSections.allNearby).map((item) => (
+                      <RestaurantCard key={item.restaurant.id} item={item} saved={isSaved(item.restaurant.placeId ?? item.restaurant.id)} userCoords={effectiveCoords} />
+                    ))}
+                  </View>
+                );
+              })()}
+            </ScrollView>
           ) : (
             <View style={styles.centered}>
-              {filterMode === 'location' ? (
-                selectedLocation ? (
+              {activeSearch ? (
+                <View style={styles.emptyWrap}>
                   <Text style={styles.emptyMessage}>
-                    {selectedCuisine
-                      ? `No ${selectedCuisine} restaurants found for ${selectedLocation.label}.`
-                      : `No restaurants found for ${selectedLocation.label}.`}
+                    {locationName ? `No "${activeSearch}" results in ${locationName}` : `No results for "${activeSearch}" nearby`}
                   </Text>
-                ) : (
-                  <Text style={styles.emptyMessage}>Type to search locations above.</Text>
-                )
+                  <Text style={styles.emptyHint}>Try a different search term or clear your search.</Text>
+                  <TouchableOpacity onPress={() => { setSearchInput(''); setActiveSearch(''); }} style={styles.clearFilterBtn}>
+                    <Text style={styles.clearFilterText}>Clear search</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : selectedPrices.length > 0 ? (
+                <View style={styles.emptyWrap}>
+                  <Text style={styles.emptyMessage}>No restaurants match your price filter</Text>
+                  <TouchableOpacity onPress={() => setSelectedPrices([])} style={styles.clearFilterBtn}>
+                    <Text style={styles.clearFilterText}>Clear price filter</Text>
+                  </TouchableOpacity>
+                </View>
               ) : (
-                <Text style={styles.emptyMessage}>
-                  {selectedCuisine ? `No ${selectedCuisine} restaurants found nearby.` : 'No restaurants found nearby.'}
-                </Text>
+                <Text style={styles.emptyMessage}>No restaurants found nearby.</Text>
               )}
             </View>
           )}
         </>
       )}
+
+      {/* ── Unified location + radius bottom sheet ─────────────────────── */}
+      <Modal
+        visible={locationPickerOpen}
+        transparent
+        animationType="none"
+        onRequestClose={closeLocationSheet}
+      >
+        <View style={styles.sheetBackdrop}>
+          <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={closeLocationSheet} />
+          <Animated.View
+            style={[styles.sheet, { transform: [{ translateY: radiusSheetTranslate }], paddingBottom: Math.max(insets.bottom, 20) }]}
+          >
+            {/* Handle */}
+            <View style={styles.sheetHandle} />
+
+            {/* ── Location section ── */}
+            <Text style={styles.sheetSectionLabel}>Where are you exploring?</Text>
+
+            {/* Current location option */}
+            <TouchableOpacity
+              style={[styles.sheetLocationRow, !customLocation && styles.sheetLocationRowActive]}
+              onPress={() => { setCustomLocation(null); setLocationInput(''); }}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="navigate" size={16} color={!customLocation ? colors.accent : colors.textMuted} />
+              <Text style={[styles.sheetLocationText, !customLocation && styles.sheetLocationTextActive]}>Near you</Text>
+              {!customLocation && <Ionicons name="checkmark" size={16} color={colors.accent} />}
+            </TouchableOpacity>
+
+            {/* Location search */}
+            <View style={styles.sheetLocationInputWrap}>
+              <Ionicons name="search-outline" size={15} color={colors.textFaint} />
+              <TextInput
+                value={locationInput}
+                onChangeText={setLocationInput}
+                placeholder="Search a neighborhood or city..."
+                placeholderTextColor={colors.textFaint}
+                style={styles.sheetLocationInput}
+                autoCapitalize="words"
+                autoCorrect={false}
+              />
+              {locationInput.length > 0 && (
+                <TouchableOpacity onPress={() => setLocationInput('')} hitSlop={8}>
+                  <Ionicons name="close-circle" size={16} color={colors.textFaint} />
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* Location suggestions */}
+            {locationInput.trim().length > 0 ? (
+              geoLoading ? (
+                <View style={styles.sheetLocationHint}>
+                  <Text style={styles.sheetLocationHintText}>Searching...</Text>
+                </View>
+              ) : geoSuggestions.length > 0 ? (
+                <ScrollView style={styles.sheetSuggestionsScroll} keyboardShouldPersistTaps="always">
+                  {geoSuggestions.map((sug) => (
+                    <TouchableOpacity
+                      key={sug.label}
+                      style={styles.sheetLocationRow}
+                      onPress={() => { setCustomLocation({ label: sug.label, placeId: null, lat: sug.lat, lng: sug.lng }); setLocationInput(''); }}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons name="location-outline" size={15} color={colors.textMuted} />
+                      <Text style={styles.sheetLocationText} numberOfLines={1}>{sug.label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              ) : (
+                <View style={styles.sheetLocationHint}>
+                  <Text style={styles.sheetLocationHintText}>No locations found</Text>
+                </View>
+              )
+            ) : (
+              <ScrollView style={styles.sheetSuggestionsScroll} keyboardShouldPersistTaps="always">
+                {POPULAR_LOCATIONS.map((loc) => {
+                  const active = customLocation?.label === loc.label;
+                  return (
+                    <TouchableOpacity
+                      key={loc.label}
+                      style={[styles.sheetLocationRow, active && styles.sheetLocationRowActive]}
+                      onPress={() => { setCustomLocation(loc); setLocationInput(''); }}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons name="location-outline" size={15} color={active ? colors.accent : colors.textMuted} />
+                      <Text style={[styles.sheetLocationText, active && styles.sheetLocationTextActive]} numberOfLines={1}>{loc.label}</Text>
+                      {active && <Ionicons name="checkmark" size={16} color={colors.accent} />}
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            )}
+
+            {/* ── Distance section ── */}
+            <View style={styles.sheetDivider} />
+            <View style={styles.sheetDistanceHeader}>
+              <Text style={styles.sheetSectionLabel}>How far?</Text>
+              <Text style={styles.sheetDistanceValue}>{Math.round(pendingRadius)} mi</Text>
+            </View>
+
+            <Slider
+              style={styles.radiusSlider}
+              minimumValue={1}
+              maximumValue={30}
+              step={1}
+              value={pendingRadius}
+              onValueChange={(v: number) => setPendingRadius(Math.round(v))}
+              minimumTrackTintColor={colors.accent}
+              maximumTrackTintColor={colors.border}
+              thumbTintColor={colors.accent}
+            />
+
+            <TouchableOpacity style={styles.applyBtn} onPress={applyLocationSheet} activeOpacity={0.85}>
+              <Text style={styles.applyBtnText}>Let's eat</Text>
+            </TouchableOpacity>
+          </Animated.View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
-  header: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 16 },
-  title: { fontSize: 24, fontWeight: '700', color: colors.text },
-  subtitle: { marginTop: 4, fontSize: 13, color: colors.textMuted },
-  scrollContent: { paddingHorizontal: 18, paddingBottom: 100 },
-  section: { marginBottom: 24 },
-  sectionTitle: { fontSize: 18, fontWeight: '700', color: colors.text, marginBottom: 2 },
-  sectionSubtitle: { fontSize: 12, color: colors.textMuted, marginBottom: 12 },
-  centered: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 24 },
-  error: { color: colors.textMuted, textAlign: 'center' },
+  header: { paddingHorizontal: 20, paddingTop: 4, paddingBottom: 4 },
+  topRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 2,
+  },
+  title: { fontSize: 22, fontWeight: '800', color: colors.text },
+  locationPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: colors.surface,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    shadowColor: 'rgba(43,33,24,0.06)',
+    shadowOpacity: 1,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
+  },
+  locationPillLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.text,
+    maxWidth: 120,
+  },
+  locationPillDot: {
+    width: 3,
+    height: 3,
+    borderRadius: 1.5,
+    backgroundColor: colors.textFaint,
+  },
+  locationPillRadius: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.textMuted,
+  },
+
+  searchBarWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+    backgroundColor: colors.surface,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    shadowColor: 'rgba(43,33,24,0.08)',
+    shadowOpacity: 1,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
+  },
+  searchBarFocused: {
+    borderColor: colors.accent,
+    shadowColor: 'rgba(232,105,42,0.15)',
+    shadowRadius: 12,
+  },
+  searchIcon: { marginRight: 10 },
+  searchInput: { flex: 1, paddingVertical: 13, fontSize: 15, fontWeight: '500', color: colors.text },
+  searchClear: { marginLeft: 6 },
+  searchCancelBtn: { marginLeft: 10 },
+  searchCancelText: { fontSize: 15, fontWeight: '600', color: colors.accent },
+
+  // Focus panel (shown when search bar is active)
+  focusPanel: { marginTop: 12, maxHeight: 400 },
+  focusLocationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  focusLocationText: { flex: 1, fontSize: 14, fontWeight: '600', color: colors.text },
+  focusLocationChange: { fontSize: 13, fontWeight: '600', color: colors.accent },
+  focusSectionTitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.textMuted,
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
+    marginTop: 20,
+    marginBottom: 10,
+    marginLeft: 4,
+  },
+  focusCategoryGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  focusCategoryChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  focusCategoryText: { fontSize: 14, fontWeight: '600', color: colors.text },
+  focusSearchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 13,
+    paddingHorizontal: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  focusSearchText: { fontSize: 15, fontWeight: '500', color: colors.text },
+
+  // Old locationRow/dropdown removed — unified into bottom sheet
+
+  // ── Sort tabs (lightweight text, secondary) ──
+  sortRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+    paddingBottom: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  sortTabs: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingRight: 12,
+  },
+  sortTab: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  sortTabActive: {
+    backgroundColor: colors.surfaceSoft,
+  },
+  sortTabText: {
+    fontSize: 12.5,
+    fontWeight: '500',
+    color: colors.textFaint,
+    letterSpacing: 0.1,
+  },
+  sortTabTextActive: {
+    fontWeight: '700',
+    color: colors.text,
+  },
+  clearAllBtn: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+
+  // ── Cuisine chips (primary interaction) ──
+  chipsRow: { marginTop: 10 },
+  chipsScroll: { gap: 6, paddingRight: 10 },
+  chip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 11,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: colors.border,
+    height: 32,
+  },
+  chipActive: {
+    backgroundColor: colors.accent,
+    borderColor: colors.accent,
+  },
+  chipEmoji: { fontSize: 13, lineHeight: 16, marginRight: 3 },
+  chipEmojiActive: { opacity: 1 },
+  chipText: { fontSize: 12, fontWeight: '600', color: colors.textMuted, lineHeight: 16, letterSpacing: 0.1 },
+  chipTextActive: { color: '#fff', fontWeight: '700' },
+
+  scrollContent: { paddingHorizontal: 18, paddingTop: 20, paddingBottom: 100 },
+  section: { marginBottom: 28 },
+  sectionTitle: { fontSize: 18, fontWeight: '800', color: colors.text, marginBottom: 4 },
+  sectionSubtitle: { fontSize: 12, color: '#8A7060', marginBottom: 14 },
+  centered: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 24, gap: 12 },
   errorBanner: { backgroundColor: colors.surface, paddingVertical: 8, paddingHorizontal: 20, borderBottomWidth: 1, borderBottomColor: colors.border },
   errorBannerText: { fontSize: 13, color: colors.textMuted, textAlign: 'center' },
+  emptyWrap: { alignItems: 'center', gap: 8 },
   emptyMessage: { fontSize: 14, color: colors.textMuted, textAlign: 'center' },
-  cuisineFilterRowWrap: {
-    marginTop: 10,
+  emptyHint: { fontSize: 13, color: colors.textMuted, textAlign: 'center' },
+  clearFilterBtn: { marginTop: 4, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, backgroundColor: colors.accent },
+  clearFilterText: { fontSize: 13, fontWeight: '700', color: '#fff' },
+  setLocationBtn: { paddingHorizontal: 20, paddingVertical: 10, borderRadius: 20, backgroundColor: colors.accent },
+  setLocationBtnText: { fontSize: 14, fontWeight: '700', color: '#fff' },
+
+  // ── Unified location + radius bottom sheet ──
+  sheetBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.3)',
+    justifyContent: 'flex-end',
   },
-  cuisineFilterRowScroll: {
+  sheet: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 24,
+    paddingTop: 10,
+    maxHeight: '80%',
+  },
+  sheetHandle: {
+    alignSelf: 'center',
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.border,
+    marginBottom: 16,
+  },
+  sheetSectionLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.textMuted,
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
+    marginBottom: 12,
+  },
+  sheetLocationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  sheetLocationRowActive: {
+    backgroundColor: colors.surfaceSoft,
+    borderRadius: 10,
+    marginHorizontal: -4,
+    paddingHorizontal: 8,
+  },
+  sheetLocationText: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  sheetLocationTextActive: {
+    color: colors.accent,
+  },
+  sheetLocationInputWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 8,
-    paddingRight: 10,
+    backgroundColor: colors.bgSoft,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    marginTop: 8,
+    marginBottom: 4,
   },
-  cuisineChip: {
+  sheetLocationInput: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '500',
+    color: colors.text,
+    paddingVertical: 11,
+  },
+  sheetSuggestionsScroll: {
+    maxHeight: 160,
+  },
+  sheetLocationHint: {
+    paddingVertical: 14,
+    paddingHorizontal: 4,
+  },
+  sheetLocationHintText: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: colors.textMuted,
+  },
+  sheetDivider: {
+    height: 1,
+    backgroundColor: colors.border,
+    marginTop: 12,
+    marginBottom: 16,
+  },
+  sheetDistanceHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  sheetDistanceValue: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: colors.accent,
+  },
+  radiusSlider: {
+    width: '100%',
+    height: 40,
+    marginBottom: 16,
+  },
+  radiusPresetsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 20,
+  },
+  radiusPreset: {
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 999,
@@ -724,16 +1101,28 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
-  cuisineChipActive: {
+  radiusPresetActive: {
     backgroundColor: colors.accent,
     borderColor: colors.accent,
   },
-  cuisineChipText: {
+  radiusPresetText: {
     fontSize: 13,
     fontWeight: '600',
     color: colors.text,
   },
-  cuisineChipTextActive: {
+  radiusPresetTextActive: {
+    color: '#fff',
+  },
+  applyBtn: {
+    backgroundColor: colors.accent,
+    borderRadius: 999,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  applyBtnText: {
+    fontSize: 16,
+    fontWeight: '800',
     color: '#fff',
   },
 });

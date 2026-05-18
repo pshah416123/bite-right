@@ -1,6 +1,7 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Image,
   Linking,
@@ -18,13 +19,18 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
 import { RESTAURANTS } from '~/src/data/restaurants';
-import { getNeutralRestaurantPlaceholderUri } from '~/src/utils/restaurantImage';
 import { colors } from '~/src/theme/colors';
 import { useFeedContext } from '~/src/context/FeedContext';
 import type { VibeTag } from '~/src/components/FeedCard';
-import { getRestaurantDetail, type RestaurantDetail } from '~/src/api/restaurants';
+import { getRestaurantDetail, getRestaurantMenu, getNearbyAfterSpots, cycleRestaurantPhoto, type RestaurantDetail, type RestaurantMenu, type NearbyAfterSpot } from '~/src/api/restaurants';
+import { MenuTemplate } from '~/src/components/MenuSection';
 import { useSavedRestaurants } from '~/src/context/SavedRestaurantsContext';
+import { useCompare } from '~/src/context/CompareContext';
 import { postNegativeFeedback } from '~/src/api/discover';
+import { RestaurantImage } from '~/src/components/RestaurantImage';
+import { QuickTipsBlock } from '~/src/components/QuickTipsBlock';
+import { SendToFriendSheet } from '~/src/components/SendToFriendSheet';
+import { useFriendVisitsAtRestaurant } from '~/src/hooks/useFriendVisitsAtRestaurant';
 
 const VIBE_LABELS: Record<VibeTag, string> = {
   date_night: 'Date night',
@@ -33,6 +39,8 @@ const VIBE_LABELS: Record<VibeTag, string> = {
   group: 'Group dinner',
   celebration: 'Celebration',
   quick_bite: 'Quick bite',
+  late_night: 'Late night',
+  weekend_brunch: 'Weekend brunch',
 };
 
 function isOpenableUrl(url: string): boolean {
@@ -53,9 +61,18 @@ export default function RestaurantScreen() {
   const router = useRouter();
   const { items: feedItems } = useFeedContext();
   const { saveRestaurant, isSaved } = useSavedRestaurants();
+  const { isSelected: isCompareSelected, toggle: toggleCompare } = useCompare();
   const [detail, setDetail] = useState<RestaurantDetail | null>(null);
   const [distanceMiles, setDistanceMiles] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
+  const [menu, setMenu] = useState<RestaurantMenu | null>(null);
+  const [menuLoading, setMenuLoading] = useState(false);
+  const [hoursExpanded, setHoursExpanded] = useState(false);
+  const [afterSpots, setAfterSpots] = useState<NearbyAfterSpot[]>([]);
+  const [cyclingPhoto, setCyclingPhoto] = useState(false);
+  const [photoKey, setPhotoKey] = useState(0); // bump to force image reload
+  const [sendSheetOpen, setSendSheetOpen] = useState(false);
+
   const restaurantFromPayload = useMemo(() => {
     if (!payloadRaw) return null;
     try {
@@ -68,9 +85,15 @@ export default function RestaurantScreen() {
         state?: string | null;
         priceLevel?: number | null;
         placeId?: string | null;
+        googlePlaceId?: string | null;
+        displayImageUrl?: string | null;
+        displayImageSourceType?: 'override' | 'user' | 'google' | 'placeholder' | null;
+        displayImageLastResolvedAt?: string | null;
         imageUrl?: string | null;
         previewPhotoUrl?: string | null;
         matchScore?: number | null;
+        fromLat?: number | null;
+        fromLng?: number | null;
       };
       if (!parsed || !parsed.id) return null;
       return {
@@ -82,9 +105,15 @@ export default function RestaurantScreen() {
         state: parsed.state ?? undefined,
         priceLevel: parsed.priceLevel ?? undefined,
         placeId: parsed.placeId ?? undefined,
+        googlePlaceId: parsed.googlePlaceId ?? parsed.placeId ?? undefined,
+        displayImageUrl: parsed.displayImageUrl ?? parsed.imageUrl ?? parsed.previewPhotoUrl ?? undefined,
+        displayImageSourceType: parsed.displayImageSourceType ?? undefined,
+        displayImageLastResolvedAt: parsed.displayImageLastResolvedAt ?? undefined,
         imageUrl: parsed.imageUrl ?? undefined,
         previewPhotoUrl: parsed.previewPhotoUrl ?? undefined,
         matchScore: parsed.matchScore ?? undefined,
+        fromLat: parsed.fromLat ?? undefined,
+        fromLng: parsed.fromLng ?? undefined,
       };
     } catch {
       return null;
@@ -92,12 +121,30 @@ export default function RestaurantScreen() {
   }, [payloadRaw]);
 
   const restaurantFromStatic = id ? RESTAURANTS.find((r) => r.id === id) : null;
-
   const restaurant = restaurantFromPayload ?? restaurantFromStatic;
-  /** Match saved list whether the API keyed by route id (g_…) or Google placeId. */
   const saved =
     (!!id && isSaved(id)) ||
     (!!restaurantFromPayload?.placeId && isSaved(restaurantFromPayload.placeId));
+  const inCompare = !!(id && isCompareSelected(id));
+
+  const handleToggleCompare = () => {
+    if (!id) return;
+    const name = restaurant?.name ?? log?.restaurantName ?? '';
+    toggleCompare({
+      id,
+      name,
+      cuisine: cuisineText || log?.cuisine || '',
+      neighborhood: restaurant?.neighborhood ?? log?.neighborhood ?? null,
+      priceLevel: (restaurant as any)?.priceLevel ?? null,
+      matchScore: (restaurantFromPayload as any)?.matchScore ?? null,
+      score: log?.score ?? null,
+      dishes: log?.dishes,
+      standoutDish: log?.standoutDish?.name ?? log?.dishHighlight ?? null,
+      vibeTags: log?.vibeTags,
+      note: log?.note ?? null,
+      imageUrl: restaurantFromPayload?.displayImageUrl ?? log?.previewPhotoUrl ?? null,
+    });
+  };
   const logsForRestaurant = useMemo(
     () => (id ? feedItems.filter((l) => l.restaurantId === id) : []),
     [feedItems, id],
@@ -107,16 +154,55 @@ export default function RestaurantScreen() {
     : logsForRestaurant.length > 0
       ? logsForRestaurant[0]
       : undefined;
+  const isOwnLog = log?.userName === 'You';
+  const logOwnerName = log?.userName ?? '';
+  // Social context: viewing from a friend's post — hide exploration features
+  const isFromFriendPost = !!logId;
+
+  // Friend visits for social proof — exclude the log author to avoid redundancy
+  const allFriendVisits = useFriendVisitsAtRestaurant(id ?? '');
+  const friendVisits = useMemo(
+    () => logOwnerName ? allFriendVisits.filter((fv) => fv.userName !== logOwnerName) : allFriendVisits,
+    [allFriendVisits, logOwnerName],
+  );
 
   useEffect(() => {
     if (!id) return;
-    getRestaurantDetail(id).then(setDetail);
+    getRestaurantDetail(id).then((d) => setDetail(d));
   }, [id]);
+
+  // Skip menu + nearby fetches in social context (friend post view)
+  useEffect(() => {
+    if (!id || isFromFriendPost) return;
+    setMenuLoading(true);
+    getRestaurantMenu(id)
+      .then((m) => setMenu(m))
+      .finally(() => setMenuLoading(false));
+  }, [id, isFromFriendPost]);
+
+  useEffect(() => {
+    if (!detail || isFromFriendPost) return;
+    if (detail.lat == null || detail.lng == null) return;
+    getNearbyAfterSpots(detail.lat as number, detail.lng as number).then((res) => {
+      // Filter out the current restaurant from "Next stop" suggestions
+      const currentName = (restaurant?.name ?? detail?.name ?? '').toLowerCase();
+      setAfterSpots(res.spots.filter((s) =>
+        s.restaurantId !== id && s.name.toLowerCase() !== currentName
+      ));
+    }).catch(() => {});
+  }, [detail, isFromFriendPost]);
 
   useEffect(() => {
     let cancelled = false;
     async function loadDistance() {
       if (!detail || detail.lat == null || detail.lng == null) return;
+      const fromLat = restaurantFromPayload?.fromLat;
+      const fromLng = restaurantFromPayload?.fromLng;
+      if (fromLat != null && fromLng != null) {
+        const d = distanceInMiles(fromLat, fromLng, detail.lat as number, detail.lng as number);
+        if (!cancelled) setDistanceMiles(d);
+        return;
+      }
       const { status } = await Location.getForegroundPermissionsAsync();
       if (cancelled || status !== 'granted') return;
       try {
@@ -134,30 +220,8 @@ export default function RestaurantScreen() {
       }
     }
     loadDistance();
-    return () => {
-      cancelled = true;
-    };
-  }, [detail?.lat, detail?.lng]);
-
-  const [heroBroken, setHeroBroken] = useState(false);
-
-  const primaryRestaurantImage =
-    (restaurantFromPayload?.imageUrl && restaurantFromPayload.imageUrl.startsWith('http')
-      ? restaurantFromPayload.imageUrl
-      : undefined) ||
-    (restaurantFromPayload?.previewPhotoUrl && restaurantFromPayload.previewPhotoUrl.startsWith('http')
-      ? restaurantFromPayload.previewPhotoUrl
-      : undefined);
-  const staticRestaurantImage = id ? getNeutralRestaurantPlaceholderUri() : undefined;
-
-  const heroImageUrl =
-    heroBroken
-      ? getNeutralRestaurantPlaceholderUri()
-      : logsForRestaurant.find((l) => l.previewPhotoUrl)?.previewPhotoUrl ??
-        detail?.imageUrl ??
-        primaryRestaurantImage ??
-        staticRestaurantImage ??
-        getNeutralRestaurantPlaceholderUri();
+    return () => { cancelled = true; };
+  }, [detail?.lat, detail?.lng, restaurantFromPayload?.fromLat, restaurantFromPayload?.fromLng]);
 
   const cuisineText = (
     restaurantFromPayload?.cuisines?.find(Boolean) ||
@@ -166,29 +230,90 @@ export default function RestaurantScreen() {
     log?.cuisine ||
     ''
   ).trim();
-  const areaText = [restaurant?.neighborhood, restaurant?.state].filter(Boolean).join(', ');
-  const priceStr = formatPriceLevel((restaurant as any)?.priceLevel);
-  const biteRightScorePercent =
+  const priceStr = formatPriceLevel((restaurant as any)?.priceLevel ?? (detail as any)?.priceLevel);
+  const matchScorePercent =
     typeof (restaurantFromPayload as any)?.matchScore === 'number'
       ? Math.round(((restaurantFromPayload as any).matchScore as number) * 100)
       : null;
 
-  const recommendedDishes = useMemo(() => {
+  // Standout dishes: from user logs (dishes array + dishHighlight), then from menu
+  const standoutDishes = useMemo(() => {
+    // 1. Collect from logs: both the dishes array and the dishHighlight field
     const counts = new Map<string, number>();
     logsForRestaurant.forEach((l) => {
+      // Include dishHighlight (the standout dish the user picked)
+      const highlight = (l.dishHighlight ?? l.standoutDish?.name ?? '').trim();
+      if (highlight) {
+        counts.set(highlight, (counts.get(highlight) || 0) + 2); // boost standout
+      }
       l.dishes?.forEach((d) => {
         const key = d.trim();
         if (!key) return;
         counts.set(key, (counts.get(key) || 0) + 1);
       });
     });
-    return Array.from(counts.entries())
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
-      .map(([name, count]) => ({ name, count }));
-  }, [logsForRestaurant]);
+    if (counts.size > 0) {
+      return Array.from(counts.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([name]) => name);
+    }
+    // 2. From menu sections — pick popular/featured items, filtering out
+    //    modifiers/options (spice levels, sizes, add-ons) that aren't real dishes.
+    if (menu && menu.sections.length > 0) {
+      const MODIFIER_RE = /^(half|no|extra|mild|medium|hot|full|less|more|light|double|triple|add|side of)\s/i;
+      const MODIFIER_SUFFIX_RE = /\s(spice|spicy|heat|size|style|option|level|topping|add-on|upgrade)$/i;
+      const MODIFIER_EXACT = new Set([
+        'spice', 'no spice', 'half spice', 'full spice', 'extra spice', 'mild', 'medium', 'hot',
+        'small', 'regular', 'large', 'extra large', 'gluten free', 'vegetarian', 'vegan',
+      ]);
+      // Operational/status text that scrapers sometimes pick up as menu items
+      const NOT_A_DISH_RE = /\b(we are closed|we're closed|closed|kitchen open|kitchen closed|open now|currently open|currently closed|opening hours|hours of operation|order online|delivery|takeout|pickup|dine.in|reservations?|book a table|call us|contact|follow us|visit us)\b/i;
+      // Time ranges like "06:30 PM-10:30 PM" or "11am - 9pm"
+      const TIME_RANGE_RE = /^\d{1,2}[:.]\d{2}\s*(am|pm|AM|PM)?\s*[-–]\s*\d{1,2}[:.]\d{2}\s*(am|pm|AM|PM)?$/;
+      // Pure numbers, prices, or phone-like strings
+      const NON_DISH_RE = /^[\d\s$€£.,+\-()/#]+$/;
 
-  const recentPosts = logsForRestaurant.slice(0, 5);
+      const isModifier = (name: string) => {
+        const lower = name.toLowerCase().trim();
+        if (MODIFIER_EXACT.has(lower)) return true;
+        if (MODIFIER_RE.test(lower)) return true;
+        if (MODIFIER_SUFFIX_RE.test(lower)) return true;
+        if (lower.includes('spice') && lower.length < 20) return true;
+        // Filter out operational text and time ranges
+        if (NOT_A_DISH_RE.test(lower)) return true;
+        if (TIME_RANGE_RE.test(lower.trim())) return true;
+        if (NON_DISH_RE.test(lower.trim())) return true;
+        // Extremely short strings (1-2 chars) are unlikely to be dish names
+        if (lower.length <= 2) return true;
+        return false;
+      };
+      const items: string[] = [];
+      for (const section of menu.sections) {
+        for (const item of section.items) {
+          if (item.name && !isModifier(item.name) && items.length < 5) items.push(item.name);
+        }
+        if (items.length >= 5) break;
+      }
+      return items.slice(0, 5);
+    }
+    return [];
+  }, [logsForRestaurant, menu]);
+
+  // When viewing from someone else's feed post, show their posts; otherwise show all
+  const recentPosts = useMemo(() => {
+    if (logId && log && !isOwnLog) {
+      return logsForRestaurant.filter((p) => p.userName === log.userName).slice(0, 5);
+    }
+    return logsForRestaurant.slice(0, 5);
+  }, [logsForRestaurant, logId, log, isOwnLog]);
+
+  // ── Info line: $$ · Cuisine · 0.3 mi · Open now ──────────────────────────
+  const infoLineParts = [priceStr, cuisineText].filter(Boolean);
+  if (distanceMiles != null) {
+    infoLineParts.push(distanceMiles < 0.1 ? 'Nearby' : `${distanceMiles.toFixed(1)} mi`);
+  }
+  const isOpenNow = detail?.isOpenNow === true;
 
   const canReserve =
     (detail?.reservationUrl && isOpenableUrl(detail.reservationUrl)) ||
@@ -232,7 +357,6 @@ export default function RestaurantScreen() {
   };
 
   const handleSave = async () => {
-    // Always persist the app's canonical restaurant id (g_… / rest_…) so GET /saved can resolve via findRestaurantById.
     const saveKey = restaurantFromPayload?.id ?? id;
     if (!saveKey || saving) return;
     const name = restaurant?.name ?? log?.restaurantName ?? detail?.name ?? `Restaurant ${saveKey}`;
@@ -242,16 +366,6 @@ export default function RestaurantScreen() {
       restaurantFromPayload?.cuisines && restaurantFromPayload.cuisines.length > 0
         ? restaurantFromPayload.cuisines
         : undefined;
-    if (__DEV__) {
-      console.log('[RestaurantDetail] Save onPress', {
-        routeId: id,
-        saveKey,
-        placeId: restaurantFromPayload?.placeId ?? null,
-        name,
-        image: restaurantFromPayload?.imageUrl ?? restaurantFromPayload?.previewPhotoUrl ?? null,
-        cuisines: cuisinesList ?? null,
-      });
-    }
     try {
       setSaving(true);
       await saveRestaurant(
@@ -259,8 +373,10 @@ export default function RestaurantScreen() {
           place_id: saveKey,
           name,
           photo:
+            restaurantFromPayload?.displayImageUrl ??
             restaurantFromPayload?.imageUrl ??
             restaurantFromPayload?.previewPhotoUrl ??
+            detail?.displayImageUrl ??
             detail?.imageUrl ??
             undefined,
           cuisine: cuisine || undefined,
@@ -278,17 +394,50 @@ export default function RestaurantScreen() {
     }
   };
 
+  const handleCyclePhoto = async () => {
+    const rid = restaurantFromPayload?.id ?? id;
+    if (!rid || cyclingPhoto) return;
+    setCyclingPhoto(true);
+    try {
+      await cycleRestaurantPhoto(rid);
+      setPhotoKey((k) => k + 1);
+    } catch {
+      // silently fail
+    } finally {
+      setCyclingPhoto(false);
+    }
+  };
+
   const handleNegativeFeedback = () => {
     if (!id) return;
     const userId = 'default';
+
+    const showFollowUp = () => {
+      Alert.alert(
+        'What didn\'t work?',
+        'This helps us improve — optional',
+        [
+          { text: 'Cuisine', onPress: () => postNegativeFeedback(userId, id, 'suggest_less_cuisine' as any).catch(() => {}) },
+          { text: 'Price', onPress: () => postNegativeFeedback(userId, id, 'suggest_less_price' as any).catch(() => {}) },
+          { text: 'Location', onPress: () => postNegativeFeedback(userId, id, 'suggest_less_location' as any).catch(() => {}) },
+          { text: 'Skip', style: 'cancel' },
+        ],
+      );
+    };
+
     const run = (action: 'hide' | 'suggest_less') => {
       postNegativeFeedback(userId, id, action)
         .then(() => {
           if (action === 'hide') {
-            Alert.alert('Hidden', 'This restaurant will be hidden from your recommendations.');
-            router.back();
+            Alert.alert('Hidden', 'This restaurant won\'t appear in Discover or Tonight.', [
+              { text: 'OK', onPress: () => router.back() },
+            ]);
           } else {
-            Alert.alert('Got it', 'We’ll show you less like this.');
+            Alert.alert(
+              'Got it',
+              'We\'ll show you fewer places like this.',
+              [{ text: 'OK', onPress: showFollowUp }],
+            );
           }
         })
         .catch(() => {
@@ -296,15 +445,15 @@ export default function RestaurantScreen() {
         });
     };
 
-    const options = ['Hide this restaurant', 'Suggest less like this', 'Cancel'];
+    const options = ['Show me less like this', 'Hide from all feeds', 'Cancel'];
     const cancelButtonIndex = 2;
 
     if (Platform.OS === 'ios') {
       ActionSheetIOS.showActionSheetWithOptions(
-        { options, cancelButtonIndex },
+        { options, cancelButtonIndex, destructiveButtonIndex: 1 },
         (buttonIndex) => {
-          if (buttonIndex === 0) run('hide');
-          else if (buttonIndex === 1) run('suggest_less');
+          if (buttonIndex === 0) run('suggest_less');
+          else if (buttonIndex === 1) run('hide');
         },
       );
     } else {
@@ -312,8 +461,8 @@ export default function RestaurantScreen() {
         'Adjust recommendations',
         undefined,
         [
-          { text: 'Hide this restaurant', onPress: () => run('hide') },
-          { text: 'Suggest less like this', onPress: () => run('suggest_less') },
+          { text: 'Show me less like this', onPress: () => run('suggest_less') },
+          { text: 'Hide from all feeds', style: 'destructive', onPress: () => run('hide') },
           { text: 'Cancel', style: 'cancel' },
         ],
         { cancelable: true },
@@ -321,181 +470,466 @@ export default function RestaurantScreen() {
     }
   };
 
-  return (
-    <SafeAreaView style={styles.safe}>
-      <ScrollView contentContainerStyle={styles.content}>
-        <View style={styles.headerRow}>
-          <TouchableOpacity style={styles.backRow} onPress={() => router.back()}>
-            <Ionicons name="chevron-back" size={22} color="#111827" />
-            <Text style={styles.backText}>Back</Text>
+  const restaurantName = restaurant?.name ?? log?.restaurantName ?? detail?.name ?? `Restaurant ${id ?? ''}`;
+  const hasVisited = !!log;
+  const quotesWithNotes = friendVisits.filter((fv) => fv.note);
+  const hasFriendQuotes = quotesWithNotes.length > 0;
+  const [quotesExpanded, setQuotesExpanded] = useState(false);
+
+  // ── Shared UI fragments ──────────────────────────────────────────────
+
+  const logVisitPayload = {
+    id: restaurant?.id ?? (restaurantFromPayload?.id as string | undefined) ?? id,
+    name: restaurant?.name ?? restaurantFromPayload?.name ?? detail?.name ?? '',
+    cuisine: (restaurant as any)?.cuisine ?? restaurantFromPayload?.cuisine ?? '',
+    neighborhood: (restaurant as any)?.neighborhood ?? restaurantFromPayload?.neighborhood ?? null,
+    state: (restaurant as any)?.state ?? restaurantFromPayload?.state ?? null,
+    placeId: restaurantFromPayload?.placeId ?? null,
+    googlePlaceId: restaurantFromPayload?.googlePlaceId ?? restaurantFromPayload?.placeId ?? null,
+    displayImageUrl:
+      restaurantFromPayload?.displayImageUrl ??
+      detail?.displayImageUrl ??
+      restaurantFromPayload?.imageUrl ??
+      detail?.imageUrl ??
+      null,
+    displayImageSourceType:
+      restaurantFromPayload?.displayImageSourceType ?? detail?.displayImageSourceType ?? null,
+    displayImageLastResolvedAt:
+      restaurantFromPayload?.displayImageLastResolvedAt ?? detail?.displayImageLastResolvedAt ?? null,
+    imageUrl: restaurantFromPayload?.imageUrl ?? null,
+    priceLevel: (restaurant as any)?.priceLevel ?? restaurantFromPayload?.priceLevel ?? null,
+  };
+
+  const heroImage = (
+    <View style={styles.heroWrap} collapsable={false}>
+      <RestaurantImage
+        key={`hero-${photoKey}`}
+        restaurant={{
+          id: id ?? restaurant?.id ?? restaurantFromPayload?.id ?? null,
+          name: restaurantName,
+          cuisine: cuisineText,
+          googlePlaceId:
+            detail?.googlePlaceId ?? detail?.placeId ?? restaurantFromPayload?.googlePlaceId ?? restaurantFromPayload?.placeId ?? null,
+          displayImageUrl:
+            detail?.displayImageUrl ??
+            restaurantFromPayload?.displayImageUrl ??
+            detail?.imageUrl ??
+            restaurantFromPayload?.imageUrl ??
+            restaurantFromPayload?.previewPhotoUrl ??
+            logsForRestaurant.find((item) => item.photo_url || item.previewPhotoUrl)?.photo_url ??
+            logsForRestaurant.find((item) => item.previewPhotoUrl)?.previewPhotoUrl ??
+            null,
+          displayImageSourceType:
+            detail?.displayImageSourceType ?? restaurantFromPayload?.displayImageSourceType ?? null,
+          displayImageLastResolvedAt:
+            detail?.displayImageLastResolvedAt ?? restaurantFromPayload?.displayImageLastResolvedAt ?? null,
+          previewPhotoUrl:
+            detail?.displayImageUrl ??
+            detail?.imageUrl ??
+            restaurantFromPayload?.previewPhotoUrl ??
+            logsForRestaurant.find((item) => item.photo_url || item.previewPhotoUrl)?.photo_url ??
+            logsForRestaurant.find((item) => item.previewPhotoUrl)?.previewPhotoUrl ??
+            null,
+          imageUrl:
+            restaurantFromPayload?.displayImageUrl ??
+            restaurantFromPayload?.imageUrl ??
+            detail?.displayImageUrl ??
+            detail?.imageUrl ??
+            null,
+        }}
+        aspectRatio={1}
+        fallbackType="icon"
+        borderRadius={0}
+        style={styles.heroImageFill}
+      />
+      <LinearGradient
+        pointerEvents="none"
+        colors={['transparent', 'rgba(0,0,0,0.5)', 'rgba(0,0,0,0.88)']}
+        locations={[0, 0.45, 1]}
+        style={styles.heroGradient}
+      />
+      {saved && (
+        <View style={styles.savedBadgeHero}>
+          <Ionicons name="bookmark" size={14} color="#fff" />
+        </View>
+      )}
+      <TouchableOpacity
+        style={styles.wrongPhotoBtn}
+        onPress={handleCyclePhoto}
+        activeOpacity={0.7}
+        hitSlop={8}
+        disabled={cyclingPhoto}
+      >
+        <Ionicons name="camera-outline" size={13} color="rgba(255,255,255,0.7)" />
+        <Text style={styles.wrongPhotoText}>
+          {cyclingPhoto ? 'Loading...' : 'Wrong photo?'}
+        </Text>
+      </TouchableOpacity>
+    </View>
+  );
+
+  const infoLine = (
+    <View style={styles.infoLineRow}>
+      <Text style={styles.infoLineText} numberOfLines={1}>
+        {infoLineParts.join(' \u00B7 ')}
+      </Text>
+      {isOpenNow && (
+        <View style={styles.openBadge}>
+          <View style={styles.openDot} />
+          <Text style={styles.openText}>Open now</Text>
+        </View>
+      )}
+    </View>
+  );
+
+  const friendsBar = friendVisits.length > 0 ? (
+    <View style={styles.friendsSection}>
+      <View style={styles.friendAvatarsRow}>
+        {friendVisits.slice(0, 3).map((fv, i) => (
+          <View key={fv.id} style={[styles.friendAvatarRing, { marginLeft: i === 0 ? 0 : -10 }]}>
+            {fv.userAvatar ? (
+              <Image source={{ uri: fv.userAvatar }} style={styles.friendAvatarImg} />
+            ) : (
+              <Text style={styles.friendAvatarInitial}>{fv.userName[0]}</Text>
+            )}
+          </View>
+        ))}
+      </View>
+      <Text style={styles.friendsText}>
+        {friendVisits.length === 1
+          ? `${friendVisits[0].userName} has been here`
+          : friendVisits.length === 2
+            ? `${friendVisits[0].userName} + ${friendVisits[1].userName} have been here`
+            : `${friendVisits[0].userName} + ${friendVisits.length - 1} friends have been here`}
+      </Text>
+    </View>
+  ) : null;
+
+  const actionButtons = (
+    <View style={styles.actionsStrip} collapsable={false}>
+      <TouchableOpacity
+        style={[styles.iconBtn, saved && styles.iconBtnActive]}
+        onPress={handleSave}
+        disabled={saving || !(restaurantFromPayload?.id ?? id)}
+        activeOpacity={0.7}
+        hitSlop={8}
+      >
+        <Ionicons name={saved ? 'bookmark' : 'bookmark-outline'} size={22} color={saved ? colors.accent : colors.text} />
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={styles.iconBtn}
+        onPress={() => setSendSheetOpen(true)}
+        activeOpacity={0.7}
+        hitSlop={8}
+      >
+        <Ionicons name="paper-plane-outline" size={22} color={colors.text} />
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={styles.iconBtn}
+        onPress={handleDirections}
+        activeOpacity={0.7}
+        hitSlop={8}
+      >
+        <Ionicons name="navigate-outline" size={22} color={colors.text} />
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={[styles.iconBtn, inCompare && styles.iconBtnActive]}
+        onPress={handleToggleCompare}
+        activeOpacity={0.7}
+        hitSlop={8}
+      >
+        <Ionicons name={inCompare ? 'git-compare' : 'git-compare-outline'} size={22} color={inCompare ? colors.accent : colors.text} />
+      </TouchableOpacity>
+    </View>
+  );
+
+
+
+  const standoutDishesBlock = standoutDishes.length > 0 ? (
+    <View style={styles.dishesSection}>
+      <Text style={styles.dishesSectionTitle}>{'\u2B50'} Standout dishes</Text>
+      <View style={styles.dishChipsRow}>
+        {standoutDishes.map((name) => (
+          <View key={name} style={styles.dishChip}>
+            <Text style={styles.dishChipText}>{name}</Text>
+          </View>
+        ))}
+      </View>
+    </View>
+  ) : null;
+
+  const visibleQuotes = quotesExpanded ? quotesWithNotes.slice(0, 10) : quotesWithNotes.slice(0, 2);
+  const hasMoreQuotes = quotesWithNotes.length > 2;
+
+  const friendQuotesBlock = hasFriendQuotes ? (
+    <View style={styles.socialProofSection}>
+      <Text style={styles.socialProofTitle}>What others said</Text>
+      {visibleQuotes.map((fv) => (
+          <View key={fv.id} style={styles.quoteRow}>
+            <View style={styles.quoteAvatarSmall}>
+              {fv.userAvatar ? (
+                <Image source={{ uri: fv.userAvatar }} style={styles.quoteAvatarImg} />
+              ) : (
+                <Text style={styles.quoteAvatarInitialSmall}>{fv.userName[0]}</Text>
+              )}
+            </View>
+            <View style={styles.quoteBubble}>
+              <Text style={styles.quoteText} numberOfLines={3}>"{fv.note}"</Text>
+              <Text style={styles.quoteAuthor}>{fv.userName}</Text>
+            </View>
+          </View>
+        ))}
+      {hasMoreQuotes && (
+        <TouchableOpacity onPress={() => setQuotesExpanded((v) => !v)} activeOpacity={0.7} style={styles.seeAllBtn}>
+          <Text style={styles.seeAllText}>
+            {quotesExpanded ? 'Show less' : `See all ${quotesWithNotes.length} comments`}
+          </Text>
+          <Ionicons name={quotesExpanded ? 'chevron-up' : 'chevron-down'} size={14} color={colors.accent} />
+        </TouchableOpacity>
+      )}
+    </View>
+  ) : null;
+
+  const menuBlock = menuLoading ? (
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>Menu</Text>
+      <ActivityIndicator size="small" color={colors.accent} style={{ marginTop: 12 }} />
+    </View>
+  ) : menu ? (
+    <MenuTemplate menu={menu} restaurantName={restaurantName} />
+  ) : null;
+
+  const afterSpotsBlock = afterSpots.length > 0 ? (
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>Next stop</Text>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.afterSpotsScroll}>
+        {afterSpots.map((spot) => (
+          <TouchableOpacity
+            key={spot.restaurantId}
+            style={styles.afterCard}
+            activeOpacity={0.85}
+            onPress={() => router.push({
+              pathname: '/(tabs)/restaurant/[id]',
+              params: {
+                id: spot.restaurantId,
+                payload: encodeURIComponent(JSON.stringify({
+                  id: spot.restaurantId,
+                  name: spot.name,
+                  cuisine: spot.category || '',
+                  neighborhood: spot.address || '',
+                  displayImageUrl: spot.imageUrl,
+                  imageUrl: spot.imageUrl,
+                })),
+              },
+            })}
+          >
+            {spot.imageUrl ? (
+              <RestaurantImage
+                restaurant={{
+                  id: spot.restaurantId,
+                  name: spot.name,
+                  displayImageUrl: spot.imageUrl,
+                  displayImageSourceType: null,
+                  displayImageLastResolvedAt: null,
+                }}
+                aspectRatio={1.4}
+                fallbackType="icon"
+                borderRadius={12}
+                style={styles.afterCardImage}
+              />
+            ) : (
+              <View style={[styles.afterCardImage, styles.afterCardImageFallback]}>
+                <Ionicons name="wine-outline" size={22} color={colors.textMuted} />
+              </View>
+            )}
+            <Text style={styles.afterCardName} numberOfLines={1}>{spot.name}</Text>
+            <View style={styles.afterCardMeta}>
+              {spot.distanceMi != null && (
+                <Text style={styles.afterCardDistance}>{spot.distanceMi} mi</Text>
+              )}
+              {spot.vibeTag && (
+                <View style={styles.afterCardVibe}>
+                  <Text style={styles.afterCardVibeText}>{spot.vibeTag}</Text>
+                </View>
+              )}
+            </View>
           </TouchableOpacity>
-          {id ? (
+        ))}
+      </ScrollView>
+    </View>
+  ) : null;
+
+  const detailsBlock = (
+    <>
+      {(detail?.address || restaurant?.neighborhood || restaurant?.state) ? (
+        <View style={styles.detailsCard}>
+          <View style={styles.detailRow}>
+            <Ionicons name="location-outline" size={15} color={colors.textMuted} />
+            <Text style={styles.detailText}>
+              {detail?.address || [restaurant?.neighborhood, restaurant?.state].filter(Boolean).join(', ')}
+            </Text>
+          </View>
+        </View>
+      ) : null}
+      {(detail?.hours || detail?.phone || detail?.websiteUrl) ? (
+        <View style={styles.detailsCard}>
+          {detail?.phone ? (
             <TouchableOpacity
-              style={styles.menuBtn}
-              onPress={handleNegativeFeedback}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              style={styles.detailRow}
+              onPress={() => Linking.openURL(`tel:${detail.phone!.trim()}`).catch(() => {})}
             >
-              <Ionicons name="ellipsis-horizontal" size={20} color={colors.text} />
+              <Ionicons name="call-outline" size={15} color={colors.textMuted} />
+              <Text style={styles.detailText}>{detail.phone}</Text>
+            </TouchableOpacity>
+          ) : null}
+          {detail?.hours && detail.hours.length > 0 ? (
+            <View>
+              <TouchableOpacity
+                style={styles.detailRow}
+                onPress={() => setHoursExpanded((v) => !v)}
+              >
+                <Ionicons name="time-outline" size={15} color={colors.textMuted} />
+                <Text style={styles.detailText}>
+                  {detail.isOpenNow != null
+                    ? detail.isOpenNow ? 'Open now' : 'Closed'
+                    : 'Hours'}
+                </Text>
+                <Ionicons
+                  name={hoursExpanded ? 'chevron-up' : 'chevron-down'}
+                  size={13}
+                  color={colors.textMuted}
+                  style={{ marginLeft: 4 }}
+                />
+              </TouchableOpacity>
+              {hoursExpanded ? (
+                <View style={styles.hoursList}>
+                  {detail.hours.map((line, i) => (
+                    <Text key={i} style={styles.hoursLine}>{line}</Text>
+                  ))}
+                </View>
+              ) : null}
+            </View>
+          ) : null}
+          {detail?.websiteUrl ? (
+            <TouchableOpacity
+              style={styles.detailRow}
+              onPress={() => Linking.openURL(detail.websiteUrl!).catch(() => {})}
+            >
+              <Ionicons name="globe-outline" size={15} color={colors.textMuted} />
+              <Text style={styles.detailText} numberOfLines={1}>
+                {detail.websiteUrl.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '')}
+              </Text>
             </TouchableOpacity>
           ) : null}
         </View>
+      ) : null}
+    </>
+  );
 
-        {/* Hero: fixed height so overlays cannot spill into action row; gradient + white type for contrast */}
-        <View style={styles.heroWrap} collapsable={false}>
-          <Image
-            source={{ uri: heroImageUrl }}
-            style={styles.heroImageFill}
-            resizeMode="cover"
-            onError={() => setHeroBroken(true)}
-          />
-          <LinearGradient
-            pointerEvents="none"
-            colors={['transparent', 'rgba(0,0,0,0.5)', 'rgba(0,0,0,0.88)']}
-            locations={[0, 0.45, 1]}
-            style={styles.heroGradient}
-          />
-          <View style={styles.heroTextBlock} pointerEvents="box-none">
-            <Text style={styles.heroTitle} numberOfLines={2}>
-              {restaurant?.name ?? log?.restaurantName ?? detail?.name ?? `Restaurant ${id ?? ''}`}
-            </Text>
-            <Text style={styles.heroSubtitle} numberOfLines={2}>
-              {cuisineText || 'Restaurant'}
-              {areaText ? ` · ${areaText}` : ''}
-            </Text>
-            {priceStr ? (
-              <View style={styles.pricePillHero}>
-                <Text style={styles.pricePillHeroText}>{priceStr}</Text>
-              </View>
-            ) : null}
-            {distanceMiles != null ? (
-              <Text style={styles.distanceLabelHero}>{distanceMiles.toFixed(1)} mi away</Text>
-            ) : null}
-          </View>
-        </View>
+  // ── Render ─────────────────────────────────────────────────────────────
 
-        {/* Actions sit below the hero — never under an absolute overlay */}
-        <View style={styles.actionsStrip} collapsable={false}>
-          <Pressable
-            style={({ pressed }) => [styles.actionBtn, pressed && styles.actionBtnPressed]}
-            onPress={handleSave}
-            disabled={saving || !(restaurantFromPayload?.id ?? id)}
-            android_ripple={{ color: 'rgba(0,0,0,0.08)' }}
-            hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
-          >
-            <Ionicons
-              name={saved ? 'bookmark' : 'bookmark-outline'}
-              size={18}
-              color={saved ? colors.accent : '#111827'}
-            />
-            <Text style={styles.actionText}>{saving ? 'Saving…' : saved ? 'Saved' : 'Save'}</Text>
-          </Pressable>
-          <Pressable
-            style={({ pressed }) => [styles.actionBtn, styles.primaryActionBtn, pressed && styles.actionBtnPressed]}
-            onPress={() => {
-              const payload = {
-                id: restaurant?.id ?? (restaurantFromPayload?.id as string | undefined) ?? id,
-                name: restaurant?.name ?? restaurantFromPayload?.name ?? detail?.name ?? '',
-                cuisine: (restaurant as any)?.cuisine ?? restaurantFromPayload?.cuisine ?? '',
-                neighborhood: (restaurant as any)?.neighborhood ?? restaurantFromPayload?.neighborhood ?? null,
-                state: (restaurant as any)?.state ?? restaurantFromPayload?.state ?? null,
-                placeId: restaurantFromPayload?.placeId ?? null,
-                imageUrl: restaurantFromPayload?.imageUrl ?? null,
-                priceLevel: (restaurant as any)?.priceLevel ?? restaurantFromPayload?.priceLevel ?? null,
-              };
-              router.push({
-                pathname: '/log-visit',
-                params: { payload: encodeURIComponent(JSON.stringify(payload)) },
-              });
-            }}
-            android_ripple={{ color: 'rgba(255,255,255,0.25)' }}
-            hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
-          >
-            <Ionicons name="create-outline" size={18} color="#fff" />
-            <Text style={[styles.actionText, styles.primaryActionText]}>Log visit</Text>
-          </Pressable>
-          {canReserve ? (
-            <Pressable
-              style={({ pressed }) => [styles.actionBtn, pressed && styles.actionBtnPressed]}
-              onPress={handleReserve}
-              android_ripple={{ color: 'rgba(0,0,0,0.08)' }}
-              hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+  return (
+    <SafeAreaView style={styles.safe}>
+      <ScrollView contentContainerStyle={styles.content}>
+        {/* Back + overflow menu */}
+        <View style={styles.headerRow}>
+          <TouchableOpacity style={styles.backRow} onPress={() => router.back()}>
+            <Ionicons name="chevron-back" size={22} color={colors.text} />
+            <Text style={styles.backText}>Back</Text>
+          </TouchableOpacity>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <TouchableOpacity
+              style={styles.logFab}
+              onPress={() => {
+                router.push({
+                  pathname: '/log-visit',
+                  params: { payload: encodeURIComponent(JSON.stringify(logVisitPayload)) },
+                });
+              }}
+              activeOpacity={0.8}
+              hitSlop={6}
             >
-              <Ionicons name="calendar-outline" size={18} color="#111827" />
-              <Text style={styles.actionText}>Reserve</Text>
-            </Pressable>
-          ) : null}
-          <Pressable
-            style={({ pressed }) => [styles.actionBtn, pressed && styles.actionBtnPressed]}
-            onPress={handleDirections}
-            android_ripple={{ color: 'rgba(0,0,0,0.08)' }}
-            hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
-          >
-            <Ionicons name="navigate-outline" size={18} color="#111827" />
-            <Text style={styles.actionText}>Directions</Text>
-          </Pressable>
+              <Ionicons name="add" size={22} color="#fff" />
+            </TouchableOpacity>
+            {id ? (
+              <TouchableOpacity
+                style={styles.menuBtn}
+                onPress={handleNegativeFeedback}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Ionicons name="ellipsis-horizontal" size={20} color={colors.text} />
+              </TouchableOpacity>
+            ) : null}
+          </View>
         </View>
 
-        {restaurant && (restaurant.neighborhood || restaurant.state) ? (
-          <View style={styles.locationSection}>
-            <View style={styles.locationRow}>
-              <Ionicons name="location" size={18} color={colors.accent} />
-              <Text style={styles.locationLabel}>Location</Text>
-            </View>
-            <Text style={styles.locationAddress}>
-              {[restaurant.neighborhood, restaurant.state].filter(Boolean).join(', ')}
-            </Text>
-          </View>
-        ) : null}
+        {heroImage}
 
-        {log ? (
+        {hasVisited ? (
+          /* ═══════════════════════════════════════════════════════════════
+             STATE 2: HAS VISITED — lead with personal experience
+             ═══════════════════════════════════════════════════════════════ */
           <>
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Your rating</Text>
-              <View style={styles.ratingBreakdown}>
-                <View style={styles.ratingRow}>
-                  <Text style={styles.ratingLabel}>Overall</Text>
-                  <Text style={styles.ratingValue}>{log.score.toFixed(1)}</Text>
+            <View style={styles.topSection}>
+              <Text style={styles.restaurantName} numberOfLines={2}>{restaurantName}</Text>
+
+              {/* Your rating — prominent */}
+              <View style={styles.visitedRatingRow}>
+                <Text style={styles.visitedRatingScore}>{log.score.toFixed(1)}</Text>
+                <View>
+                  <Text style={styles.visitedRatingLabel}>{isOwnLog ? 'Your rating' : `${logOwnerName}'s rating`}</Text>
+                  {log.highlight ? (
+                    <Text style={styles.visitedRatingHighlight}>{log.highlight.charAt(0).toUpperCase() + log.highlight.slice(1)}</Text>
+                  ) : null}
                 </View>
-                {log.foodRating != null ? (
-                  <View style={styles.ratingRow}>
-                    <Text style={styles.ratingLabel}>Food</Text>
-                    <Text style={styles.ratingValue}>{log.foodRating.toFixed(1)}</Text>
-                  </View>
-                ) : null}
-                {log.serviceRating != null ? (
-                  <View style={styles.ratingRow}>
-                    <Text style={styles.ratingLabel}>Service</Text>
-                    <Text style={styles.ratingValue}>{log.serviceRating.toFixed(1)}</Text>
-                  </View>
-                ) : null}
-                {log.ambienceRating != null ? (
-                  <View style={styles.ratingRow}>
-                    <Text style={styles.ratingLabel}>Ambience</Text>
-                    <Text style={styles.ratingValue}>{log.ambienceRating.toFixed(1)}</Text>
-                  </View>
-                ) : null}
-                {log.valueRating != null ? (
-                  <View style={styles.ratingRow}>
-                    <Text style={styles.ratingLabel}>Value</Text>
-                    <Text style={styles.ratingValue}>{log.valueRating.toFixed(1)}</Text>
-                  </View>
-                ) : null}
               </View>
+
+              {/* Match score — secondary */}
+              {matchScorePercent != null && matchScorePercent > 0 && (
+                <Text style={styles.matchTextSecondary}>{'\u2728'} {matchScorePercent}% match</Text>
+              )}
+
+              {infoLine}
             </View>
 
+            {/* Poster's quick take — shown when viewing someone else's log from feed */}
+            {!isOwnLog && log.note ? (
+              <View style={styles.posterQuoteWrap}>
+                <View style={styles.posterQuoteRow}>
+                  {log.userAvatar ? (
+                    <Image source={{ uri: log.userAvatar }} style={styles.posterAvatar} />
+                  ) : (
+                    <View style={[styles.posterAvatar, styles.posterAvatarFallback]}>
+                      <Text style={styles.posterAvatarInitial}>{logOwnerName[0]?.toUpperCase() ?? '?'}</Text>
+                    </View>
+                  )}
+                  <View style={styles.posterQuoteBody}>
+                    <Text style={styles.posterName}>{logOwnerName}</Text>
+                    <Text style={styles.posterNote}>{log.note}</Text>
+                  </View>
+                </View>
+              </View>
+            ) : null}
+
+            {friendsBar}
+            {actionButtons}
+
+
+            {/* Dishes */}
             {log.dishes && log.dishes.length > 0 ? (
               <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Dishes you tried</Text>
+                <Text style={styles.sectionTitle}>{isOwnLog ? 'Dishes you tried' : `Dishes ${logOwnerName} tried`}</Text>
                 <View style={styles.dishList}>
                   {log.dishes.map((d, i) => (
                     <Text key={i} style={styles.dishItem}>
-                      · {d}
+                      {'\u00B7'} {d}
                     </Text>
                   ))}
                 </View>
               </View>
             ) : null}
 
+            {/* Vibe */}
             {log.vibeTags && log.vibeTags.length > 0 ? (
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Vibe</Text>
@@ -508,198 +942,176 @@ export default function RestaurantScreen() {
                 </View>
               </View>
             ) : null}
-          </>
-        ) : biteRightScorePercent != null ? (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>BiteRight score</Text>
-            <View style={styles.biteRightScorePill}>
-              <Ionicons name="sparkles" size={14} color="#fff" />
-              <Text style={styles.biteRightScorePillText}>
-                {biteRightScorePercent}% match
-              </Text>
-            </View>
-          </View>
-        ) : null}
 
-        {recommendedDishes.length > 0 ? (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Recommended dishes</Text>
-            <View style={styles.dishList}>
-              {recommendedDishes.map((d) => (
-                <Text key={d.name} style={styles.dishItem}>
-                  · {d.name} ({d.count})
-                </Text>
-              ))}
-            </View>
-          </View>
-        ) : null}
-
-        {recentPosts.length > 0 && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Recent posts</Text>
-            {recentPosts.map((p) => (
-              <View key={p.id} style={styles.postRow}>
-                <View style={styles.postAvatar}>
-                  <Text style={styles.postAvatarInitial}>{p.userName[0] ?? '·'}</Text>
-                </View>
-                <View style={styles.postMeta}>
-                  <Text style={styles.postUser}>{p.userName}</Text>
-                  {p.note ? <Text style={styles.postNote} numberOfLines={2}>{p.note}</Text> : null}
-                </View>
+            {/* Your notes / recent posts — skip when poster quote already shows the note */}
+            {recentPosts.length > 0 && !isFromFriendPost && (
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Your posts</Text>
+                {recentPosts.map((p) => (
+                  <View key={p.id} style={styles.postRow}>
+                    <View style={styles.postAvatar}>
+                      <Text style={styles.postAvatarInitial}>{p.userName[0] ?? '\u00B7'}</Text>
+                    </View>
+                    <View style={styles.postMeta}>
+                      <Text style={styles.postUser}>{p.userName}</Text>
+                      {p.note ? <Text style={styles.postNote} numberOfLines={2}>{p.note}</Text> : null}
+                    </View>
+                  </View>
+                ))}
               </View>
-            ))}
-          </View>
+            )}
+
+            {!isFromFriendPost && friendQuotesBlock}
+            {standoutDishesBlock}
+            {!isFromFriendPost && id && <QuickTipsBlock restaurantId={id} />}
+            {!isFromFriendPost && detailsBlock}
+            {!isFromFriendPost && menuBlock}
+            {!isFromFriendPost && afterSpotsBlock}
+            {isFromFriendPost && (
+              <TouchableOpacity
+                style={styles.fullDetailCta}
+                activeOpacity={0.7}
+                onPress={() => router.push(`/(tabs)/restaurant/${encodeURIComponent(id!)}`)}
+              >
+                <Text style={styles.fullDetailCtaText}>View full restaurant →</Text>
+                <Ionicons name="arrow-forward" size={16} color={colors.accent} />
+              </TouchableOpacity>
+            )}
+          </>
+        ) : (
+          /* ═══════════════════════════════════════════════════════════════
+             STATE 1: NOT VISITED — help the user decide
+             ═══════════════════════════════════════════════════════════════ */
+          <>
+            <View style={styles.topSection}>
+              <Text style={styles.restaurantName} numberOfLines={2}>{restaurantName}</Text>
+
+              {/* Match score — large and prominent */}
+              {matchScorePercent != null && matchScorePercent > 0 && (
+                <View style={styles.matchRowLarge}>
+                  <Text style={styles.matchTextLarge}>{'\u2728'} {matchScorePercent}% match for you</Text>
+                </View>
+              )}
+
+              {infoLine}
+            </View>
+
+            {friendsBar}
+            {actionButtons}
+
+            {standoutDishesBlock}
+            {friendQuotesBlock}
+            {id && <QuickTipsBlock restaurantId={id} />}
+            {!isFromFriendPost && detailsBlock}
+            {!isFromFriendPost && menuBlock}
+            {!isFromFriendPost && afterSpotsBlock}
+            {isFromFriendPost && (
+              <TouchableOpacity
+                style={styles.fullDetailCta}
+                activeOpacity={0.7}
+                onPress={() => router.push(`/(tabs)/restaurant/${encodeURIComponent(id!)}`)}
+              >
+                <Text style={styles.fullDetailCtaText}>View full restaurant →</Text>
+                <Ionicons name="arrow-forward" size={16} color={colors.accent} />
+              </TouchableOpacity>
+            )}
+          </>
         )}
 
-        {detail && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Location</Text>
-            <Text style={styles.locationAddress}>{detail.address || 'Address unavailable'}</Text>
-          </View>
-        )}
       </ScrollView>
+
+      <SendToFriendSheet
+        visible={sendSheetOpen}
+        onClose={() => setSendSheetOpen(false)}
+        restaurantName={restaurantName}
+        restaurantId={id ?? ''}
+        cuisine={(restaurant as any)?.cuisine ?? restaurantFromPayload?.cuisine}
+        neighborhood={restaurant?.neighborhood ?? restaurantFromPayload?.neighborhood ?? undefined}
+      />
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  safe: {
-    flex: 1,
-    backgroundColor: '#f9fafb',
-  },
-  content: {
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 32,
-  },
+  safe: { flex: 1, backgroundColor: colors.bg },
+  content: { paddingHorizontal: 20, paddingTop: 16, paddingBottom: 40 },
+
+  // Header
+  headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
+  backRow: { flexDirection: 'row', alignItems: 'center' },
+  backText: { marginLeft: 2, fontSize: 14, color: colors.text },
+  menuBtn: { paddingHorizontal: 6, paddingVertical: 4 },
+
+  // Hero
   heroWrap: {
     height: 240,
     borderRadius: 24,
     overflow: 'hidden',
-    marginBottom: 16,
+    marginBottom: 0,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: '#111827',
     position: 'relative',
     zIndex: 0,
   },
-  heroImageFill: {
-    ...StyleSheet.absoluteFillObject,
-    width: '100%',
-    height: '100%',
-  },
-  heroGradient: {
+  heroImageFill: { ...StyleSheet.absoluteFillObject, width: '100%', height: '100%' },
+  heroGradient: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 160 },
+  savedBadgeHero: {
     position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    height: 160,
+    top: 14,
+    right: 14,
+    padding: 7,
+    borderRadius: 999,
+    backgroundColor: 'rgba(0,0,0,0.45)',
   },
-  heroTextBlock: {
+
+  wrongPhotoBtn: {
     position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    paddingHorizontal: 18,
-    paddingBottom: 18,
-    paddingTop: 24,
-    zIndex: 2,
-  },
-  heroTitle: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: '#ffffff',
-    textShadowColor: 'rgba(0,0,0,0.45)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 6,
-  },
-  heroSubtitle: {
-    marginTop: 6,
-    fontSize: 14,
-    fontWeight: '500',
-    color: 'rgba(255,255,255,0.92)',
-    textShadowColor: 'rgba(0,0,0,0.4)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 4,
-  },
-  distanceLabelHero: {
-    marginTop: 8,
-    fontSize: 12,
-    fontWeight: '600',
-    color: 'rgba(255,255,255,0.85)',
-  },
-  pricePillHero: {
-    alignSelf: 'flex-start',
-    marginTop: 10,
-    paddingHorizontal: 10,
+    bottom: 10,
+    right: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
     paddingVertical: 5,
-    borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.22)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.35)',
+    borderRadius: 8,
+    backgroundColor: 'rgba(0,0,0,0.4)',
   },
-  pricePillHeroText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#ffffff',
-  },
-  headerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 12,
-  },
-  backRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  menuBtn: {
-    paddingHorizontal: 6,
-    paddingVertical: 4,
-  },
-  backText: {
-    marginLeft: 2,
-    fontSize: 14,
-    color: '#111827',
-  },
-  actionsStrip: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 16,
-    paddingVertical: 4,
-    zIndex: 10,
-    elevation: 10,
-    backgroundColor: '#f9fafb',
-  },
-  actionBtnPressed: {
-    opacity: 0.88,
-  },
-  actionBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  actionText: {
-    fontSize: 13,
+  wrongPhotoText: {
+    fontSize: 11,
     fontWeight: '500',
-    color: '#111827',
+    color: 'rgba(255,255,255,0.7)',
   },
-  primaryActionBtn: {
-    backgroundColor: colors.accent,
-    borderColor: colors.accent,
+
+  // Top section (name + match + info)
+  topSection: { paddingTop: 16, paddingBottom: 4 },
+  restaurantName: {
+    fontSize: 26,
+    fontWeight: '800',
+    color: colors.text,
+    letterSpacing: -0.3,
+    lineHeight: 32,
   },
-  primaryActionText: {
-    color: '#fff',
+  matchRow: { marginTop: 6 },
+  matchText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: colors.accent,
   },
-  locationSection: {
-    marginTop: 8,
+  // State 1: NOT VISITED — large match score
+  matchRowLarge: { marginTop: 10, marginBottom: 2 },
+  matchTextLarge: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: colors.accent,
+    letterSpacing: -0.2,
+  },
+  // State 2: HAS VISITED — prominent rating, secondary match
+  visitedRatingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginTop: 10,
     paddingVertical: 12,
     paddingHorizontal: 14,
     borderRadius: 16,
@@ -707,53 +1119,186 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
-  locationRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 6,
+  visitedRatingScore: {
+    fontSize: 32,
+    fontWeight: '800',
+    color: colors.accent,
+    lineHeight: 36,
   },
-  locationLabel: {
+  visitedRatingLabel: {
     fontSize: 14,
     fontWeight: '600',
     color: colors.text,
   },
-  locationAddress: {
-    fontSize: 14,
+  visitedRatingHighlight: {
+    fontSize: 13,
     color: colors.textMuted,
-    marginLeft: 26,
+    marginTop: 1,
   },
-  section: {
-    marginTop: 16,
-  },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#111827',
-    marginBottom: 6,
-  },
-  placeholder: {
-    fontSize: 14,
-    color: '#6b7280',
-  },
-  biteRightScorePill: {
+  matchTextSecondary: {
     marginTop: 6,
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.textMuted,
+  },
+  infoLineRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    alignSelf: 'flex-start',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
-    backgroundColor: colors.accent,
-  },
-  biteRightScorePillText: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: '#fff',
-  },
-  ratingBreakdown: {
+    gap: 8,
     marginTop: 6,
+  },
+  infoLineText: {
+    fontSize: 14,
+    color: colors.textMuted,
+    flexShrink: 1,
+  },
+  openBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  openDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: '#34C759',
+  },
+  openText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#1B873B',
+  },
+
+  // Friends
+  friendsSection: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 16,
+    backgroundColor: '#FFF5EE',
+    borderWidth: 1,
+    borderColor: '#F0DDD0',
+  },
+  friendAvatarsRow: { flexDirection: 'row', alignItems: 'center' },
+  friendAvatarRing: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    borderWidth: 2.5,
+    borderColor: '#FFF5EE',
+    backgroundColor: colors.surfaceSoft,
+    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  friendAvatarImg: { width: '100%', height: '100%' },
+  friendAvatarInitial: { fontSize: 14, fontWeight: '700', color: colors.text },
+  friendsText: { flex: 1, fontSize: 14, fontWeight: '600', color: '#6B4226' },
+
+  // Actions
+  actionsStrip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 20,
+    marginTop: 14,
+    marginBottom: 4,
+  },
+  iconBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  iconBtnActive: {
+    backgroundColor: colors.accentSoft,
+    borderColor: colors.accent,
+  },
+  logFab: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: colors.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  // Standout dishes
+  dishesSection: { marginTop: 20 },
+  dishesSectionTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: colors.text,
+    marginBottom: 10,
+  },
+  dishChipsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  dishChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: '#FFF5EE',
+    borderWidth: 1,
+    borderColor: '#F0DDD0',
+  },
+  dishChipText: { fontSize: 13, fontWeight: '600', color: colors.text },
+
+  // Social proof quotes
+  socialProofSection: { marginTop: 20 },
+  socialProofTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: colors.text,
+    marginBottom: 10,
+  },
+  quoteRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginBottom: 10 },
+  quoteAvatarSmall: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: colors.surfaceSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    marginTop: 2,
+  },
+  quoteAvatarImg: { width: '100%', height: '100%' },
+  quoteAvatarInitialSmall: { fontSize: 12, fontWeight: '700', color: colors.text },
+  quoteBubble: {
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  quoteText: { fontSize: 13, fontStyle: 'italic', color: colors.text, lineHeight: 18 },
+  quoteAuthor: { marginTop: 4, fontSize: 12, fontWeight: '600', color: colors.textMuted },
+  seeAllBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    paddingVertical: 8,
+    marginTop: 2,
+  },
+  seeAllText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.accent,
+  },
+
+  // Sections (rating, dishes, vibe, posts)
+  section: { marginTop: 20 },
+  sectionTitle: { fontSize: 16, fontWeight: '700', color: colors.text, marginBottom: 8 },
+  ratingBreakdown: {
     paddingVertical: 12,
     paddingHorizontal: 14,
     borderRadius: 16,
@@ -761,17 +1306,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
-  ratingRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 6,
-  },
+  ratingRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 6 },
   ratingLabel: { fontSize: 14, color: colors.text },
   ratingValue: { fontSize: 14, fontWeight: '700', color: colors.text },
-  dishList: { marginTop: 6 },
+  dishList: { marginTop: 4 },
   dishItem: { fontSize: 14, color: colors.text, marginBottom: 4 },
-  vibeWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 },
+  vibeWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   vibePill: {
     paddingHorizontal: 12,
     paddingVertical: 6,
@@ -781,11 +1321,7 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
   },
   vibePillText: { fontSize: 13, color: colors.text },
-  postRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 8,
-  },
+  postRow: { flexDirection: 'row', alignItems: 'center', marginTop: 8 },
   postAvatar: {
     width: 32,
     height: 32,
@@ -795,27 +1331,152 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginRight: 10,
   },
-  postAvatarInitial: {
-    fontSize: 16,
-    fontWeight: '600',
+  postAvatarInitial: { fontSize: 16, fontWeight: '600', color: colors.text },
+  postMeta: { flex: 1 },
+  postUser: { fontSize: 13, fontWeight: '600', color: colors.text },
+  postNote: { fontSize: 12, color: colors.textMuted },
+
+  // Poster quote (when viewing someone else's log from feed)
+  posterQuoteWrap: {
+    marginTop: 12,
+    marginBottom: 4,
+    padding: 14,
+    paddingLeft: 0,
+    backgroundColor: 'transparent',
+    borderRadius: 0,
+  },
+  posterQuoteRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+  },
+  posterAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    overflow: 'hidden',
+  },
+  posterAvatarFallback: {
+    backgroundColor: colors.accentSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  posterAvatarInitial: {
+    fontSize: 15,
+    fontWeight: '700',
     color: colors.text,
   },
-  postMeta: {
+  posterQuoteBody: {
     flex: 1,
   },
-  postUser: {
+  posterName: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.text,
+    marginBottom: 2,
+  },
+  posterNote: {
+    fontSize: 13,
+    color: colors.textMuted,
+    lineHeight: 18,
+  },
+
+  // Details (de-emphasized)
+  detailsCard: {
+    marginTop: 16,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    opacity: 0.85,
+  },
+  detailRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 7,
+  },
+  detailText: { fontSize: 13, color: colors.textMuted, flex: 1 },
+  hoursList: { marginLeft: 25, marginBottom: 4 },
+  hoursLine: { fontSize: 12, color: colors.textMuted, lineHeight: 19 },
+
+  // "Keep the night going" / nearby after spots
+  afterSpotsScroll: { gap: 12, paddingRight: 4 },
+  afterCard: {
+    width: 130,
+    borderRadius: 14,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    overflow: 'hidden',
+  },
+  afterCardImage: {
+    width: 130,
+    height: 90,
+    borderTopLeftRadius: 14,
+    borderTopRightRadius: 14,
+  },
+  afterCardImageFallback: {
+    backgroundColor: colors.surfaceSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  afterCardName: {
     fontSize: 13,
     fontWeight: '600',
     color: colors.text,
+    paddingHorizontal: 8,
+    paddingTop: 8,
   },
-  postNote: {
-    fontSize: 12,
+  afterCardMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 8,
+    paddingTop: 4,
+    paddingBottom: 10,
+  },
+  afterCardDistance: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: colors.accent,
+  },
+  afterCardVibe: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    backgroundColor: colors.surfaceSoft,
+  },
+  afterCardVibeText: {
+    fontSize: 10,
+    fontWeight: '600',
     color: colors.textMuted,
   },
+  fullDetailCta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 20,
+    paddingVertical: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  fullDetailCtaText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.accent,
+  },
+
+  // ── Compare quick-add ──
 });
 
 function distanceInMiles(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const R = 3958.8; // Earth radius in miles
+  const R = 3958.8;
   const toRad = (d: number) => (d * Math.PI) / 180;
   const dLat = toRad(lat2 - lat1);
   const dLon = toRad(lon2 - lon1);
@@ -826,4 +1487,3 @@ function distanceInMiles(lat1: number, lon1: number, lat2: number, lon2: number)
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
 }
-

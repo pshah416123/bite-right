@@ -92,21 +92,32 @@ export function SavedRestaurantsProvider({ children }: { children: ReactNode }) 
         return;
       }
 
+      // Optimistic update — update UI and AsyncStorage immediately
+      const optimisticItem: SavedRestaurantItem = {
+        restaurantId: placeId,
+        place_id: placeId,
+        name: payload.name,
+        address: payload.address ?? null,
+        city: null,
+        neighborhood: payload.neighborhood ?? null,
+        lat: payload.lat ?? null,
+        lng: payload.lng ?? null,
+        previewPhotoUrl: payload.photo ?? null,
+        savedAt: new Date().toISOString(),
+        source,
+        rating: payload.rating ?? null,
+        price_level: payload.price_level ?? null,
+      };
+      const next = sortBySavedAt([...savedRestaurants, optimisticItem]);
+      setSavedRestaurants(next);
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+
+      // Fire-and-forget API sync
       try {
         if (__DEV__) console.log('[SavedRestaurants] saveRestaurant calling API', { placeId, name: payload.name });
-        const result = await addSavedRestaurant(USER_ID, payload, source);
-        if (__DEV__) {
-          console.log('[SavedRestaurants] saveRestaurant API result', {
-            saved: result.saved,
-            alreadySaved: result.alreadySaved,
-          });
-        }
-        if (result.saved || result.alreadySaved) {
-          await refreshSaved();
-        }
+        await addSavedRestaurant(USER_ID, payload, source);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        console.warn('[SavedRestaurants] saveRestaurant failed:', msg, e);
+        if (__DEV__) console.warn('[SavedRestaurants] saveRestaurant API sync failed (local save kept):', e);
       }
     },
     [savedRestaurants, refreshSaved],

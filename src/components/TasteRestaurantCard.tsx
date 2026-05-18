@@ -1,7 +1,8 @@
-import { Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Link } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '~/src/theme/colors';
+import { RestaurantImage } from './RestaurantImage';
 
 export type TasteRestaurantCardModel = {
   id: string;
@@ -10,6 +11,10 @@ export type TasteRestaurantCardModel = {
   city?: string | null;
   /** Short label e.g. Casual */
   tag: string;
+  googlePlaceId?: string | null;
+  displayImageUrl?: string | null;
+  displayImageSourceType?: 'override' | 'user' | 'google' | 'placeholder' | null;
+  displayImageLastResolvedAt?: string | null;
   imageUrl?: string | null;
   saved: boolean;
   /** Encoded payload for restaurant detail deep link */
@@ -21,10 +26,6 @@ type Props = {
 };
 
 export function TasteRestaurantCard({ item }: Props) {
-  const uri =
-    item.imageUrl && item.imageUrl.startsWith('http')
-      ? item.imageUrl
-      : 'https://placehold.co/200x200/e5e7eb/6b7280?text=·';
   const placeLine = [item.neighborhood, item.city].filter(Boolean).join(', ');
 
   return (
@@ -33,7 +34,21 @@ export function TasteRestaurantCard({ item }: Props) {
       asChild
     >
       <TouchableOpacity style={styles.card} activeOpacity={0.88}>
-        <Image source={{ uri }} style={styles.photo} />
+        <RestaurantImage
+          restaurant={{
+            id: item.id,
+            name: item.name,
+            googlePlaceId: item.googlePlaceId ?? null,
+            displayImageUrl: item.displayImageUrl ?? item.imageUrl ?? null,
+            displayImageSourceType: item.displayImageSourceType ?? null,
+            displayImageLastResolvedAt: item.displayImageLastResolvedAt ?? null,
+            previewPhotoUrl: item.imageUrl,
+          }}
+          aspectRatio={1}
+          fallbackType="icon"
+          borderRadius={14}
+          style={styles.photo}
+        />
         <View style={styles.body}>
           <View style={styles.titleRow}>
             <Text style={styles.name} numberOfLines={2}>
