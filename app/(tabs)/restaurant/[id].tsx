@@ -22,7 +22,7 @@ import { RESTAURANTS } from '~/src/data/restaurants';
 import { colors } from '~/src/theme/colors';
 import { useFeedContext } from '~/src/context/FeedContext';
 import type { VibeTag } from '~/src/components/FeedCard';
-import { getRestaurantDetail, getRestaurantMenu, getNearbyAfterSpots, cycleRestaurantPhoto, type RestaurantDetail, type RestaurantMenu, type NearbyAfterSpot } from '~/src/api/restaurants';
+import { getRestaurantDetail, getRestaurantMenu, getNearbyAfterSpots, cycleRestaurantPhoto, type RestaurantDetail, type RestaurantMenu, type NearbyAfterSpot, type ReservationLink, type ReservationProvider } from '~/src/api/restaurants';
 import { MenuTemplate } from '~/src/components/MenuSection';
 import { useSavedRestaurants } from '~/src/context/SavedRestaurantsContext';
 import { useCompare } from '~/src/context/CompareContext';
@@ -45,6 +45,61 @@ const VIBE_LABELS: Record<VibeTag, string> = {
 
 function isOpenableUrl(url: string): boolean {
   return typeof url === 'string' && (url.startsWith('https://') || url.startsWith('http://'));
+}
+
+// ─── Reservation link helpers ────────────────────────────────────────────────
+
+const RESERVATION_PROVIDER_PRIORITY: Record<ReservationProvider, number> = {
+  opentable:  1,
+  resy:       2,
+  sevenrooms: 3,
+  yelp:       4,
+  website:    5,
+  phone:      6,
+};
+
+function sortReservationLinks(links: ReservationLink[]): ReservationLink[] {
+  return [...links].sort((a, b) => {
+    if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
+    return (RESERVATION_PROVIDER_PRIORITY[a.provider] ?? 99) -
+           (RESERVATION_PROVIDER_PRIORITY[b.provider] ?? 99);
+  });
+}
+
+function reservationLabel(provider: ReservationProvider): string {
+  switch (provider) {
+    case 'opentable':  return 'Reserve on OpenTable';
+    case 'resy':       return 'Reserve on Resy';
+    case 'sevenrooms': return 'Reserve on SevenRooms';
+    case 'yelp':       return 'Reserve on Yelp';
+    case 'website':    return 'Reserve on website';
+    case 'phone':      return 'Call to book';
+  }
+}
+
+function reservationIcon(provider: ReservationProvider): React.ComponentProps<typeof Ionicons>['name'] {
+  switch (provider) {
+    case 'phone':   return 'call-outline';
+    case 'website': return 'globe-outline';
+    default:        return 'calendar-outline';
+  }
+}
+
+function openReservationLink(link: ReservationLink) {
+  if (link.provider === 'phone' && link.phoneNumber) {
+    Alert.alert(
+      'Call restaurant',
+      `Open phone to call ${link.phoneNumber}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Call', onPress: () => Linking.openURL(`tel:${link.phoneNumber!.replace(/[^\d+]/g, '')}`).catch(() => {}) },
+      ],
+    );
+    return;
+  }
+  if (link.url && isOpenableUrl(link.url)) {
+    Linking.openURL(link.url).catch(() => {});
+  }
 }
 
 function formatPriceLevel(level?: number): string {
@@ -771,6 +826,91 @@ export default function RestaurantScreen() {
           </View>
         </View>
       ) : null}
+      {/* Reserve section — external links only, no live availability */}
+      {(() => {
+        const links = sortReservationLinks(detail?.reservationLinks ?? []);
+        // Fallbacks when no curated links exist
+        if (links.length === 0) {
+          if (detail?.phone && detail.phone.trim()) {
+            const ph = detail.phone.trim();
+            return (
+              <View style={styles.reserveCard}>
+                <Text style={styles.reserveLabel}>Reserve</Text>
+                <TouchableOpacity
+                  style={styles.reservePrimaryBtn}
+                  onPress={() => openReservationLink({ id: 'fallback-phone', restaurantId: id ?? '', provider: 'phone', url: null, phoneNumber: ph, providerRestaurantId: null, isPrimary: true, lastVerifiedAt: null })}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="call-outline" size={16} color="#fff" />
+                  <Text style={styles.reservePrimaryText}>Call to book</Text>
+                </TouchableOpacity>
+              </View>
+            );
+          }
+          if (detail?.websiteUrl && isOpenableUrl(detail.websiteUrl)) {
+            const w = detail.websiteUrl;
+            return (
+              <View style={styles.reserveCard}>
+                <Text style={styles.reserveLabel}>Reserve</Text>
+                <TouchableOpacity
+                  style={styles.reservePrimaryBtn}
+                  onPress={() => Linking.openURL(w).catch(() => {})}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="globe-outline" size={16} color="#fff" />
+                  <Text style={styles.reservePrimaryText}>Visit website</Text>
+                </TouchableOpacity>
+              </View>
+            );
+          }
+          return null;
+        }
+        const [primary, ...rest] = links;
+        return (
+          <View style={styles.reserveCard}>
+            <Text style={styles.reserveLabel}>Reserve</Text>
+            <TouchableOpacity
+              style={styles.reservePrimaryBtn}
+              onPress={() => openReservationLink(primary)}
+              activeOpacity={0.85}
+              accessibilityLabel={reservationLabel(primary.provider)}
+            >
+              <Ionicons name={reservationIcon(primary.provider)} size={16} color="#fff" />
+              <Text style={styles.reservePrimaryText}>{reservationLabel(primary.provider)}</Text>
+            </TouchableOpacity>
+            {/* Secondaries: only show OTHER real booking providers
+                (OpenTable / Resy / SevenRooms). Yelp, website, and phone
+                are redundant — phone is already in the contact card and
+                Yelp/website aren't booking tools. */}
+            {(() => {
+              const REAL_BOOKING: ReservationProvider[] = ['opentable', 'resy', 'sevenrooms'];
+              const secondaries = rest
+                .filter((l) => REAL_BOOKING.includes(l.provider))
+                .slice(0, 2);
+              if (secondaries.length === 0) return null;
+              return (
+                <View style={styles.reserveSecondaryRow}>
+                  {secondaries.map((link) => (
+                    <TouchableOpacity
+                      key={link.id}
+                      style={styles.reserveSecondaryBtn}
+                      onPress={() => openReservationLink(link)}
+                      activeOpacity={0.8}
+                      accessibilityLabel={reservationLabel(link.provider)}
+                    >
+                      <Ionicons name={reservationIcon(link.provider)} size={14} color={colors.accent} />
+                      <Text style={styles.reserveSecondaryText} numberOfLines={1}>
+                        {reservationLabel(link.provider)}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              );
+            })()}
+          </View>
+        );
+      })()}
+
       {(detail?.hours || detail?.phone || detail?.websiteUrl) ? (
         <View style={styles.detailsCard}>
           {detail?.phone ? (
@@ -1470,6 +1610,69 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
     color: colors.accent,
+  },
+
+  // ── Reserve section ──
+  reserveCard: {
+    marginHorizontal: 16,
+    marginTop: 12,
+    padding: 14,
+    borderRadius: 14,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  reserveLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.7,
+    marginBottom: 8,
+  },
+  reservePrimaryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 11,
+    paddingHorizontal: 16,
+    borderRadius: 999,
+    backgroundColor: colors.accent,
+    shadowColor: colors.accent,
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 3,
+  },
+  reservePrimaryText: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#fff',
+    letterSpacing: -0.1,
+  },
+  reserveSecondaryRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 10,
+  },
+  reserveSecondaryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  reserveSecondaryText: {
+    fontSize: 12.5,
+    fontWeight: '600',
+    color: colors.accent,
+    maxWidth: 180,
   },
 
   // ── Compare quick-add ──

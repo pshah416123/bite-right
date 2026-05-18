@@ -146,6 +146,25 @@ export async function cycleRestaurantPhoto(
   return data;
 }
 
+export type ReservationProvider =
+  | 'opentable'
+  | 'resy'
+  | 'sevenrooms'
+  | 'yelp'
+  | 'website'
+  | 'phone';
+
+export interface ReservationLink {
+  id: string;
+  restaurantId: string;
+  provider: ReservationProvider;
+  url: string | null;
+  phoneNumber: string | null;
+  providerRestaurantId: string | null;
+  isPrimary: boolean;
+  lastVerifiedAt: string | null;
+}
+
 export interface RestaurantDetail {
   name: string;
   address: string;
@@ -155,6 +174,8 @@ export interface RestaurantDetail {
   googleMapsUrl: string | null;
   phone: string | null;
   reservationUrl: string | null;
+  /** External reservation/booking options. Empty array when none. */
+  reservationLinks?: ReservationLink[];
   /** Google Places place_id when known (enriched). */
   placeId?: string | null;
   googlePlaceId?: string | null;

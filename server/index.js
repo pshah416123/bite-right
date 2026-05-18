@@ -9,6 +9,79 @@ dotenv.config({ path: require('path').join(__dirname, '.env') });
 const { rankPlaces, rankForSection } = require('./ranking');
 const { getCuisineGroups, matchesCuisineGroup } = require('./utils/cuisineNormalization');
 const db = require('./utils/db');
+const { supabase, supabaseConfigured } = require('./utils/supabase');
+
+// ─── Reservation links ────────────────────────────────────────────────────────
+// Stored in restaurant_reservation_links. Returns [] when Supabase isn't
+// configured or the table doesn't exist yet (graceful degradation).
+
+const RESERVATION_PROVIDER_PRIORITY = {
+  opentable:  1,
+  resy:       2,
+  sevenrooms: 3,
+  yelp:       4,
+  website:    5,
+  phone:      6,
+};
+
+function sortReservationLinks(links) {
+  return [...links].sort((a, b) => {
+    if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
+    const pa = RESERVATION_PROVIDER_PRIORITY[a.provider] || 99;
+    const pb = RESERVATION_PROVIDER_PRIORITY[b.provider] || 99;
+    return pa - pb;
+  });
+}
+
+// Heuristic: if a restaurant's "website" URL is actually a booking provider
+// domain (common when restaurants set their OpenTable/Resy page as their
+// public site), classify it as a reservation link. No scraping — purely
+// pattern-match the URL we already have from Google Places.
+function detectReservationProviderFromUrl(url) {
+  if (!url || typeof url !== 'string') return null;
+  let host;
+  try {
+    host = new URL(url).host.toLowerCase();
+  } catch {
+    return null;
+  }
+  if (host.endsWith('opentable.com')   || host.endsWith('opentable.co.uk')) return 'opentable';
+  if (host.endsWith('resy.com'))                                            return 'resy';
+  if (host.endsWith('sevenrooms.com'))                                      return 'sevenrooms';
+  if (host.endsWith('yelp.com')        || host.endsWith('yelp.to'))         return 'yelp';
+  return null;
+}
+
+async function getReservationLinksForRestaurant(restaurantId) {
+  if (!supabaseConfigured || !supabase) return [];
+  try {
+    const { data, error } = await supabase
+      .from('restaurant_reservation_links')
+      .select('id, restaurant_id, provider, url, phone_number, provider_restaurant_id, is_primary, last_verified_at')
+      .eq('restaurant_id', restaurantId);
+    if (error) {
+      // 42P01 = undefined_table (migration not yet applied). Treat as empty.
+      if (error.code !== '42P01') {
+        console.warn('[BiteRight] reservation_links fetch error:', error.message);
+      }
+      return [];
+    }
+    const links = (data || []).map((row) => ({
+      id: row.id,
+      restaurantId: row.restaurant_id,
+      provider: row.provider,
+      url: row.url || null,
+      phoneNumber: row.phone_number || null,
+      providerRestaurantId: row.provider_restaurant_id || null,
+      isPrimary: !!row.is_primary,
+      lastVerifiedAt: row.last_verified_at || null,
+    }));
+    return sortReservationLinks(links);
+  } catch (err) {
+    console.warn('[BiteRight] reservation_links fetch threw:', err.message);
+    return [];
+  }
+}
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -1188,21 +1261,52 @@ app.get('/api/restaurants/:restaurantId', async (req, res) => {
   const placeId = fromDb?.googlePlaceId ?? fromDb?.placeId ?? info.googlePlaceId ?? info.placeId ?? null;
   const debug = String(req.query.debug || '') === '1';
 
-  // Fetch Google Places details for hours, phone, website in parallel with image
+  // Fetch Google Places details + reservation links in parallel
   let placeDetails = null;
-  if (placeId && GOOGLE_PLACES_API_KEY) {
-    try {
-      placeDetails = await googlePlaceDetails(placeId);
-    } catch (err) {
-      console.error('[BiteRight] place details fetch error', err.message);
-    }
-  }
+  let reservationLinks = [];
+  await Promise.all([
+    (async () => {
+      if (placeId && GOOGLE_PLACES_API_KEY) {
+        try {
+          placeDetails = await googlePlaceDetails(placeId);
+        } catch (err) {
+          console.error('[BiteRight] place details fetch error', err.message);
+        }
+      }
+    })(),
+    (async () => {
+      reservationLinks = await getReservationLinksForRestaurant(restaurantId);
+    })(),
+  ]);
 
   const hours = placeDetails?.opening_hours?.weekday_text || null;
   const isOpenNow = placeDetails?.opening_hours?.open_now ?? null;
   const phoneFromGoogle = placeDetails?.international_phone_number || null;
   const websiteFromGoogle = placeDetails?.website || null;
   const priceLevelFromGoogle = typeof placeDetails?.price_level === 'number' ? placeDetails.price_level : null;
+
+  // Heuristic fallback: when no curated links exist, see if the restaurant's
+  // website URL is itself a booking-provider page (OpenTable / Resy / etc.).
+  if (reservationLinks.length === 0) {
+    const candidateUrl =
+      info.reservationUrl ||
+      info.websiteUrl ||
+      websiteFromGoogle ||
+      null;
+    const detected = detectReservationProviderFromUrl(candidateUrl);
+    if (detected && candidateUrl) {
+      reservationLinks = [{
+        id: `auto-${detected}-${restaurantId}`,
+        restaurantId,
+        provider: detected,
+        url: candidateUrl,
+        phoneNumber: null,
+        providerRestaurantId: null,
+        isPrimary: true,
+        lastVerifiedAt: null,
+      }];
+    }
+  }
 
   resolveRestaurantCardImageWithSource(restaurantId, placeId, undefined)
     .then(({ url, source, resolved }) => {
@@ -1236,6 +1340,7 @@ app.get('/api/restaurants/:restaurantId', async (req, res) => {
         googleMapsUrl: info.googleMapsUrl || placeDetails?.url || null,
         phone: info.phone || phoneFromGoogle || null,
         reservationUrl: info.reservationUrl || null,
+        reservationLinks,
         placeId: placeId || null,
         googlePlaceId: resolved?.googlePlaceId || placeId || null,
         displayImageUrl: imageUrl,
@@ -1261,6 +1366,7 @@ app.get('/api/restaurants/:restaurantId', async (req, res) => {
         googleMapsUrl: info.googleMapsUrl || null,
         phone: info.phone || phoneFromGoogle || null,
         reservationUrl: info.reservationUrl || null,
+        reservationLinks,
         placeId: placeId || null,
         googlePlaceId: placeId || null,
         displayImageUrl: null,

@@ -74,7 +74,10 @@ const fa = StyleSheet.create({
 
 // ─── Reason label helper ─────────────────────────────────────────────────────
 
-function getReasonLabel(card: TonightCardModel): string | null {
+// Short recommendation line under the restaurant name. Prefers a real social
+// signal (friends, trending, taste match); falls back to a generic "Great pick
+// tonight" so the line in the hierarchy never collapses unexpectedly.
+function getReasonLabel(card: TonightCardModel): string {
   const { socialProofBadge, reasonTags } = card;
   if (socialProofBadge?.toLowerCase().includes('friend'))
     return '\u{1F46F} Friends liked this';
@@ -88,44 +91,72 @@ function getReasonLabel(card: TonightCardModel): string | null {
     return '\u{1F525} Trending near you';
   if (reasonTags?.some((r) => /taste|match/i.test(r)))
     return '\u2728 Based on your taste';
-  // Default contextual label
   return '\u2728 Great pick tonight';
 }
 
-// ─── Decision-helper: "Best for …" line ─────────────────────────────────────
+// ─── Decision-helper: category-aware "Why this works" copy ─────────────────
+// One short sentence, tuned to the restaurant category so we don't say
+// "solid dinner" about a bakery.
 
-function getBestForLine(cuisine: string, priceLevel?: number, distanceMi?: number | null): string {
+function getWhyThisWorks(cuisine: string, priceLevel?: number, distanceMi?: number | null): string {
   const c = (cuisine || '').toLowerCase();
   const price = priceLevel ?? 2;
-  const isWalkable = distanceMi != null && distanceMi <= 0.5;
+  const walkable = distanceMi != null && distanceMi <= 0.5;
+  const close = distanceMi != null && distanceMi <= 1.5;
 
-  if (price <= 1) {
-    if (isWalkable && /burger|pizza|taco|mexican/.test(c)) return 'Quick walk for a casual bite';
-    if (/burger|pizza|taco|mexican/.test(c)) return 'Casual hangout, quick bite';
-    if (isWalkable) return 'Easy walk for a low-key dinner';
-    return 'Casual dinner, low-key night';
+  // Dessert / bakery / sweet — no "dinner" language
+  if (/bakery|patisserie|p[âa]tisserie|donut|doughnut|ice cream|gelato|cookie|cake|dessert|chocolate|sweets|boba/.test(c)) {
+    if (walkable) return 'Easy walk, sweet treat for tonight.';
+    if (close) return 'Close by — great dessert stop.';
+    return 'A craveable dessert pick.';
   }
+
+  // Coffee / café
+  if (/coffee|cafe|caf[eé]|espresso|tea house/.test(c)) {
+    if (walkable) return 'Cozy café, low-effort and close.';
+    return 'Easy café meet-up.';
+  }
+
+  // Bar / cocktails / wine
+  if (/bar|cocktail|wine|brewery|pub|tavern/.test(c)) {
+    if (price >= 3) return 'Refined drinks, lively vibe.';
+    return 'Easy drinks spot tonight.';
+  }
+
+  // Upscale / fine dining
   if (price >= 4) {
-    if (/steak|french|seafood/.test(c)) return 'Special occasion, upscale dining';
-    return 'Celebration-worthy, fine dining';
+    if (/steak|french|omakase|seafood/.test(c)) return 'Special occasion, upscale night out.';
+    return 'Celebration-worthy dinner.';
   }
   if (price >= 3) {
-    if (/sushi|japanese/.test(c)) return 'Date night, refined experience';
-    if (/steak/.test(c)) return 'Classic steakhouse, great for groups';
-    if (/italian|french/.test(c)) return 'Cozy date night';
-    if (/seafood/.test(c)) return 'Fresh catch, special dinner';
-    return 'Nice dinner out';
+    if (/sushi|japanese/.test(c)) return 'Date night, refined sushi pick.';
+    if (/italian|french/.test(c)) return 'Cozy date night.';
+    if (/steak/.test(c)) return 'Classic steakhouse, great for a group.';
+    if (/seafood/.test(c)) return 'Fresh catch, special dinner.';
+    return 'Nice dinner out.';
   }
-  if (/bbq/.test(c)) return 'Lively group dinner';
-  if (/korean/.test(c)) return 'Fun group dinner, shareable plates';
-  if (/thai|indian|chinese/.test(c)) return 'Flavorful weeknight dinner';
-  if (/burger|american/.test(c)) return 'Casual dinner with friends';
-  if (/pizza/.test(c)) return 'Casual group dinner';
-  if (/mexican|taco/.test(c)) return 'Lively spot, great margaritas';
-  if (/mediterranean|greek/.test(c)) return 'Bright, relaxed vibe';
-  if (/coffee|cafe|caf[eé]/.test(c)) return 'Cozy café, casual meet-up';
-  if (isWalkable) return 'Easy walk, solid dinner';
-  return 'Solid dinner tonight';
+
+  // Casual / inexpensive
+  if (price <= 1) {
+    if (walkable && /burger|pizza|taco|mexican/.test(c)) return 'Quick walk, casual bite.';
+    if (/burger|pizza|taco|mexican/.test(c)) return 'Casual hangout, quick bite.';
+    if (walkable) return 'Easy walk, low-key night.';
+    return 'Casual, low-key tonight.';
+  }
+
+  // Mid-range cuisines
+  if (/bbq/.test(c)) return 'Lively group dinner.';
+  if (/korean/.test(c)) return 'Fun shareable plates.';
+  if (/thai|indian|chinese|vietnamese/.test(c)) return 'Flavorful weeknight pick.';
+  if (/burger|american/.test(c)) return 'Casual dinner with friends.';
+  if (/pizza/.test(c)) return 'Easy group dinner.';
+  if (/mexican|taco/.test(c)) return 'Lively spot, great margaritas.';
+  if (/mediterranean|greek/.test(c)) return 'Bright, relaxed vibe.';
+  if (/ramen|noodle|udon|pho/.test(c)) return 'Comforting bowl tonight.';
+
+  if (walkable) return 'Easy walk, solid pick.';
+  if (close) return 'Close by, easy choice.';
+  return 'Great pick tonight.';
 }
 
 function formatDistance(mi?: number | null): string {
@@ -189,7 +220,7 @@ export function SwipeCard({ card, isSaved, friendAvatars }: SwipeCardProps) {
   const ratingStr = rating != null && rating > 0 ? rating.toFixed(1) : '';
   const distanceStr = formatDistance(distanceMi);
   const walkStr = walkMinutes(distanceMi);
-  const bestFor = getBestForLine(restaurant.cuisine, restaurant.priceLevel, distanceMi);
+  const whyThisWorks = getWhyThisWorks(restaurant.cuisine, restaurant.priceLevel, distanceMi);
 
   return (
     <View style={s.card}>
@@ -314,20 +345,13 @@ export function SwipeCard({ card, isSaved, friendAvatars }: SwipeCardProps) {
           </View>
         ) : null}
 
-        {/* Why-this-fits — only when backend supplies a personalized note */}
-        {whyLine ? (
-          <View style={s.whyWrap}>
-            <Text style={s.whyLabel}>Why this fits you</Text>
-            <Text style={s.whyText} numberOfLines={3}>{whyLine}</Text>
-          </View>
-        ) : null}
-
-        {/* Best-for decision helper */}
+        {/* Why this works — one sentence. Prefer backend's personalized
+            whyLine if present; otherwise use the category-aware sentence. */}
         <View style={s.bestForWrap}>
           <View style={s.bestForBadge}>
-            <Text style={s.bestForBadgeText}>BEST FOR</Text>
+            <Text style={s.bestForBadgeText}>WHY THIS WORKS</Text>
           </View>
-          <Text style={s.bestForText} numberOfLines={2}>{bestFor}</Text>
+          <Text style={s.bestForText} numberOfLines={2}>{whyLine ?? whyThisWorks}</Text>
         </View>
       </View>
     </View>
@@ -503,34 +527,6 @@ const s = StyleSheet.create({
     fontWeight: '600',
     color: TN.text,
     maxWidth: 140,
-  },
-  // Why-this-fits
-  whyWrap: {
-    marginTop: 9,
-    paddingVertical: 7,
-    paddingHorizontal: 10,
-    borderRadius: 10,
-    backgroundColor: '#FFF5EE',
-    borderWidth: 1,
-    borderColor: '#F0DDD0',
-  },
-  whyLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: TN.accent,
-    textTransform: 'uppercase',
-    letterSpacing: 0.6,
-    marginBottom: 2,
-  },
-  whyText: {
-    fontSize: 12.5,
-    fontWeight: '500',
-    color: TN.text,
-    lineHeight: 17,
-  },
-  // Spacer pushes Best-for to the bottom of the card body
-  spacer: {
-    flex: 1,
   },
   // Best-for decision helper
   bestForWrap: {

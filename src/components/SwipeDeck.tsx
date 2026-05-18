@@ -23,6 +23,10 @@ const SWIPE_THRESHOLD = 120;
 const VELOCITY_THRESHOLD = 800;
 const ROTATION_MAX = 15; // degrees
 
+// CTA labels — change these in one place to rename buttons across the deck.
+const PASS_LABEL = 'Not tonight';
+const LIKE_LABEL = 'Crave this'; // Swap to 'Pick this' or "I'm in" later.
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface SwipeDeckProps {
@@ -340,7 +344,7 @@ export default function SwipeDeck({
             <View style={styles.actionIconWrap}>
               <Text style={styles.passBtnIcon}>{'\u2715'}</Text>
             </View>
-            <Text style={styles.passBtnLabel}>Not tonight</Text>
+            <Text style={styles.passBtnLabel}>{PASS_LABEL}</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.actionBtn, styles.likeBtn]}
@@ -351,7 +355,7 @@ export default function SwipeDeck({
             <View style={[styles.actionIconWrap, styles.actionIconWrapLike]}>
               <Text style={styles.likeBtnIcon}>{'\u{1F525}'}</Text>
             </View>
-            <Text style={styles.likeBtnLabel}>Crave this</Text>
+            <Text style={styles.likeBtnLabel}>{LIKE_LABEL}</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -403,7 +407,8 @@ const styles = StyleSheet.create({
     width: '100%',
     flexDirection: 'column',
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'flex-start',
+    paddingTop: 2,
   },
   stack: {
     width: CARD_W,
