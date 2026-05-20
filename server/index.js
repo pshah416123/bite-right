@@ -24,8 +24,18 @@ const RESERVATION_PROVIDER_PRIORITY = {
   phone:      6,
 };
 
+// Real booking providers (opentable/resy/sevenrooms/yelp) always rank ahead
+// of phone/website, even when a phone link is mistakenly flagged is_primary.
+function bookingBucket(provider) {
+  return (provider === 'opentable' || provider === 'resy'
+       || provider === 'sevenrooms' || provider === 'yelp') ? 0 : 1;
+}
+
 function sortReservationLinks(links) {
   return [...links].sort((a, b) => {
+    const ba = bookingBucket(a.provider);
+    const bb = bookingBucket(b.provider);
+    if (ba !== bb) return ba - bb;
     if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
     const pa = RESERVATION_PROVIDER_PRIORITY[a.provider] || 99;
     const pb = RESERVATION_PROVIDER_PRIORITY[b.provider] || 99;
@@ -1312,22 +1322,30 @@ app.get('/api/restaurants/:restaurantId', async (req, res) => {
     .then(({ url, source, resolved }) => {
       let imageUrl = url && url.trim() ? toAbsoluteImageUrl(url.trim()) : null;
 
-      // If resolver still returned placeholder but we have fresh Google photos, use them
-      if (!imageUrl && placeDetails?.photos && fromDb) {
+      // If resolver still returned placeholder but we have fresh Google photos, use them.
+      // For non-seeded restaurants (no fromDb), use /api/place-photo?ref=… which
+      // serves Google photos directly without needing a stored record — matching
+      // how the Discover list resolves images for arbitrary Google Places hits.
+      if (!imageUrl && placeDetails?.photos) {
         const photoRef = selectBestPlacePhotoReference(placeDetails.photos);
         if (photoRef) {
-          fromDb.displayImagePhotoReference = photoRef;
-          fromDb.displayImageUrl = buildPhotoProxyUrl(restaurantId);
-          fromDb.displayImageSourceType = IMAGE_SOURCE.GOOGLE;
-          fromDb.displayImageLastResolvedAt = new Date().toISOString();
-          clearRestaurantImageResolutionCache(restaurantId);
-          db.updateRestaurant(restaurantId, {
-            displayImageUrl: fromDb.displayImageUrl,
-            displayImageSourceType: fromDb.displayImageSourceType,
-            displayImageLastResolvedAt: fromDb.displayImageLastResolvedAt,
-            displayImagePhotoReference: photoRef,
-          }).catch(() => {});
-          imageUrl = toAbsoluteImageUrl(fromDb.displayImageUrl);
+          if (fromDb) {
+            fromDb.displayImagePhotoReference = photoRef;
+            fromDb.displayImageUrl = buildPhotoProxyUrl(restaurantId);
+            fromDb.displayImageSourceType = IMAGE_SOURCE.GOOGLE;
+            fromDb.displayImageLastResolvedAt = new Date().toISOString();
+            clearRestaurantImageResolutionCache(restaurantId);
+            db.updateRestaurant(restaurantId, {
+              displayImageUrl: fromDb.displayImageUrl,
+              displayImageSourceType: fromDb.displayImageSourceType,
+              displayImageLastResolvedAt: fromDb.displayImageLastResolvedAt,
+              displayImagePhotoReference: photoRef,
+            }).catch(() => {});
+            imageUrl = toAbsoluteImageUrl(fromDb.displayImageUrl);
+          } else {
+            // No stored record — use the ref-keyed photo endpoint directly.
+            imageUrl = toAbsoluteImageUrl(`/api/place-photo?ref=${encodeURIComponent(photoRef)}&maxW=800`);
+          }
           console.log('[BiteRight] Detail endpoint re-resolved image for', info.name);
         }
       }

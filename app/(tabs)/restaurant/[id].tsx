@@ -58,8 +58,21 @@ const RESERVATION_PROVIDER_PRIORITY: Record<ReservationProvider, number> = {
   phone:      6,
 };
 
+// Real booking providers should always beat phone in the primary slot, even
+// if a phone link is mistakenly marked is_primary=true. Rule:
+//   1. Bucket A (real booking: opentable/resy/sevenrooms/yelp) always ranks
+//      ahead of Bucket B (website/phone).
+//   2. Within a bucket, is_primary wins.
+//   3. Then provider priority.
+function bookingBucket(p: ReservationProvider): 0 | 1 {
+  return (p === 'opentable' || p === 'resy' || p === 'sevenrooms' || p === 'yelp') ? 0 : 1;
+}
+
 function sortReservationLinks(links: ReservationLink[]): ReservationLink[] {
   return [...links].sort((a, b) => {
+    const ba = bookingBucket(a.provider);
+    const bb = bookingBucket(b.provider);
+    if (ba !== bb) return ba - bb;
     if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
     return (RESERVATION_PROVIDER_PRIORITY[a.provider] ?? 99) -
            (RESERVATION_PROVIDER_PRIORITY[b.provider] ?? 99);
@@ -1616,7 +1629,8 @@ const styles = StyleSheet.create({
   reserveCard: {
     marginHorizontal: 16,
     marginTop: 12,
-    padding: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
     borderRadius: 14,
     backgroundColor: colors.surface,
     borderWidth: 1,
@@ -1630,12 +1644,16 @@ const styles = StyleSheet.create({
     letterSpacing: 0.7,
     marginBottom: 8,
   },
+  // Button stretches edge-to-edge inside the card's content area so the
+  // visible left/right gap from the card border is identical (14px each).
+  // Inner content is a centered row: icon + label as one group.
   reservePrimaryBtn: {
+    alignSelf: 'stretch',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    paddingVertical: 11,
+    paddingVertical: 12,
     paddingHorizontal: 16,
     borderRadius: 999,
     backgroundColor: colors.accent,
@@ -1650,10 +1668,13 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#fff',
     letterSpacing: -0.1,
+    textAlign: 'center',
+    includeFontPadding: false,
   },
   reserveSecondaryRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
+    justifyContent: 'center',
     gap: 8,
     marginTop: 10,
   },

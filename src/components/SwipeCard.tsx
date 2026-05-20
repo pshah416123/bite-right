@@ -11,8 +11,13 @@ import type { TonightCardModel, RecommendedDish } from './TonightCard';
 import { RestaurantImage } from './RestaurantImage';
 
 export const CARD_W = Dimensions.get('window').width - 16;
-export const CARD_H = Math.round(Dimensions.get('window').height * 0.58);
-const PHOTO_H = Math.round(CARD_H * 0.6);
+// Photo is sized to feel like a swipe-app hero (~42% of screen, capped at 360
+// so it never feels oversized on tall phones). Card height is then computed
+// as photo + a tight estimate of the body content — this keeps the white
+// section wrapping the text instead of leaving a blank panel below.
+const PHOTO_H = Math.min(360, Math.round(Dimensions.get('window').height * 0.42));
+const BODY_H = 196;
+export const CARD_H = PHOTO_H + BODY_H;
 
 // ─── Palette (warm peach — matches rest of app) ───────────────────────────────
 export const TN = {
@@ -436,8 +441,8 @@ const s = StyleSheet.create({
   body: {
     flex: 1,
     paddingHorizontal: 14,
-    paddingTop: 8,
-    paddingBottom: 8,
+    paddingTop: 12,
+    paddingBottom: 20,
     backgroundColor: TN.card,
   },
   name: {

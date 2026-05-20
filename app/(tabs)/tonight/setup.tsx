@@ -608,8 +608,8 @@ export default function TonightSetupScreen() {
           </View>
 
           {/* Title */}
-          <Text style={s.pageTitle}>Set the rules</Text>
-          <Text style={s.pageSubtitle}>Fine-tune before swiping</Text>
+          <Text style={s.pageTitle}>Set up your group</Text>
+          <Text style={s.pageSubtitle}>Invite friends and find a spot everyone likes.</Text>
 
           {/* Search Radius */}
           <Text style={s.sectionLabel}>Search Radius</Text>
@@ -647,27 +647,8 @@ export default function TonightSetupScreen() {
             })}
           </View>
 
-          {/* Swipe Deadline */}
-          <Text style={s.sectionLabel}>Swipes close in...</Text>
-          <Text style={s.sectionHint}>Results reveal automatically when time's up</Text>
-          <View style={s.chipsRow}>
-            {DEADLINE_OPTIONS.map((opt) => {
-              const active = deadline === opt.value;
-              return (
-                <TouchableOpacity
-                  key={opt.value}
-                  style={[s.ruleChip, active && s.ruleChipActive]}
-                  onPress={() => selectDeadline(opt.value)}
-                  activeOpacity={0.8}
-                >
-                  <Text style={[s.ruleChipText, active && s.ruleChipTextActive]}>{opt.label}</Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-
-          {/* Nominated Restaurants */}
-          <Text style={s.sectionLabel}>Nominated Restaurants</Text>
+          {/* Add must-haves (formerly Nominated Restaurants) */}
+          <Text style={s.sectionLabel}>Add must-haves</Text>
           <Text style={s.sectionHint}>
             Add specific places you want in the swipe pool ({nominated.length}/15)
           </Text>
@@ -752,7 +733,7 @@ export default function TonightSetupScreen() {
                 <>
                   <Ionicons name="flame" size={18} color="#fff" style={{ marginRight: 8 }} />
                   <Text style={s.startBtnText}>
-                    Start Session{participantCount > 1 ? ` · ${participantCount} members` : ''}
+                    Start group swipe{participantCount > 1 ? ` · ${participantCount} members` : ''}
                   </Text>
                 </>
               )}

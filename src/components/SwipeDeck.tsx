@@ -25,7 +25,7 @@ const ROTATION_MAX = 15; // degrees
 
 // CTA labels — change these in one place to rename buttons across the deck.
 const PASS_LABEL = 'Not tonight';
-const LIKE_LABEL = 'Crave this'; // Swap to 'Pick this' or "I'm in" later.
+const LIKE_LABEL = "I'm in";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -402,13 +402,17 @@ const empty = StyleSheet.create({
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
+  // Anchor card+actions near the top of the deck area. The card itself is
+  // sized large enough (see CARD_H in SwipeCard.tsx) to fill most of the
+  // available vertical space, so the buttons end up naturally close to the
+  // tab bar without needing space-between or large paddings.
   container: {
     flex: 1,
     width: '100%',
     flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'flex-start',
-    paddingTop: 2,
+    paddingTop: 4,
   },
   stack: {
     width: CARD_W,
@@ -484,13 +488,14 @@ const styles = StyleSheet.create({
     color: TN.craving,
     letterSpacing: 1,
   },
-  // Action buttons — tight to card, swipe-app feel
+  // Action buttons — close to the card but with a deliberate ~14px gap so
+  // the card reads as one unit and the buttons read as a separate CTA group.
   actions: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 12,
-    marginTop: 6,
+    marginTop: 14,
   },
   actionBtn: {
     flexDirection: 'row',
