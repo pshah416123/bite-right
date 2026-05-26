@@ -211,7 +211,7 @@ export interface SwipeCardProps {
 }
 
 export function SwipeCard({ card, isSaved, friendAvatars }: SwipeCardProps) {
-  const { restaurant, matchScore, rating, imageUrl, heroPhotoUrl, distanceMi, whyLine } = card;
+  const { restaurant, matchScore, rating, imageUrl, heroPhotoUrl, distanceMi, whyLine, fallbackNote } = card;
 
   const metaParts = [restaurant.cuisine, restaurant.neighborhood].filter(Boolean);
   const priceStr = restaurant.priceLevel
@@ -356,7 +356,7 @@ export function SwipeCard({ card, isSaved, friendAvatars }: SwipeCardProps) {
           <View style={s.bestForBadge}>
             <Text style={s.bestForBadgeText}>WHY THIS WORKS</Text>
           </View>
-          <Text style={s.bestForText} numberOfLines={2}>{whyLine ?? whyThisWorks}</Text>
+          <Text style={s.bestForText} numberOfLines={2}>{fallbackNote ?? whyLine ?? whyThisWorks}</Text>
         </View>
       </View>
     </View>

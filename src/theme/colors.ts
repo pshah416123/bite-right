@@ -1,21 +1,27 @@
 export const colors = {
-  // App background: warm, soft neutral (no pure black)
-  bg: '#fff7ed', // warm cream (orange-50)
-  bgSoft: '#fef3e7', // slightly deeper cream
+  // ── Backgrounds ────────────────────────────────────────────────
+  bg: '#FFF7ED',         // warm cream — app background
+  bgSoft: '#FEF3E7',     // slightly deeper cream — section banding
 
-  // Surfaces: cards and elevated elements float gently above bg
-  surface: '#ffffff', // main card background
-  surfaceSoft: '#f5e7db', // subtle tinted surfaces, chips, pills
+  // ── Surfaces ───────────────────────────────────────────────────
+  surface: '#FFFFFF',    // cards, modals, primary elevated panels
+  surfaceSoft: '#F5E7DB',// chips, pills, subtle tinted surfaces
 
-  // Primary highlight: warm, food-centric terracotta / muted orange
-  accent: '#E8692A', // buttons, badges, FAB — slightly muted from pure orange
-  accentSoft: '#fed7aa', // soft accent for avatar fills, subtle tints
+  // ── Accent (warm food-friendly orange) ─────────────────────────
+  accent: '#E8692A',     // CTAs, active nav, FAB, score badges
+  accentPressed: '#D85C22', // pressed/active state for primary buttons
+  accentSoft: '#FED7AA', // soft tint behind avatars / muted accents
+  accentText: '#C95A24', // for food/dish highlights — calmer than full CTA
 
-  // Typography: warm dark tones, never pure black or cool gray
-  text: '#2B2118', // primary text — deep espresso
-  textMuted: '#8A7A6C', // metadata / descriptions — warm stone
-  textFaint: '#B5ADA5', // tertiary / placeholder — warm mist
+  // ── Typography (warm, dark, no cool gray) ──────────────────────
+  text: '#2B2118',       // primary text — deep espresso
+  textMuted: '#74675C',  // secondary metadata — darker for readability
+  textFaint: '#9A8E84',  // tertiary / placeholders / very-low priority
 
-  // Borders / dividers
-  border: '#E8E2DA', // warm light divider
+  // ── Icons / inactive states ────────────────────────────────────
+  iconInactive: '#A8A19A', // tab bar inactive, disabled icons
+
+  // ── Borders & dividers ─────────────────────────────────────────
+  border: '#E8DED4',     // card outlines
+  divider: '#EEE5DC',    // hairline separators inside cards/lists
 };

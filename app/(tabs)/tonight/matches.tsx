@@ -81,6 +81,7 @@ export default function TonightMatchesScreen() {
   const [matches, setMatches] = useState<MatchItem[]>([]);
   const [totalParticipants, setTotalParticipants] = useState(0);
   const [likesRequired, setLikesRequired] = useState(0);
+  const [participantsDone, setParticipantsDone] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -91,6 +92,7 @@ export default function TonightMatchesScreen() {
         setMatches(res.matches);
         setTotalParticipants(res.totalParticipants);
         setLikesRequired(res.likesRequired);
+        setParticipantsDone(res.participantsDone ?? 0);
         setError(null);
       })
       .catch((err) => {
@@ -148,15 +150,27 @@ export default function TonightMatchesScreen() {
           </TouchableOpacity>
         </View>
       ) : matches.length === 0 ? (
-        <View style={styles.center}>
-          <Text style={styles.emptyTitle}>No matches yet</Text>
-          <Text style={styles.helper}>
-            When everyone has swiped, places everyone liked will show here.
-          </Text>
-          <TouchableOpacity onPress={fetchMatches} style={styles.button}>
-            <Text style={styles.buttonText}>Refresh</Text>
-          </TouchableOpacity>
-        </View>
+        (() => {
+          // Distinguish two empty states:
+          //   1. Everyone finished swiping and there was no overlap.
+          //   2. Still waiting on at least one participant to finish.
+          const allDone = totalParticipants > 0 && participantsDone >= totalParticipants;
+          return (
+            <View style={styles.center}>
+              <Text style={styles.emptyTitle}>
+                {allDone ? 'No agreement this round' : 'No matches yet'}
+              </Text>
+              <Text style={styles.helper}>
+                {allDone
+                  ? 'Your group didn’t overlap on any spot. Try a wider radius, a different cuisine, or start a new round.'
+                  : `Waiting on ${Math.max(0, totalParticipants - participantsDone)} more · matches show up here once everyone is done.`}
+              </Text>
+              <TouchableOpacity onPress={fetchMatches} style={styles.button}>
+                <Text style={styles.buttonText}>{allDone ? 'Refresh' : 'Check again'}</Text>
+              </TouchableOpacity>
+            </View>
+          );
+        })()
       ) : (
         <SectionList
           sections={sections}

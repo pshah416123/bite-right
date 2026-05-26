@@ -19,16 +19,18 @@ const RESERVATION_PROVIDER_PRIORITY = {
   opentable:  1,
   resy:       2,
   sevenrooms: 3,
-  yelp:       4,
-  website:    5,
-  phone:      6,
+  tock:       4,
+  yelp:       5,
+  website:    6,
+  phone:      7,
 };
 
-// Real booking providers (opentable/resy/sevenrooms/yelp) always rank ahead
-// of phone/website, even when a phone link is mistakenly flagged is_primary.
+// Real booking providers always rank ahead of phone/website, even when a phone
+// link is mistakenly flagged is_primary.
 function bookingBucket(provider) {
   return (provider === 'opentable' || provider === 'resy'
-       || provider === 'sevenrooms' || provider === 'yelp') ? 0 : 1;
+       || provider === 'sevenrooms' || provider === 'tock'
+       || provider === 'yelp') ? 0 : 1;
 }
 
 function sortReservationLinks(links) {
@@ -58,6 +60,7 @@ function detectReservationProviderFromUrl(url) {
   if (host.endsWith('opentable.com')   || host.endsWith('opentable.co.uk')) return 'opentable';
   if (host.endsWith('resy.com'))                                            return 'resy';
   if (host.endsWith('sevenrooms.com'))                                      return 'sevenrooms';
+  if (host.endsWith('exploretock.com') || host.endsWith('tocktix.com'))     return 'tock';
   if (host.endsWith('yelp.com')        || host.endsWith('yelp.to'))         return 'yelp';
   return null;
 }
@@ -836,6 +839,48 @@ function getRecommendedDishes(cuisine, restaurantName) {
 }
 
 /** Maps Discover cuisine chip labels to Google Nearby Search keyword hints. */
+// When a specific cuisine has no results in the search radius, try the next
+// broader cuisine in the family. e.g. Ramen → Japanese → Asian → (any). Order
+// matters: most-similar first. Empty array means stop (the chip is already a
+// broad category).
+const CUISINE_FALLBACK_LADDER = {
+  // Japanese family
+  Ramen:           ['Japanese', 'Asian'],
+  Sushi:           ['Japanese', 'Asian'],
+  Japanese:        ['Asian'],
+  // Other Asian
+  Korean:          ['Asian'],
+  Thai:            ['Asian'],
+  Vietnamese:      ['Asian'],
+  Chinese:         ['Asian'],
+  Indian:          ['Asian'],
+  Asian:           [],
+  // Italian family
+  Pizza:           ['Italian'],
+  Pasta:           ['Italian'],
+  Italian:         [],
+  // Mexican family
+  Tacos:           ['Mexican'],
+  Mexican:         [],
+  // American family
+  Burgers:         ['American'],
+  BBQ:             ['American'],
+  Steakhouse:      ['American'],
+  American:        [],
+  // Mediterranean family
+  Greek:           ['Mediterranean'],
+  'Middle Eastern':['Mediterranean'],
+  Mediterranean:   [],
+  // Dessert / café family
+  Bakery:          ['Dessert', 'Coffee'],
+  Dessert:         [],
+  Coffee:          ['Brunch'],
+};
+
+function getCuisineFallbackChain(originalChip) {
+  return CUISINE_FALLBACK_LADDER[originalChip] || [];
+}
+
 function cuisineChipToNearbyKeyword(chip) {
   const c = (chip || '').trim();
   const table = {
@@ -3287,6 +3332,10 @@ app.get('/api/tonight/sessions/:code/pool', async (req, res) => {
   const radiusMiles = session.settings.searchRadius || 3;
   // ── Build pool from Google Places when available, else fall back to demo data ──
   let poolSource = TONIGHT_POOL;
+  let filtersRelaxed = false;
+  let relaxedCuisine = null;
+  let relaxedFrom = null;
+  let relaxedTo = null;
   const sessionCuisines = session.settings.cuisines || [];
   if (GOOGLE_PLACES_API_KEY) {
     try {
@@ -3294,28 +3343,61 @@ app.get('/api/tonight/sessions/:code/pool', async (req, res) => {
       const keyword = sessionCuisines.length > 0
         ? cuisineChipToNearbyKeyword(sessionCuisines[0])
         : '';
-      const textQuery = keyword
-        ? `${keyword} restaurants`
-        : 'restaurants';
-      const [nearbyRaw, textRaw] = await Promise.all([
-        googlePlacesNearbyRestaurants(lat, lng, radiusMeters, keyword || undefined),
-        googlePlacesTextSearch(textQuery, lat, lng, radiusMeters),
-      ]);
-      // Merge + dedupe by placeId (same logic as Discover)
-      const mergedMap = new Map();
-      for (const p of nearbyRaw) { if (p.placeId) mergedMap.set(p.placeId, p); }
-      for (const p of textRaw) {
-        if (!p.placeId) continue;
-        const existing = mergedMap.get(p.placeId);
-        if (!existing) { mergedMap.set(p.placeId, p); }
-        else {
-          const richness = (e) =>
-            (e.rating != null ? 1 : 0) + (e.userRatingsTotal != null ? 1 : 0) +
-            (e.priceLevel != null ? 1 : 0) + (e.photoRef ? 1 : 0);
-          if (richness(p) > richness(existing)) mergedMap.set(p.placeId, p);
+      const fetchMerged = async (kw) => {
+        const tq = kw ? `${kw} restaurants` : 'restaurants';
+        const [nearbyRaw, textRaw] = await Promise.all([
+          googlePlacesNearbyRestaurants(lat, lng, radiusMeters, kw || undefined),
+          googlePlacesTextSearch(tq, lat, lng, radiusMeters),
+        ]);
+        const mergedMap = new Map();
+        for (const p of nearbyRaw) { if (p.placeId) mergedMap.set(p.placeId, p); }
+        for (const p of textRaw) {
+          if (!p.placeId) continue;
+          const existing = mergedMap.get(p.placeId);
+          if (!existing) { mergedMap.set(p.placeId, p); }
+          else {
+            const richness = (e) =>
+              (e.rating != null ? 1 : 0) + (e.userRatingsTotal != null ? 1 : 0) +
+              (e.priceLevel != null ? 1 : 0) + (e.photoRef ? 1 : 0);
+            if (richness(p) > richness(existing)) mergedMap.set(p.placeId, p);
+          }
+        }
+        return Array.from(mergedMap.values()).filter((p) => isFoodPlace(p.types));
+      };
+      let merged = await fetchMerged(keyword);
+      // Auto-relax: walk the similarity ladder so the user gets the *closest*
+      // alternative cuisine, not just "anything". e.g. Ramen → Japanese → Asian.
+      // Only after every similar tier comes up empty do we drop the filter
+      // entirely. Banner copy uses relaxedFrom + relaxedTo to explain the choice.
+      if (merged.length === 0 && keyword) {
+        const original = sessionCuisines[0];
+        const ladder = getCuisineFallbackChain(original);
+        for (const fallback of ladder) {
+          const altKeyword = cuisineChipToNearbyKeyword(fallback);
+          const altMerged = await fetchMerged(altKeyword);
+          if (altMerged.length > 0) {
+            merged = altMerged;
+            filtersRelaxed = true;
+            relaxedCuisine = original;
+            relaxedFrom = original;
+            relaxedTo = fallback;
+            console.log('[BiteRight][Tonight pool] relaxed', original, '→', fallback, ': found', altMerged.length, 'places');
+            break;
+          }
+        }
+        // Last resort: drop the cuisine entirely.
+        if (merged.length === 0) {
+          const anyMerged = await fetchMerged('');
+          if (anyMerged.length > 0) {
+            merged = anyMerged;
+            filtersRelaxed = true;
+            relaxedCuisine = original;
+            relaxedFrom = original;
+            relaxedTo = null; // means "no cuisine at all"
+            console.log('[BiteRight][Tonight pool] relaxed', original, '→ ANY: found', anyMerged.length, 'places');
+          }
         }
       }
-      const merged = Array.from(mergedMap.values()).filter((p) => isFoodPlace(p.types));
       if (merged.length > 0) {
         // Convert Google Places results to pool items
         poolSource = merged.map((p, idx) => {
@@ -3358,6 +3440,12 @@ app.get('/api/tonight/sessions/:code/pool', async (req, res) => {
     }
   }
 
+  // When relaxed, swap the ranker's cuisine input to the fallback so it stays
+  // family-scoped (e.g. ranker keeps "Japanese" when original "Ramen" failed).
+  // If relaxedTo is null we walked all the way to "any" — pass [] then.
+  const cuisinesForRanker = filtersRelaxed
+    ? (relaxedTo ? [relaxedTo] : [])
+    : sessionCuisines;
   const ranked = getTonightPoolRanked({
     pool: poolSource,
     lat,
@@ -3370,10 +3458,13 @@ app.get('/api/tonight/sessions/:code/pool', async (req, res) => {
     groupSessions,
     negativeFeedback,
     distanceMiles,
-    cuisines: sessionCuisines,
+    cuisines: cuisinesForRanker,
     priceRange: session.settings.priceRange || [],
     deckSize: session.settings.deckSize || 0,
   });
+  if (filtersRelaxed) {
+    console.log('[BiteRight][Tonight pool] post-rank result count:', ranked.length);
+  }
   // Prepend nominated restaurants so they always appear in the swipe pool
   const nominatedItems = (session.settings.nominatedRestaurants || []).map((n) => ({
     restaurantId: n.restaurantId,
@@ -3422,6 +3513,13 @@ app.get('/api/tonight/sessions/:code/pool', async (req, res) => {
           similarTasteSignal: r.similarTasteSignal,
           cuisine: r.cuisine,
         }) || null;
+      // When the cuisine was relaxed, attach a per-card note so the swipe UI
+      // can make it obvious why this restaurant is showing up.
+      const fallbackNote = filtersRelaxed
+        ? (relaxedTo
+            ? `No ${(relaxedFrom || '').toLowerCase()} nearby — this is a ${relaxedTo.toLowerCase()} pick`
+            : `No ${(relaxedFrom || '').toLowerCase()} nearby — broadened to top picks`)
+        : null;
       return {
         restaurantId: r.restaurantId,
         name: r.name,
@@ -3443,6 +3541,7 @@ app.get('/api/tonight/sessions/:code/pool', async (req, res) => {
         recommendedDishes: getRecommendedDishes(r.cuisine, r.name),
         isOpenNow: r.isOpenNow ?? null,
         rating: r.rating ?? null,
+        fallbackNote,
       };
     }),
   );
@@ -3451,6 +3550,10 @@ app.get('/api/tonight/sessions/:code/pool', async (req, res) => {
     total: combined.length,
     page,
     pageSize,
+    filtersRelaxed,
+    relaxedCuisine,
+    relaxedFrom,
+    relaxedTo,
   });
 });
 
@@ -3814,10 +3917,16 @@ app.get('/api/tonight/sessions/:code/matches', async (req, res) => {
 
   matches.sort((a, b) => (b.percentMatch - a.percentMatch));
 
+  // Count how many participants have signaled "done swiping" so the client
+  // can distinguish "still in progress" from "everyone done, no agreement".
+  const participantsDone = (session.participants || [])
+    .filter((p) => p.doneSwiping).length;
+
   res.json({
     totalParticipants,
     likesRequired,
     matches,
+    participantsDone,
   });
 });
 
@@ -3826,7 +3935,14 @@ app.get('/api/tonight/sessions/:code/matches', async (req, res) => {
 const { getDiscoverRecommendations } = require('./recommendation');
 
 async function attachImageAndPlaceId(rec, userId, ctx) {
-  const placeId = findRestaurantById(rec.restaurantId)?.placeId ?? null;
+  // Try to derive a placeId from any signal we have. The g_ prefix wraps a
+  // raw Google place_id; rec may also carry it directly.
+  const placeIdFromRow = findRestaurantById(rec.restaurantId)?.placeId ?? null;
+  const placeIdFromRec = rec.placeId || rec.place_id || rec.googlePlaceId || null;
+  const placeIdFromIdPrefix = String(rec.restaurantId || '').startsWith('g_')
+    ? String(rec.restaurantId).slice(2)
+    : null;
+  const placeId = placeIdFromRow || placeIdFromRec || placeIdFromIdPrefix || null;
   const derivedCuisines = deriveCuisinesFromPlace(rec.types || [], rec.name, rec.cuisine);
   const mappedCat = mapFoodCategory(rec.types || [], rec.name);
   const displayCuisine =
@@ -3835,7 +3951,23 @@ async function attachImageAndPlaceId(rec, userId, ctx) {
     mappedCat ||
     '';
   const rawUrl = await resolveRestaurantCardImage(rec.restaurantId, placeId, undefined);
-  const finalImageUrl = rawUrl ? toAbsoluteImageUrl(rawUrl) : null;
+  let finalImageUrl = rawUrl ? toAbsoluteImageUrl(rawUrl) : null;
+
+  // Same fallback the detail endpoint uses: when the resolver returns null
+  // (non-seeded restaurant, no stored ref), pull fresh Google photos and
+  // serve via /api/place-photo?ref=… — no DB record needed.
+  if (!finalImageUrl && placeId && GOOGLE_PLACES_API_KEY) {
+    try {
+      const details = await googlePlaceDetails(placeId);
+      const photoRef = selectBestPlacePhotoReference(details?.photos || []);
+      if (photoRef) {
+        finalImageUrl = toAbsoluteImageUrl(`/api/place-photo?ref=${encodeURIComponent(photoRef)}&maxW=800`);
+      }
+    } catch (err) {
+      // Don't break discover for one bad photo lookup.
+      if (rec?.name) console.warn('[BiteRight][Discover] place-photo fallback failed for', rec.name, err?.message);
+    }
+  }
   const restaurantRow = findRestaurantById(rec.restaurantId);
   const socialProofBadge =
     getSocialProofBadge(rec.restaurantId, userId, {
@@ -3869,6 +4001,9 @@ async function attachImageAndPlaceId(rec, userId, ctx) {
       previewPhotoUrl: finalImageUrl,
       // Keep backward-compatible alias for existing Discover consumers.
       imageUrl: finalImageUrl,
+      // Must-try chips — same source as the Tonight pool so both surfaces
+      // show the same dishes for the same restaurant.
+      recommendedDishes: getRecommendedDishes(displayCuisine, rec.name),
     },
     percentMatch: rec.percentMatch,
     explanations: rec.explanations || ['Recommended for you'],
@@ -4084,29 +4219,69 @@ async function buildGooglePlaceDiscover(lat, lng, radiusMiles, userId, cuisineFi
   // ── Cuisine post-filter (preserves existing logic) ──────────────
   if (cuisineFilter) {
     const GENERIC_LABELS = new Set(['Restaurant', 'Takeout', '']);
+    // Google place `types[]` that disqualify a result from a given cuisine
+    // chip even when the derive-cuisine pass came back generic. Without this,
+    // an ice cream shop returned for keyword "pizza" sneaks through the
+    // trust-Google fallback below because it has no specific cuisine label.
+    const DISQUALIFYING_TYPES_FOR_FILTER = {
+      Pizza:      ['ice_cream_shop', 'bakery'],
+      Burgers:    ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
+      Sushi:      ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
+      Ramen:      ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
+      Tacos:      ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
+      Steakhouse: ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
+      BBQ:        ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
+      Italian:    ['ice_cream_shop'],
+      Mexican:    ['ice_cream_shop', 'bakery'],
+      Japanese:   ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
+      Chinese:    ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
+      Korean:     ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
+      Thai:       ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
+      Indian:     ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
+      Vietnamese: ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
+      Seafood:    ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
+      // Bakery / Dessert / Coffee are themselves these categories — no disqualifiers.
+    };
+    const disqualifyingTypes = DISQUALIFYING_TYPES_FOR_FILTER[cuisineFilter] || [];
+
+    // Strict mode: only include a place when we have POSITIVE evidence it
+    // serves the requested cuisine — either the cuisine-normalizer matched, or
+    // the restaurant name contains the cuisine keyword. Anything else (generic
+    // labels, unclear types, "Google sort-of returned this for our keyword")
+    // is excluded so the user never sees false recommendations.
+    const nameRegex = keyword
+      ? new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i')
+      : null;
+
     recs = recs.filter((rec) => {
       const derived = deriveCuisinesFromPlace(rec.types || [], rec.name, rec.cuisine);
       const matchesFilter = restaurantMatchesCuisineFilter(derived, cuisineFilter, rec.name, rec.cuisine);
+      const types = rec.types || [];
+      const hasDisqualifyingType = types.some((t) => disqualifyingTypes.includes(t));
+      const nameMentionsCuisine = nameRegex ? nameRegex.test(rec.name || '') : false;
 
-      if (matchesFilter) return true;
-
-      // When a keyword was sent to Google, trust results that have no specific
-      // conflicting cuisine (e.g. "Koji" for sushi has generic types only).
-      // But filter out results that are clearly a DIFFERENT cuisine.
-      if (keyword) {
-        const specificLabels = derived.filter((l) => !GENERIC_LABELS.has(l));
-        if (specificLabels.length === 0) {
-          console.log('[BiteRight][Discover] inclusion', {
-            name: rec.name, derivedCuisines: derived, selectedCuisine: cuisineFilter,
-            included: true, reason: 'trusted-google-keyword (no conflicting cuisine)',
-          });
-          return true;
-        }
+      // Hard rejection first.
+      if (hasDisqualifyingType) {
+        console.log('[BiteRight][Discover] inclusion', {
+          name: rec.name, derivedCuisines: derived, selectedCuisine: cuisineFilter,
+          included: false, reason: 'disqualifying-google-type', types,
+        });
+        return false;
       }
-
+      // Positive match via derived cuisine taxonomy.
+      if (matchesFilter) return true;
+      // Positive match via name (e.g. "Tony's Pizza Napoletana" for Pizza).
+      if (nameMentionsCuisine) {
+        console.log('[BiteRight][Discover] inclusion', {
+          name: rec.name, derivedCuisines: derived, selectedCuisine: cuisineFilter,
+          included: true, reason: 'name-contains-cuisine',
+        });
+        return true;
+      }
+      // No positive evidence — exclude.
       console.log('[BiteRight][Discover] inclusion', {
         name: rec.name, derivedCuisines: derived, selectedCuisine: cuisineFilter,
-        included: false, reason: 'filtered-out',
+        included: false, reason: 'no-positive-match (strict mode)',
       });
       return false;
     });

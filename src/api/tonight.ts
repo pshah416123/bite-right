@@ -93,6 +93,9 @@ export interface PoolItem {
   isOpenNow?: boolean | null;
   /** Google Places rating (1–5). */
   rating?: number | null;
+  /** Set on each card when the cuisine filter was relaxed — explains why this
+   *  card is showing up (e.g. "No ramen nearby — this is a japanese pick"). */
+  fallbackNote?: string | null;
 }
 
 export interface GetPoolResponse {
@@ -100,6 +103,13 @@ export interface GetPoolResponse {
   total: number;
   page: number;
   pageSize: number;
+  /** True when the cuisine filter returned no results and we showed unfiltered picks instead. */
+  filtersRelaxed?: boolean;
+  /** Original cuisine the user requested — null when filtersRelaxed=false. */
+  relaxedCuisine?: string | null;
+  relaxedFrom?: string | null;
+  /** Cuisine actually used (next on the similarity ladder). null = no cuisine at all. */
+  relaxedTo?: string | null;
 }
 
 export interface MatchItem {
@@ -115,6 +125,9 @@ export interface GetMatchesResponse {
   totalParticipants: number;
   likesRequired: number;
   matches: MatchItem[];
+  /** Number of participants who marked done swiping. Use with totalParticipants
+   *  to distinguish "still in progress" from "everyone done, no agreement". */
+  participantsDone?: number;
 }
 
 export async function createTonightSession(

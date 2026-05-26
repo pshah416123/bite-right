@@ -53,9 +53,10 @@ const RESERVATION_PROVIDER_PRIORITY: Record<ReservationProvider, number> = {
   opentable:  1,
   resy:       2,
   sevenrooms: 3,
-  yelp:       4,
-  website:    5,
-  phone:      6,
+  tock:       4,
+  yelp:       5,
+  website:    6,
+  phone:      7,
 };
 
 // Real booking providers should always beat phone in the primary slot, even
@@ -65,7 +66,7 @@ const RESERVATION_PROVIDER_PRIORITY: Record<ReservationProvider, number> = {
 //   2. Within a bucket, is_primary wins.
 //   3. Then provider priority.
 function bookingBucket(p: ReservationProvider): 0 | 1 {
-  return (p === 'opentable' || p === 'resy' || p === 'sevenrooms' || p === 'yelp') ? 0 : 1;
+  return (p === 'opentable' || p === 'resy' || p === 'sevenrooms' || p === 'tock' || p === 'yelp') ? 0 : 1;
 }
 
 function sortReservationLinks(links: ReservationLink[]): ReservationLink[] {
@@ -84,6 +85,7 @@ function reservationLabel(provider: ReservationProvider): string {
     case 'opentable':  return 'Reserve on OpenTable';
     case 'resy':       return 'Reserve on Resy';
     case 'sevenrooms': return 'Reserve on SevenRooms';
+    case 'tock':       return 'Reserve on Tock';
     case 'yelp':       return 'Reserve on Yelp';
     case 'website':    return 'Reserve on website';
     case 'phone':      return 'Call to book';
@@ -839,46 +841,17 @@ export default function RestaurantScreen() {
           </View>
         </View>
       ) : null}
-      {/* Reserve section — external links only, no live availability */}
+      {/* Reserve section — only real booking providers (OpenTable / Resy /
+          SevenRooms / Tock / Yelp). Phone and website are NOT shown here —
+          the phone number is already in the contact card below, and a generic
+          website isn't a booking tool. If no real booking link exists, the
+          whole Reserve section is hidden. */}
       {(() => {
-        const links = sortReservationLinks(detail?.reservationLinks ?? []);
-        // Fallbacks when no curated links exist
-        if (links.length === 0) {
-          if (detail?.phone && detail.phone.trim()) {
-            const ph = detail.phone.trim();
-            return (
-              <View style={styles.reserveCard}>
-                <Text style={styles.reserveLabel}>Reserve</Text>
-                <TouchableOpacity
-                  style={styles.reservePrimaryBtn}
-                  onPress={() => openReservationLink({ id: 'fallback-phone', restaurantId: id ?? '', provider: 'phone', url: null, phoneNumber: ph, providerRestaurantId: null, isPrimary: true, lastVerifiedAt: null })}
-                  activeOpacity={0.85}
-                >
-                  <Ionicons name="call-outline" size={16} color="#fff" />
-                  <Text style={styles.reservePrimaryText}>Call to book</Text>
-                </TouchableOpacity>
-              </View>
-            );
-          }
-          if (detail?.websiteUrl && isOpenableUrl(detail.websiteUrl)) {
-            const w = detail.websiteUrl;
-            return (
-              <View style={styles.reserveCard}>
-                <Text style={styles.reserveLabel}>Reserve</Text>
-                <TouchableOpacity
-                  style={styles.reservePrimaryBtn}
-                  onPress={() => Linking.openURL(w).catch(() => {})}
-                  activeOpacity={0.85}
-                >
-                  <Ionicons name="globe-outline" size={16} color="#fff" />
-                  <Text style={styles.reservePrimaryText}>Visit website</Text>
-                </TouchableOpacity>
-              </View>
-            );
-          }
-          return null;
-        }
-        const [primary, ...rest] = links;
+        const REAL_BOOKING: ReservationProvider[] = ['opentable', 'resy', 'sevenrooms', 'tock', 'yelp'];
+        const realLinks = sortReservationLinks(detail?.reservationLinks ?? [])
+          .filter((l) => REAL_BOOKING.includes(l.provider));
+        if (realLinks.length === 0) return null;
+        const [primary, ...rest] = realLinks;
         return (
           <View style={styles.reserveCard}>
             <Text style={styles.reserveLabel}>Reserve</Text>
@@ -891,12 +864,8 @@ export default function RestaurantScreen() {
               <Ionicons name={reservationIcon(primary.provider)} size={16} color="#fff" />
               <Text style={styles.reservePrimaryText}>{reservationLabel(primary.provider)}</Text>
             </TouchableOpacity>
-            {/* Secondaries: only show OTHER real booking providers
-                (OpenTable / Resy / SevenRooms). Yelp, website, and phone
-                are redundant — phone is already in the contact card and
-                Yelp/website aren't booking tools. */}
+            {/* Secondaries: only show OTHER real booking providers. */}
             {(() => {
-              const REAL_BOOKING: ReservationProvider[] = ['opentable', 'resy', 'sevenrooms'];
               const secondaries = rest
                 .filter((l) => REAL_BOOKING.includes(l.provider))
                 .slice(0, 2);
@@ -1644,9 +1613,9 @@ const styles = StyleSheet.create({
     letterSpacing: 0.7,
     marginBottom: 8,
   },
-  // Button stretches edge-to-edge inside the card's content area so the
-  // visible left/right gap from the card border is identical (14px each).
-  // Inner content is a centered row: icon + label as one group.
+  // Button stretches the inner content area of the card (alignSelf: stretch).
+  // No negative margin — the card's pill shadow renders cleanly inside its
+  // rounded corners instead of overflowing on each side.
   reservePrimaryBtn: {
     alignSelf: 'stretch',
     flexDirection: 'row',

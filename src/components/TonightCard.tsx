@@ -32,6 +32,9 @@ export interface TonightCardModel {
   groupSignal?: string | null;
   distanceMi?: number | null;
   whyLine?: string | null;
+  /** Surfaced on the card when the cuisine filter was relaxed and this card
+   *  is being shown as a substitution (e.g. "No ramen nearby — japanese pick"). */
+  fallbackNote?: string | null;
   recommendedDishes?: RecommendedDish[] | null;
   isOpenNow?: boolean | null;
 }

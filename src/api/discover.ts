@@ -21,6 +21,8 @@ export interface DiscoverRecommendation {
     previewPhotoUrl?: string;
     /** Resolved image URL (https or relative). Never a photo_reference. Always populated by backend. */
     imageUrl?: string;
+    /** Must-try dish chips — same source as the Tonight pool. */
+    recommendedDishes?: { name: string; price?: string | null; description?: string | null }[] | null;
   };
   percentMatch: number;
   explanations: string[];

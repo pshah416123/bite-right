@@ -43,6 +43,7 @@ function poolItemToCard(item: PoolItem): TonightCardModel {
     whyLine: item.whyLine ?? null,
     recommendedDishes: item.recommendedDishes ?? null,
     isOpenNow: item.isOpenNow ?? null,
+    fallbackNote: item.fallbackNote ?? null,
   };
 }
 
@@ -53,6 +54,13 @@ export default function TonightSwipeScreen() {
   const [cards, setCards] = useState<TonightCardModel[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Surfaced when the backend dropped or substituted the cuisine filter because
+  // it had no matches in the search area. relaxedFrom is what the user asked for
+  // (e.g. "Ramen"); relaxedTo is what we showed instead ("Japanese") or null if
+  // we had to drop the cuisine entirely.
+  const [filtersRelaxed, setFiltersRelaxed] = useState(false);
+  const [relaxedFrom, setRelaxedFrom] = useState<string | null>(null);
+  const [relaxedTo, setRelaxedTo] = useState<string | null>(null);
   const [participants, setParticipants] = useState<ParticipantProgress[]>([]);
   const nextPageRef = useRef(1);
   const prefetchingRef = useRef(false);
@@ -74,6 +82,9 @@ export default function TonightSwipeScreen() {
         nextCards.forEach((c) => seenIdsRef.current.add(c.restaurant.id));
         setCards(nextCards);
         setError(null);
+        setFiltersRelaxed(!!res.filtersRelaxed);
+        setRelaxedFrom(res.relaxedFrom ?? res.relaxedCuisine ?? null);
+        setRelaxedTo(res.relaxedTo ?? null);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -222,7 +233,7 @@ export default function TonightSwipeScreen() {
           <Text style={styles.helper}>Check matches to see where the group can eat.</Text>
           <TouchableOpacity
             style={styles.button}
-            onPress={() => router.navigate('/(tabs)/tonight/matches')}
+            onPress={() => router.push('/(tabs)/tonight/matches')}
           >
             <Text style={styles.buttonText}>See matches</Text>
           </TouchableOpacity>
@@ -265,6 +276,23 @@ export default function TonightSwipeScreen() {
           </View>
         )}
       </View>
+
+      {/* Filter-relaxed banner — surfaced when the cuisine filter produced no
+          results. Banner explains the substitution so the user knows WHY
+          they're seeing what they're seeing (e.g. "No ramen — showing
+          Japanese, the closest match"). */}
+      {filtersRelaxed ? (
+        <View style={styles.relaxedBanner}>
+          <Text style={styles.relaxedBannerTitle}>
+            {relaxedFrom ? `No ${relaxedFrom.toLowerCase()} places nearby` : 'No matches for your filters'}
+          </Text>
+          <Text style={styles.relaxedBannerText} numberOfLines={2}>
+            {relaxedTo
+              ? `Showing ${relaxedTo.toLowerCase()} spots instead — the closest match in your area.`
+              : 'Showing top picks in your area instead.'}
+          </Text>
+        </View>
+      ) : null}
 
       {/* ── Swipe deck (same component as group mode) ─────────────── */}
       <View style={styles.deckArea}>
@@ -351,6 +379,31 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     paddingTop: 2,
+  },
+  relaxedBanner: {
+    marginHorizontal: 14,
+    marginTop: 2,
+    marginBottom: 4,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: colors.accentSoft,
+    borderWidth: 1,
+    borderColor: colors.accent + '40',
+  },
+  relaxedBannerTitle: {
+    fontSize: 12.5,
+    fontWeight: '800',
+    color: colors.text,
+    textAlign: 'center',
+    marginBottom: 2,
+  },
+  relaxedBannerText: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: colors.textMuted,
+    textAlign: 'center',
+    lineHeight: 16,
   },
   helper: {
     marginTop: 8,

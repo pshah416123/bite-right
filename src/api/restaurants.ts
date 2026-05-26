@@ -150,6 +150,7 @@ export type ReservationProvider =
   | 'opentable'
   | 'resy'
   | 'sevenrooms'
+  | 'tock'
   | 'yelp'
   | 'website'
   | 'phone';

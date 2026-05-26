@@ -414,26 +414,43 @@ export default function ProfileScreen() {
     let list = visibleSavedRestaurants;
     if (savedFilter !== 'all') list = list.filter((r) => r.source === savedFilter);
     if (cityFilter) {
-      const cf = cityFilter.toLowerCase();
+      // Compare against the first meaningful token of the filter (e.g.
+      // "Northville, MI, USA" → "northville") so an address from a different
+      // city won't match. We require the address to contain that token.
+      const cfFull = cityFilter.toLowerCase();
+      const cfCityToken = cfFull.split(',')[0].trim();
       list = list.filter((r) => {
-        const city = r.city?.trim().toLowerCase();
+        const city = r.city?.trim().toLowerCase() || '';
         const addr = r.address?.toLowerCase() ?? '';
-        return city === cf || cf.includes(city ?? '') || city?.includes(cf) || addr.includes(cf);
+        // City-field match: must have a non-empty city and it must overlap.
+        if (city && (city === cfFull || city === cfCityToken
+                    || city.includes(cfCityToken) || cfCityToken.includes(city))) {
+          return true;
+        }
+        // Address match: the city token must literally appear in the address.
+        if (cfCityToken && addr.includes(cfCityToken)) return true;
+        return false;
       });
     }
     return list;
   }, [visibleSavedRestaurants, savedFilter, cityFilter]);
 
-  // Filtered eats by city
+  // Filtered eats by city — same matching rules as filteredSaved above.
   const filteredVisitGroups = useMemo(() => {
     if (!cityFilter) return visitGroups;
-    const cf = cityFilter.toLowerCase();
+    const cfFull = cityFilter.toLowerCase();
+    const cfCityToken = cfFull.split(',')[0].trim();
     const matchingRestaurantIds = new Set(
       profileLogs
         .filter((l) => {
-          const city = l.city?.trim().toLowerCase();
+          const city = l.city?.trim().toLowerCase() || '';
           const addr = l.address?.toLowerCase() ?? '';
-          return city === cf || cf.includes(city ?? '') || city?.includes(cf) || addr.includes(cf);
+          if (city && (city === cfFull || city === cfCityToken
+                      || city.includes(cfCityToken) || cfCityToken.includes(city))) {
+            return true;
+          }
+          if (cfCityToken && addr.includes(cfCityToken)) return true;
+          return false;
         })
         .map((l) => l.restaurantId),
     );

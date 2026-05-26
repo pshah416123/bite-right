@@ -17,7 +17,24 @@
 
 const { SCORE_WEIGHTS, CURATION, SECTION_PROFILES } = require('./config');
 const { qualityScore, popularityScore, distanceScore, confidenceScore, detectChainTier, chainPenalty, toDisplayScore } = require('./scoring');
-const { findCuratedMatch, detectNeighborhood, detectNeighborhoodFromQuery, getNeighborhoodDisplayName } = require('./curatedBoosts');
+const { findCuratedMatch, detectNeighborhood, detectNeighborhoodFromQuery, getNeighborhoodDisplayName, CURATED_NEIGHBORHOODS } = require('./curatedBoosts');
+
+// Stricter radius for *labeling* than for curation. A neighborhood polygon
+// can have a generous radius (e.g. 1.5mi for Pilsen) so we can boost nearby
+// curated places, but using that same generous radius for the address label
+// causes restaurants in adjacent neighborhoods to be mis-stamped. Only use
+// the polygon name when the restaurant is well within the core area.
+const LABEL_RADIUS_FACTOR = 0.5; // 1.5mi curation radius → 0.75mi label radius
+
+function detectNeighborhoodForLabel(lat, lng) {
+  if (lat == null || lng == null) return null;
+  for (const [key, config] of Object.entries(CURATED_NEIGHBORHOODS)) {
+    const labelRadius = (config.radiusMiles || 1) * LABEL_RADIUS_FACTOR;
+    const d = haversine(lat, lng, config.center.lat, config.center.lng);
+    if (d <= labelRadius) return key;
+  }
+  return null;
+}
 const { diversityRerank } = require('./diversity');
 const { generateExplanations, generateHeroLabel, generateCardTags } = require('./reasons');
 
@@ -97,6 +114,14 @@ function rankPlaces(places, userLocation, opts = {}) {
       ? haversine(userLocation.lat, userLocation.lng, place.lat, place.lng)
       : 0;
 
+    // Per-place neighborhood: detect from THIS restaurant's coords, not from
+    // the user's selected location. Use the strict label radius so polygons
+    // don't over-claim adjacent neighborhoods.
+    const placeNeighborhoodKey = detectNeighborhoodForLabel(place.lat, place.lng);
+    const placeNeighborhoodLabel = placeNeighborhoodKey
+      ? getNeighborhoodDisplayName(placeNeighborhoodKey)
+      : null;
+
     const qScore = qualityScore(place.rating, place.userRatingsTotal);
     const pScore = popularityScore(place.userRatingsTotal);
     const dScore = distanceScore(dist);
@@ -131,8 +156,12 @@ function rankPlaces(places, userLocation, opts = {}) {
     const chainTier = detectChainTier(place.name, place.chainTier);
     const finalScore = Math.max(0, Math.min(1, baseScore * chainPenalty(chainTier)));
 
-    const placeNeighborhood = place.address
-      ? String(place.address).split(',')[0].trim()
+    // Try to extract neighborhood/city from Google's formatted address.
+    // Format is usually "123 Main St, Chicago, IL 60616, USA" — the 2nd
+    // comma-segment is the city. Used as final fallback if we have no
+    // polygon-based detection for this restaurant's coords.
+    const addressCitySegment = place.address
+      ? String(place.address).split(',').map((s) => s.trim()).filter(Boolean)[1] || null
       : null;
 
     const cuisine = place.cuisine || '';
@@ -141,7 +170,10 @@ function rankPlaces(places, userLocation, opts = {}) {
       _placeInput: place,
       name: place.name,
       address: place.address || '',
-      neighborhood: neighborhoodDisplayName || placeNeighborhood,
+      // Per-place neighborhood first (from this restaurant's coords), then
+      // city from the address, then null. The user-search neighborhood is
+      // NOT a fallback here — that would mis-label restaurants outside it.
+      neighborhood: placeNeighborhoodLabel || addressCitySegment || null,
       cuisine,
       types: place.types || [],
       priceLevel: place.priceLevel ?? 2,

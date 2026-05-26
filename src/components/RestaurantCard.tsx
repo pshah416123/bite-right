@@ -41,6 +41,8 @@ export interface DiscoverItem {
     displayImageLastResolvedAt?: string | null;
     previewPhotoUrl?: string;
     imageUrl?: string;
+    /** Must-try dish chips populated by the server. */
+    recommendedDishes?: { name: string; price?: string | null; description?: string | null }[] | null;
   };
   matchScore: number;
   reasonTags: string[];
@@ -56,10 +58,6 @@ interface Props {
   userCoords?: { lat: number; lng: number } | null;
   animDelay?: number;
 }
-
-const AVATAR_SIZE = 22;
-const AVATAR_OVERLAP = 7;
-const MAX_AVATARS = 3;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -94,27 +92,22 @@ function formatVisitDate(iso?: string): string {
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-// ─── Friend Avatar ──────────────────────────────────────────────────────────
+// ─── Social proof ───────────────────────────────────────────────────────────
+// Builds the subtle "Maya, Jay +2 ate here" line below the meta row.
+// Returns null when there's no friend signal — caller can skip rendering.
 
-function FriendAvatar({ visit, index }: { visit: FriendVisitAtRestaurant; index: number }) {
-  const uri = visit.userAvatar?.trim();
-  const initial = visit.userName?.[0]?.toUpperCase() ?? '?';
-  return (
-    <View
-      style={[
-        styles.avatarCircle,
-        { marginLeft: index > 0 ? -AVATAR_OVERLAP : 0, zIndex: MAX_AVATARS - index },
-      ]}
-    >
-      {uri ? (
-        <Image source={{ uri }} style={styles.avatarImage} />
-      ) : (
-        <View style={styles.avatarFallback}>
-          <Text style={styles.avatarFallbackText}>{initial}</Text>
-        </View>
-      )}
-    </View>
-  );
+const SOCIAL_PROOF_MAX_NAMES = 2;
+
+function getSocialProofText(visits: FriendVisitAtRestaurant[]): string | null {
+  if (!visits || visits.length === 0) return null;
+  const names = visits.map((v) => v.userName).filter(Boolean);
+  if (names.length === 0) return `${visits.length} friend${visits.length === 1 ? '' : 's'} ate here`;
+  // Loved-by language when EVERY visit is a high score (8+); otherwise "ate here"
+  const allLoved = visits.every((v) => typeof v.score === 'number' && v.score >= 8);
+  const shown = names.slice(0, SOCIAL_PROOF_MAX_NAMES);
+  const extra = names.length - shown.length;
+  const namePart = extra > 0 ? `${shown.join(', ')} +${extra}` : shown.join(', ');
+  return `${namePart} ${allLoved ? 'loved this' : 'ate here'}`;
 }
 
 // ─── RestaurantCard ─────────────────────────────────────────────────────────
@@ -210,8 +203,6 @@ export function RestaurantCard({ item, saved, userCoords }: Props) {
   };
 
   const showFriendStack = friendVisits.length > 0;
-  const visibleFriends = friendVisits.slice(0, MAX_AVATARS);
-  const extraCount = friendVisits.length - MAX_AVATARS;
 
   const photoSection = (() => {
     return (
@@ -235,26 +226,6 @@ export function RestaurantCard({ item, saved, userCoords }: Props) {
             style={styles.photo}
           />
         </View>
-        {showFriendStack ? (
-          <Pressable
-            style={styles.friendStackPressable}
-            onPress={() => setFriendsModalOpen(true)}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel={`Friends who visited: ${friendVisits.map((f) => f.userName).join(', ')}`}
-          >
-            <View style={styles.friendStackRow}>
-              {visibleFriends.map((v, i) => (
-                <FriendAvatar key={v.userName} visit={v} index={i} />
-              ))}
-              {extraCount > 0 ? (
-                <View style={[styles.plusBadge, { marginLeft: visibleFriends.length > 0 ? -AVATAR_OVERLAP : 0 }]}>
-                  <Text style={styles.plusBadgeText}>+{extraCount}</Text>
-                </View>
-              ) : null}
-            </View>
-          </Pressable>
-        ) : null}
       </View>
     );
   })();
@@ -289,10 +260,34 @@ export function RestaurantCard({ item, saved, userCoords }: Props) {
                 {restaurant.neighborhood ? ` \u00B7 ${restaurant.neighborhood}` : ''}
                 {distanceLabel ? ` \u00B7 ${distanceLabel}` : ''}
               </Text>
-              <Text style={styles.secondary}>
-                {Array.from({ length: restaurant.priceLevel ?? 0 })
-                  .map(() => '$')
-                  .join('')}
+              {/* Social proof row \u2014 subtle, between meta and price.
+                  Tappable to open the friend visits modal (same target as the
+                  previous photo overlay had). */}
+              {showFriendStack ? (
+                <Pressable
+                  style={styles.socialProofRow}
+                  onPress={() => setFriendsModalOpen(true)}
+                  hitSlop={4}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Friends: ${friendVisits.map((f) => f.userName).join(', ')}`}
+                >
+                  <Ionicons name="people-outline" size={12} color={colors.textMuted} />
+                  <Text style={styles.socialProofText} numberOfLines={1}>
+                    {getSocialProofText(friendVisits)}
+                  </Text>
+                </Pressable>
+              ) : null}
+              {/* Price + Try-the-top-dish on one line. Dish name uses the
+                  accentText token (warmer than CTA orange) to highlight food
+                  without screaming. */}
+              <Text style={styles.secondary} numberOfLines={1}>
+                {Array.from({ length: restaurant.priceLevel ?? 0 }).map(() => '$').join('')}
+                {restaurant.recommendedDishes && restaurant.recommendedDishes[0]?.name ? (
+                  <>
+                    {(restaurant.priceLevel ?? 0) > 0 ? ' \u00b7 ' : ''}
+                    Try: <Text style={styles.dishHighlight}>{restaurant.recommendedDishes[0].name}</Text>
+                  </>
+                ) : null}
               </Text>
             </View>
           </View>
@@ -393,56 +388,26 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     backgroundColor: colors.surfaceSoft,
   },
-  friendStackPressable: {
-    position: 'absolute',
-    left: 2,
-    bottom: 2,
-    maxWidth: 56,
+  // Inline highlight color for the dish name in the "Try: X" line — uses the
+  // accentText token (calmer than full CTA orange) so food pops without
+  // competing with the match-score pill.
+  dishHighlight: {
+    color: colors.accentText,
+    fontWeight: '600',
   },
-  friendStackRow: {
+  // Subtle social proof row — sits between meta and price. No avatars on the
+  // image overlay, no dark bubble, no borders.
+  socialProofRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 4,
+    marginTop: 2,
   },
-  avatarCircle: {
-    width: AVATAR_SIZE,
-    height: AVATAR_SIZE,
-    borderRadius: AVATAR_SIZE / 2,
-    borderWidth: 2,
-    borderColor: '#fff',
-    backgroundColor: colors.surface,
-    overflow: 'hidden',
-  },
-  avatarImage: {
-    width: '100%',
-    height: '100%',
-  },
-  avatarFallback: {
-    flex: 1,
-    backgroundColor: colors.accentSoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  avatarFallbackText: {
-    fontSize: 10,
-    fontWeight: '800',
-    color: colors.text,
-  },
-  plusBadge: {
-    minWidth: AVATAR_SIZE,
-    height: AVATAR_SIZE,
-    borderRadius: AVATAR_SIZE / 2,
-    paddingHorizontal: 5,
-    backgroundColor: 'rgba(17,24,39,0.72)',
-    borderWidth: 2,
-    borderColor: '#fff',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 0,
-  },
-  plusBadgeText: {
-    fontSize: 10,
-    fontWeight: '800',
-    color: '#fff',
+  socialProofText: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: colors.textMuted,
+    flexShrink: 1,
   },
   metaPressable: {
     flex: 1,

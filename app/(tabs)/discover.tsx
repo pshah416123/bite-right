@@ -101,6 +101,7 @@ function recToItem(rec: DiscoverRecommendation): DiscoverItem {
       displayImageLastResolvedAt: rec.restaurant.displayImageLastResolvedAt ?? null,
       previewPhotoUrl: ensureAbsoluteImageUrl(rec.restaurant.previewPhotoUrl),
       imageUrl: ensureAbsoluteImageUrl(rec.restaurant.imageUrl),
+      recommendedDishes: rec.restaurant.recommendedDishes ?? null,
     },
     matchScore: rec.percentMatch / 100,
     reasonTags: rec.explanations,
