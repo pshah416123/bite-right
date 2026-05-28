@@ -5,6 +5,23 @@ import { setRestaurantPhotoCache } from '../utils/restaurantPhoto';
 import { normalizeRestaurantName } from '../utils/nameNormalize';
 import { useTestMode } from './TestModeContext';
 import { TEST_FEED_LOGS } from '../data/testMockData';
+import { SOCIAL_PROFILES } from '../data/socialProfiles';
+
+// Resolves tagged userNames to feed-friendly profile objects. Returns
+// undefined when the input has no names so callers can fall back to existing.
+function resolveTaggedUsers(
+  names?: string[],
+): { userName: string; displayName?: string; userAvatar?: string | null }[] | undefined {
+  if (!names || names.length === 0) return undefined;
+  return names.map((userName) => {
+    const profile = SOCIAL_PROFILES[userName];
+    return {
+      userName,
+      displayName: profile?.displayName,
+      userAvatar: null,
+    };
+  });
+}
 
 export interface NewLogInput {
   userName: string;
@@ -30,6 +47,9 @@ export interface NewLogInput {
   vibeTags?: import('../components/FeedCard').VibeTag[];
   quickTip?: string;
   bestTime?: string;
+  /** Friends tagged on this visit. Stored on the resulting FeedLog as
+   *  `taggedUsers` after resolving each userName to a display profile. */
+  taggedUserNames?: string[];
 }
 
 // ── Restaurant Log (canonical per-user-per-restaurant record) ───────────────
@@ -300,6 +320,7 @@ export function FeedProvider({ children }: { children: ReactNode }) {
       vibeTags,
       quickTip: input.quickTip ?? existing?.quickTip ?? null,
       bestTime: input.bestTime ?? existing?.bestTime ?? null,
+      taggedUsers: resolveTaggedUsers(input.taggedUserNames) ?? existing?.taggedUsers,
     };
   };
 

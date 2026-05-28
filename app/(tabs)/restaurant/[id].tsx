@@ -1036,6 +1036,39 @@ export default function RestaurantScreen() {
             {friendsBar}
             {actionButtons}
 
+            {/* Tagged friends — "You went with Casey, Riley" */}
+            {log.taggedUsers && log.taggedUsers.length > 0 ? (
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>
+                  {isOwnLog ? 'You went with' : `${logOwnerName} went with`}
+                </Text>
+                <Text style={styles.dishItem}>
+                  {log.taggedUsers.map((t) => t.displayName || t.userName).join(', ')}
+                </Text>
+              </View>
+            ) : null}
+
+            {/* Own-log note (caption). For other people's logs this is shown
+                in the posterQuote block above; for own logs we surface it
+                here so the user sees what they wrote. */}
+            {isOwnLog && log.note ? (
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>What you said</Text>
+                <Text style={styles.dishItem}>{log.note}</Text>
+              </View>
+            ) : null}
+
+            {/* Visit count — only meaningful when ≥ 2 */}
+            {log.visitCount && log.visitCount > 1 ? (
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Visits</Text>
+                <Text style={styles.dishItem}>
+                  {isOwnLog
+                    ? `You've been here ${log.visitCount} times`
+                    : `${logOwnerName} has been here ${log.visitCount} times`}
+                </Text>
+              </View>
+            ) : null}
 
             {/* Dishes */}
             {log.dishes && log.dishes.length > 0 ? (

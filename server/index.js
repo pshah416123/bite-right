@@ -1247,8 +1247,67 @@ app.post('/api/restaurants/select', async (req, res) => {
 });
 
 // 3) Logging a restaurant visit
+// ─── Social tagging: friendship helpers ────────────────────────────────────
+// Canonical pair ordering matches the schema's `check (user_a < user_b)`.
+
+function friendshipKey(a, b) {
+  return a < b ? { a, b } : { a: b, b: a };
+}
+
+async function areFriends(userIdA, userIdB) {
+  if (!userIdA || !userIdB || userIdA === userIdB) return false;
+  if (!supabaseConfigured || !supabase) return true; // dev: tolerate
+  const { a, b } = friendshipKey(userIdA, userIdB);
+  const { data, error } = await supabase
+    .from('friendships')
+    .select('status')
+    .eq('user_a', a).eq('user_b', b)
+    .maybeSingle();
+  if (error || !data) return false;
+  return data.status === 'accepted';
+}
+
+async function getActiveTagsForLog(logId) {
+  if (!logId || !supabaseConfigured || !supabase) return [];
+  const { data, error } = await supabase
+    .from('log_tags')
+    .select('tagged_user_id')
+    .eq('log_id', logId)
+    .eq('status', 'active');
+  if (error) {
+    if (error.code !== '42P01') console.warn('[BiteRight] log_tags read error:', error.message);
+    return [];
+  }
+  return (data || []).map((r) => ({ userId: r.tagged_user_id }));
+}
+
+/** Returns { added: [userIds], rejected: [{userId,reason}] } */
+async function addTagsToLog(logId, taggedBy, candidateUserIds) {
+  if (!supabaseConfigured || !supabase) return { added: [], rejected: [] };
+  const unique = Array.from(new Set((candidateUserIds || [])
+    .filter((u) => typeof u === 'string' && u.trim() && u !== taggedBy)));
+  const added = [];
+  const rejected = [];
+  for (const uid of unique) {
+    if (!(await areFriends(taggedBy, uid))) {
+      rejected.push({ userId: uid, reason: 'not_friends' });
+      continue;
+    }
+    const { error } = await supabase
+      .from('log_tags')
+      .upsert({ log_id: logId, tagged_user_id: uid, tagged_by: taggedBy, status: 'active' },
+              { onConflict: 'log_id,tagged_user_id' });
+    if (error) {
+      rejected.push({ userId: uid, reason: error.code === '42P01' ? 'table_missing' : 'db_error' });
+      continue;
+    }
+    added.push(uid);
+  }
+  return { added, rejected };
+}
+
 app.post('/api/logs', async (req, res) => {
-  const { restaurantId, rating, notes, photos, userId } = req.body || {};
+  const { restaurantId, rating, notes, photos, userId, taggedUserIds } = req.body || {};
 
   if (!restaurantId || typeof rating !== 'number') {
     return res.status(400).json({ error: 'restaurantId and numeric rating are required' });
@@ -1291,6 +1350,14 @@ app.post('/api/logs', async (req, res) => {
   await db.insertLog(log);
   logs.push(log);
 
+  // Optional friend tags. Only friends are persisted; rejections are reported
+  // back so the client can show a "couldn't tag X (not friends)" hint if it
+  // wants. Tagging failures never block the log itself.
+  let tagResult = { added: [], rejected: [] };
+  if (Array.isArray(taggedUserIds) && taggedUserIds.length > 0) {
+    tagResult = await addTagsToLog(id, log.userId, taggedUserIds);
+  }
+
   res.json({
     id,
     restaurantId,
@@ -1302,7 +1369,112 @@ app.post('/api/logs', async (req, res) => {
     notes,
     previewPhotoUrl: previewPhotoUrlAbsolute || null,
     createdAt,
+    taggedUserIds: tagResult.added,
+    tagsRejected: tagResult.rejected,
   });
+});
+
+// ─── Social tagging endpoints ───────────────────────────────────────────────
+
+// Add additional tags after a log was created.
+app.post('/api/logs/:logId/tags', async (req, res) => {
+  const { logId } = req.params;
+  const { taggedUserIds, userId } = req.body || {};
+  if (!Array.isArray(taggedUserIds) || taggedUserIds.length === 0) {
+    return res.status(400).json({ error: 'taggedUserIds (array) is required' });
+  }
+  const log = logs.find((l) => l.id === logId);
+  if (!log) return res.status(404).json({ error: 'Log not found' });
+  if (userId && log.userId !== userId) return res.status(403).json({ error: 'Only the log author can add tags' });
+  const result = await addTagsToLog(logId, log.userId, taggedUserIds);
+  res.json(result);
+});
+
+// Author removes a tag.
+app.delete('/api/logs/:logId/tags/:userId', async (req, res) => {
+  const { logId, userId } = req.params;
+  const log = logs.find((l) => l.id === logId);
+  if (!log) return res.status(404).json({ error: 'Log not found' });
+  if (!supabaseConfigured || !supabase) return res.json({ ok: true, status: 'in_memory_noop' });
+  const { error } = await supabase
+    .from('log_tags')
+    .update({ status: 'removed_by_author', removed_at: new Date().toISOString() })
+    .eq('log_id', logId).eq('tagged_user_id', userId).eq('status', 'active');
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
+// Tagged user removes themselves. Separate status so audit log preserves intent.
+app.post('/api/logs/:logId/tags/:userId/remove-self', async (req, res) => {
+  const { logId, userId } = req.params;
+  if (!supabaseConfigured || !supabase) return res.json({ ok: true, status: 'in_memory_noop' });
+  const { error } = await supabase
+    .from('log_tags')
+    .update({ status: 'removed_by_tagged', removed_at: new Date().toISOString() })
+    .eq('log_id', logId).eq('tagged_user_id', userId).eq('status', 'active');
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
+// "Dining partners" — friends ranked by # of co-visits with the requesting user.
+app.get('/api/users/:userId/dining-partners', async (req, res) => {
+  const { userId } = req.params;
+  const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 10));
+  if (!supabaseConfigured || !supabase) return res.json({ partners: [] });
+  const { data, error } = await supabase
+    .from('log_tags')
+    .select('tagged_user_id, log_id')
+    .eq('tagged_by', userId)
+    .eq('status', 'active');
+  if (error) {
+    if (error.code === '42P01') return res.json({ partners: [] });
+    return res.status(500).json({ error: error.message });
+  }
+  const counts = new Map();
+  for (const row of data || []) {
+    counts.set(row.tagged_user_id, (counts.get(row.tagged_user_id) || 0) + 1);
+  }
+  const partners = Array.from(counts.entries())
+    .map(([uid, count]) => ({ userId: uid, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, limit);
+  res.json({ partners });
+});
+
+// "Restaurants A and B visited together" — used by Profile drill-down.
+app.get('/api/users/:userId/co-visits', async (req, res) => {
+  const { userId } = req.params;
+  const withUser = String(req.query.with || '').trim();
+  if (!withUser) return res.status(400).json({ error: 'with query param is required' });
+  if (!supabaseConfigured || !supabase) return res.json({ restaurants: [] });
+  const { data, error } = await supabase
+    .from('log_tags')
+    .select('log_id, logs(restaurant_id, created_at)')
+    .eq('tagged_by', userId)
+    .eq('tagged_user_id', withUser)
+    .eq('status', 'active');
+  if (error) {
+    if (error.code === '42P01') return res.json({ restaurants: [] });
+    return res.status(500).json({ error: error.message });
+  }
+  const byRestaurant = new Map();
+  for (const row of data || []) {
+    const rid = row.logs?.restaurant_id;
+    if (!rid) continue;
+    const prev = byRestaurant.get(rid);
+    const visitedAt = row.logs?.created_at;
+    if (!prev) {
+      byRestaurant.set(rid, { restaurantId: rid, count: 1, lastVisitedAt: visitedAt });
+    } else {
+      prev.count += 1;
+      if (visitedAt && (!prev.lastVisitedAt || visitedAt > prev.lastVisitedAt)) {
+        prev.lastVisitedAt = visitedAt;
+      }
+    }
+  }
+  const restaurants = Array.from(byRestaurant.values())
+    .sort((a, b) => (b.lastVisitedAt || '').localeCompare(a.lastVisitedAt || ''));
+  res.json({ restaurants });
 });
 
 // 4) Restaurant detail (for Reserve and detail view)

@@ -16,6 +16,7 @@ import { useDiscover, type DiscoverSectionItems } from '~/src/hooks/useDiscover'
 import { RestaurantCard } from '~/src/components/RestaurantCard';
 import { POPULAR_LOCATIONS, type DiscoverSelectedLocation } from '~/src/components/DiscoverLocationBar';
 import { useSavedRestaurants } from '~/src/context/SavedRestaurantsContext';
+import { useFeedContext } from '~/src/context/FeedContext';
 import { colors } from '~/src/theme/colors';
 import { apiClient } from '~/src/api/client';
 import { getDiscover, type DiscoverRecommendation, type DiscoverSections, type DiscoverSortMode, type DiscoverOccasion } from '~/src/api/discover';
@@ -23,18 +24,104 @@ import type { DiscoverItem } from '~/src/components/RestaurantCard';
 import Slider from '@react-native-community/slider';
 
 // ─── Cuisine chips (dynamically ordered — "For you" first, then by popularity) ─
-const CUISINE_CHIPS = [
-  { label: 'For you', emoji: '\u2728' },
-  { label: 'Ramen', emoji: '\u{1F35C}' },
-  { label: 'Sushi', emoji: '\u{1F363}' },
-  { label: 'Tacos', emoji: '\u{1F32E}' },
-  { label: 'Pizza', emoji: '\u{1F355}' },
-  { label: 'Coffee', emoji: '\u2615' },
-  { label: 'Burgers', emoji: '\u{1F354}' },
-  { label: 'Dessert', emoji: '\u{1F370}' },
-  { label: 'Thai', emoji: '\u{1F966}' },
-  { label: 'Indian', emoji: '\u{1F35B}' },
+// \u2500\u2500\u2500 Personalized chip ordering \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// Builds a chip list from the user's logs, weighted by rating, padded with
+// popular defaults. Used in place of the static CUISINE_CHIPS at render time.
+
+interface CuisineChip { label: string; emoji: string }
+
+const CHIP_CATALOG: Record<string, CuisineChip> = {
+  Ramen:         { label: 'Ramen',         emoji: '\u{1F35C}' },
+  Sushi:         { label: 'Sushi',         emoji: '\u{1F363}' },
+  Tacos:         { label: 'Tacos',         emoji: '\u{1F32E}' },
+  Pizza:         { label: 'Pizza',         emoji: '\u{1F355}' },
+  Coffee:        { label: 'Coffee',        emoji: '\u2615' },
+  Burgers:       { label: 'Burgers',       emoji: '\u{1F354}' },
+  Dessert:       { label: 'Dessert',       emoji: '\u{1F370}' },
+  Thai:          { label: 'Thai',          emoji: '\u{1F966}' },
+  Indian:        { label: 'Indian',        emoji: '\u{1F35B}' },
+  Italian:       { label: 'Italian',       emoji: '\u{1F35D}' },
+  Mexican:       { label: 'Mexican',       emoji: '\u{1F32E}' },
+  Korean:        { label: 'Korean',        emoji: '\u{1F372}' },
+  Japanese:      { label: 'Japanese',      emoji: '\u{1F363}' },
+  Chinese:       { label: 'Chinese',       emoji: '\u{1F961}' },
+  Vietnamese:    { label: 'Vietnamese',    emoji: '\u{1F35C}' },
+  Mediterranean: { label: 'Mediterranean', emoji: '\u{1F957}' },
+  Greek:         { label: 'Greek',         emoji: '\u{1F957}' },
+  BBQ:           { label: 'BBQ',           emoji: '\u{1F356}' },
+  Steakhouse:    { label: 'Steakhouse',    emoji: '\u{1F969}' },
+  Seafood:       { label: 'Seafood',       emoji: '\u{1F99E}' },
+  Brunch:        { label: 'Brunch',        emoji: '\u{1F95E}' },
+};
+
+const DEFAULT_CHIP_LABELS = ['Ramen', 'Sushi', 'Tacos', 'Pizza', 'Coffee', 'Burgers', 'Dessert', 'Thai', 'Indian'];
+
+// First match wins. Specific terms before general ones.
+const CUISINE_TO_CHIP_PATTERNS: { pattern: RegExp; chip: string }[] = [
+  { pattern: /\b(ramen|udon|soba|noodle)\b/i,                  chip: 'Ramen' },
+  { pattern: /\b(sushi|nigiri|sashimi|omakase|maki)\b/i,       chip: 'Sushi' },
+  { pattern: /\b(taco|taqueria|burrito|quesadilla)\b/i,        chip: 'Tacos' },
+  { pattern: /\b(pizza|pizzeria|deep dish)\b/i,                chip: 'Pizza' },
+  { pattern: /\b(burger|smash|patty)\b/i,                      chip: 'Burgers' },
+  { pattern: /\b(coffee|cafe|caf[e\u00e9]|espresso|latte)\b/i,      chip: 'Coffee' },
+  { pattern: /\b(bakery|pastry|donut|doughnut)\b/i,            chip: 'Dessert' },
+  { pattern: /\b(ice cream|gelato|dessert|cake|cookie)\b/i,    chip: 'Dessert' },
+  { pattern: /\b(thai|pad thai|tom yum)\b/i,                   chip: 'Thai' },
+  { pattern: /\b(indian|tandoori|curry|biryani)\b/i,           chip: 'Indian' },
+  { pattern: /\b(italian|pasta|cacio|carbonara|trattoria)\b/i, chip: 'Italian' },
+  { pattern: /\b(mexican)\b/i,                                 chip: 'Mexican' },
+  { pattern: /\b(korean|bulgogi|kimchi|bibimbap)\b/i,          chip: 'Korean' },
+  { pattern: /\b(japanese)\b/i,                                chip: 'Japanese' },
+  { pattern: /\b(chinese|dim sum|dumpling)\b/i,                chip: 'Chinese' },
+  { pattern: /\b(vietnamese|pho|banh mi)\b/i,                  chip: 'Vietnamese' },
+  { pattern: /\b(greek)\b/i,                                   chip: 'Greek' },
+  { pattern: /\b(mediterranean|falafel|hummus|kebab)\b/i,      chip: 'Mediterranean' },
+  { pattern: /\b(bbq|barbecue|smokehouse|brisket)\b/i,         chip: 'BBQ' },
+  { pattern: /\b(steakhouse|steak|ribeye|wagyu)\b/i,           chip: 'Steakhouse' },
+  { pattern: /\b(seafood|oyster|lobster|crab)\b/i,             chip: 'Seafood' },
+  { pattern: /\b(brunch|breakfast|pancake|waffle)\b/i,         chip: 'Brunch' },
 ];
+
+const CURRENT_USER_NAME_DISCOVER = 'You';
+const MIN_LOG_SCORE_FOR_PREFERENCE = 7; // one-off mediocre visits don't pollute taste signal
+const MAX_PERSONALIZED_CHIPS = 6;
+const TOTAL_CHIPS_TARGET = 9;
+
+function mapCuisineToChip(cuisine: string | null | undefined): string | null {
+  if (!cuisine) return null;
+  for (const { pattern, chip } of CUISINE_TO_CHIP_PATTERNS) {
+    if (pattern.test(cuisine)) return chip;
+  }
+  return null;
+}
+
+/** "For you" + personalized cuisines (weighted by rating) + default padding. */
+function buildPersonalizedChips(myLogs: { cuisine?: string; score?: number }[]): CuisineChip[] {
+  const weights = new Map<string, number>();
+  for (const log of myLogs) {
+    if ((log.score ?? 0) < MIN_LOG_SCORE_FOR_PREFERENCE) continue;
+    const chipLabel = mapCuisineToChip(log.cuisine);
+    if (!chipLabel || !CHIP_CATALOG[chipLabel]) continue;
+    // Smooth weight: 7\u21921, 8\u21922, 9\u21923, 10\u21924
+    const weight = 1 + Math.max(0, (log.score ?? 7) - MIN_LOG_SCORE_FOR_PREFERENCE);
+    weights.set(chipLabel, (weights.get(chipLabel) || 0) + weight);
+  }
+  const personalized = Array.from(weights.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, MAX_PERSONALIZED_CHIPS)
+    .map(([label]) => label);
+
+  const order: string[] = [...personalized];
+  for (const def of DEFAULT_CHIP_LABELS) {
+    if (order.length >= TOTAL_CHIPS_TARGET) break;
+    if (!order.includes(def)) order.push(def);
+  }
+
+  return [
+    { label: 'For you', emoji: '\u2728' },
+    ...order.map((label) => CHIP_CATALOG[label]).filter(Boolean),
+  ];
+}
 
 const TRENDING_CATEGORIES = [
   { label: 'Ramen', icon: 'restaurant-outline' as const },
@@ -168,6 +255,15 @@ function filterByPrice(sections: DiscoverSectionItems, prices: number[]): Discov
 
 export default function DiscoverScreen() {
   const insets = useSafeAreaInsets();
+  const { items: feedItems } = useFeedContext();
+
+  // Personalized chip ordering — recomputes when the user logs a new visit.
+  const cuisineChips = useMemo(() => {
+    const myLogs = feedItems
+      .filter((log) => log.userName === CURRENT_USER_NAME_DISCOVER)
+      .map((log) => ({ cuisine: log.cuisine, score: log.score }));
+    return buildPersonalizedChips(myLogs);
+  }, [feedItems]);
 
   // ── Search ─────────────────────────────────────────────────────────────
   const [searchInput, setSearchInput] = useState('');
@@ -541,7 +637,7 @@ export default function DiscoverScreen() {
         {!searchFocused && (
           <View style={styles.chipsRow}>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsScroll}>
-              {CUISINE_CHIPS.map((chip) => {
+              {cuisineChips.map((chip) => {
                 const isForYou = chip.label === 'For you';
                 const active = isForYou
                   ? !activeSearch

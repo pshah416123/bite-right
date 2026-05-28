@@ -32,6 +32,7 @@ import { RESTAURANTS } from '~/src/data/restaurants';
 import { useFeedContext } from '~/src/context/FeedContext';
 import { useSavedRestaurants } from '~/src/context/SavedRestaurantsContext';
 import type { VibeTag } from '~/src/components/FeedCard';
+import { FriendTagPicker } from '~/src/components/tagging/FriendTagPicker';
 
 const DEBOUNCE_MS = 300;
 const MIN_QUERY_LENGTH = 2;
@@ -67,6 +68,7 @@ export default function LogVisitScreen() {
   const [vibeTags, setVibeTags] = useState<VibeTag[]>([]);
   const [quickTip, setQuickTip] = useState('');
   const [bestTime, setBestTime] = useState<string | null>(null);
+  const [taggedUserNames, setTaggedUserNames] = useState<string[]>([]);
   const [photos, setPhotos] = useState<string[]>([]);
   const [primaryIndex, setPrimaryIndex] = useState<number | null>(null);
   const [searchHealth, setSearchHealth] = useState<SearchHealth | null | undefined>(undefined);
@@ -217,6 +219,7 @@ export default function LogVisitScreen() {
     setVibeTags([]);
     setQuickTip('');
     setBestTime(null);
+    setTaggedUserNames([]);
     setPhotos([]);
     setPrimaryIndex(null);
     setRestaurantInputFocused(false);
@@ -298,6 +301,7 @@ export default function LogVisitScreen() {
     setOrderedDishes(editingLog.dishes?.filter((d) => d.trim().length > 0) ?? []);
     setDishInput('');
     setVibeTags(editingLog.vibeTags ?? []);
+    setTaggedUserNames((editingLog.taggedUsers ?? []).map((t) => t.userName));
     setPhotos(editingLog.photo_url ? [editingLog.photo_url] : []);
     setPrimaryIndex(editingLog.photo_url ? 0 : null);
     setRestaurantInputFocused(false);
@@ -467,6 +471,7 @@ export default function LogVisitScreen() {
       vibeTags: vibeTags.length > 0 ? vibeTags : undefined,
       quickTip: quickTip.trim() || undefined,
       bestTime: bestTime || undefined,
+      taggedUserNames: taggedUserNames.length > 0 ? taggedUserNames : undefined,
     };
 
     if (isEditMode && editingLog) {
@@ -866,6 +871,14 @@ export default function LogVisitScreen() {
               placeholder="e.g. Ask for extra crispy edges"
               style={styles.input}
               maxLength={80}
+            />
+          </View>
+
+          {/* ── 7. Tag friends (optional) ─────────────────────────── */}
+          <View style={styles.section}>
+            <FriendTagPicker
+              selectedUserNames={taggedUserNames}
+              onChange={setTaggedUserNames}
             />
           </View>
         </View>

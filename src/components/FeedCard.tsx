@@ -64,6 +64,9 @@ export interface FeedLog {
   visitNumber?: number;
   visitCount?: number;
   previousRating?: number;
+  /** Friends tagged on this log. Drives the social-tagging headline
+   *  ("Pooja went to Girl & the Goat with Maya"). Empty/undefined = no tags. */
+  taggedUsers?: { userName: string; displayName?: string; userAvatar?: string | null }[];
 }
 
 interface Props {
@@ -102,8 +105,8 @@ function generateHookText(log: FeedLog, friendCount: number): string | null {
   if (previousRating != null && score > previousRating) return 'Even better this time';
   if (score >= 8.5 && uniqueDishes.length > 0) return dishHook(uniqueDishes, log.restaurantName);
   if (score >= 8.0) return 'Really, really good';
-  if (friendCount >= 3) return `${friendCount} friends love this`;
-  if (friendCount >= 1) return 'Your friends love this';
+  if (friendCount >= 3) return `${friendCount} friends ate here`;
+  if (friendCount >= 1) return 'Your friends have been here';
   if (uniqueDishes.length > 0) return dishHook(uniqueDishes, log.restaurantName);
   if (highlight === 'vibe') return 'The vibe is everything';
   if (highlight === 'value') return 'Great value find';
@@ -118,6 +121,20 @@ function generateHookText(log: FeedLog, friendCount: number): string | null {
   return null;
 }
 
+// ─── Author line with tagged friends ────────────────────────────────────────
+// "You" / "You and Casey" / "You, Casey, and Riley" / "You and 3 friends"
+// — keeps both subjects equal in framing per BiteRight's social style.
+
+function formatAuthorLine(authorLabel: string, taggedUsers?: FeedLog['taggedUsers']): string {
+  const names = (taggedUsers ?? [])
+    .map((t) => t.displayName || t.userName)
+    .filter(Boolean);
+  if (names.length === 0) return authorLabel;
+  if (names.length === 1) return `${authorLabel} and ${names[0]}`;
+  if (names.length === 2) return `${authorLabel}, ${names[0]}, and ${names[1]}`;
+  return `${authorLabel} and ${names.length} friends`;
+}
+
 // ─── Single supporting line (social OR note, never both) ────────────────────
 
 function getSupportingLine(log: FeedLog, friendCount: number): string | null {
@@ -126,8 +143,9 @@ function getSupportingLine(log: FeedLog, friendCount: number): string | null {
     const trimmed = log.note.trim();
     return trimmed.length > 60 ? trimmed.slice(0, 57) + '\u2026' : trimmed;
   }
-  // Otherwise social proof
-  if (friendCount >= 3) return `\u{1F525} ${friendCount} friends love this`;
+  // Otherwise social proof — counts of friends who have logged this restaurant.
+  // Not a "love" action (none exists in-app); use accurate "ate here" copy.
+  if (friendCount >= 3) return `\u{1F525} ${friendCount} friends ate here`;
   if (friendCount === 1) return `Your friend has been here`;
   return null;
 }
@@ -305,14 +323,17 @@ export function FeedCard({ log, socialLabel, isHero }: Props) {
                 <View style={st.authorRow}>
                   <AvatarBadge name={log.userName} avatarUrl={log.userAvatar} size={18} />
                   <Text style={st.authorName} numberOfLines={1}>
-                    {log.userName === CURRENT_USER_NAME ? 'You' : log.userName}
+                    {formatAuthorLine(
+                      log.userName === CURRENT_USER_NAME ? 'You' : log.userName,
+                      log.taggedUsers,
+                    )}
                   </Text>
                   {friendVisits.length > 0 && (
                     <TouchableOpacity onPress={() => setSocialSheetOpen(true)} activeOpacity={0.75} style={st.socialDot}>
                       <Text style={st.socialDotText}>
                         {friendVisits.length === 1
                           ? `${friendVisits[0].userName} was here too`
-                          : `${friendVisits.length} friends love this`}
+                          : `${friendVisits.length} friends ate here`}
                       </Text>
                     </TouchableOpacity>
                   )}
