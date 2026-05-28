@@ -51,6 +51,47 @@ export function getCachedRestaurantPhoto(restaurant: RestaurantImageData): strin
   return getCacheEntry(cacheKey);
 }
 
+interface FetchedImage { url: string | null; reason: 'confident' | 'placeholder-only' | 'placeid-mismatch' | 'not-verified' | 'lookup-failed' | 'not-found' }
+
+/**
+ * Single API lookup with confidence gate. Used internally by
+ * getRestaurantFoodPhoto for both the primary id lookup and the googlePlaceId
+ * fallback. Returns the URL only when the response is confidently for the
+ * requested restaurant (placeId matches and source is verified).
+ */
+async function fetchImageFromApi(
+  idForUrl: string,
+  expectedPlaceId: string | null,
+): Promise<FetchedImage> {
+  try {
+    const { data } = await apiClient.get<{
+      displayImageUrl?: string | null;
+      imageUrl?: string | null;
+      previewPhotoUrl?: string | null;
+      displayImageSourceType?: 'override' | 'user' | 'google' | 'placeholder' | null;
+      placeId?: string | null;
+      googlePlaceId?: string | null;
+    }>(`/api/restaurants/${encodeURIComponent(idForUrl)}`);
+
+    const responsePlaceId = data?.placeId || data?.googlePlaceId || null;
+    const sourceType = data?.displayImageSourceType ?? null;
+    const sourceVerified = sourceType === 'user' || sourceType === 'google' || sourceType === 'override';
+    const placeIdMatches = !expectedPlaceId || !responsePlaceId || expectedPlaceId === responsePlaceId;
+
+    if (!placeIdMatches) return { url: null, reason: 'placeid-mismatch' };
+    if (!sourceVerified)  return { url: null, reason: 'not-verified' };
+
+    const url = getProvidedRestaurantImageUrl({
+      displayImageUrl: data?.displayImageUrl ?? null,
+      imageUrl: data?.imageUrl ?? null,
+      previewPhotoUrl: data?.previewPhotoUrl ?? null,
+    });
+    return { url: url ?? null, reason: url ? 'confident' : 'placeholder-only' };
+  } catch {
+    return { url: null, reason: 'lookup-failed' };
+  }
+}
+
 export async function getRestaurantFoodPhoto(
   restaurant: string | RestaurantImageData,
 ): Promise<string | null> {
@@ -68,44 +109,44 @@ export async function getRestaurantFoodPhoto(
     return provided;
   }
 
-  const restaurantId = restaurantData.id || restaurantData.restaurantId || restaurantData.place_id;
-  if (!restaurantId) {
+  const internalId = restaurantData.id || restaurantData.restaurantId || null;
+  const googlePlaceId = restaurantData.googlePlaceId || restaurantData.place_id || null;
+
+  // Build attempt order:
+  //   1) internal id  (stable when the server remembers this restaurant)
+  //   2) googlePlaceId (stable across server restarts — ChIJ-prefixed IDs are
+  //      accepted by the detail endpoint as a fallback)
+  // Each attempt enforces the confidence gate independently.
+  const attempts: { id: string; expectedPlaceId: string | null; label: string }[] = [];
+  if (internalId) attempts.push({ id: internalId, expectedPlaceId: googlePlaceId, label: 'internalId' });
+  if (googlePlaceId && googlePlaceId !== internalId) {
+    attempts.push({ id: googlePlaceId, expectedPlaceId: googlePlaceId, label: 'googlePlaceId-fallback' });
+  }
+
+  if (attempts.length === 0) {
     setCacheEntry(cacheKey, null);
     return null;
   }
 
-  try {
-    const { data } = await apiClient.get<{
-      displayImageUrl?: string | null;
-      imageUrl?: string | null;
-      previewPhotoUrl?: string | null;
-    }>(
-      `/api/restaurants/${encodeURIComponent(restaurantId)}`,
-    );
-    const url = getProvidedRestaurantImageUrl({
-      displayImageUrl: data?.displayImageUrl ?? null,
-      imageUrl: data?.imageUrl ?? null,
-      previewPhotoUrl: data?.previewPhotoUrl ?? null,
-    });
-    setCacheEntry(cacheKey, url ?? null);
+  for (const attempt of attempts) {
+    const result = await fetchImageFromApi(attempt.id, attempt.expectedPlaceId);
     if (__DEV__) {
-      console.log('[BiteRight][PhotoCache]', url ? 'resolved' : 'no-image', {
-        key: cacheKey,
-        restaurantId,
+      console.log('[BiteRight][PhotoCache]', result.reason, {
+        key: cacheKey, attempt: attempt.label, attemptId: attempt.id,
       });
     }
-    return url ?? null;
-  } catch {
-    // Do NOT permanently cache failures — TTL will allow retry
-    setCacheEntry(cacheKey, null);
-    if (__DEV__) {
-      console.log('[BiteRight][PhotoCache] detail-lookup-failed', {
-        key: cacheKey,
-        restaurantId,
-      });
+    if (result.url) {
+      setCacheEntry(cacheKey, result.url);
+      return result.url;
     }
-    return null;
+    // Don't bail on first failure if there's a googlePlaceId fallback to try.
+    if (result.reason === 'lookup-failed' || result.reason === 'placeholder-only') continue;
+    // Hard rejection (placeid-mismatch / not-verified) — try next attempt
+    // but record we tried.
   }
+
+  setCacheEntry(cacheKey, null);
+  return null;
 }
 
 /**

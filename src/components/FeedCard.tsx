@@ -258,12 +258,21 @@ export function FeedCard({ log, socialLabel, isHero }: Props) {
     router.push(`/restaurant/${log.restaurantId}?logId=${log.id}`);
   };
 
-  // RestaurantImage props (shared)
+  // RestaurantImage props (shared). Includes full identity so RestaurantImage's
+  // confidence-gated retry can hit /api/restaurants/<id> when the persisted
+  // photo is missing (e.g. log saved before image resolution succeeded).
+  // Accuracy > coverage: a placeholder is preferred over a wrong photo.
   const imgProps = {
-    id: log.restaurantId, restaurantId: log.restaurantId, name: log.restaurantName, cuisine: log.cuisine,
+    id: log.restaurantId,
+    restaurantId: log.restaurantId,
+    googlePlaceId: (log as { googlePlaceId?: string | null }).googlePlaceId ?? null,
+    place_id: (log as { place_id?: string | null }).place_id ?? null,
+    name: log.restaurantName,
+    cuisine: log.cuisine,
     displayImageUrl: log.photo_url ?? log.previewPhotoUrl ?? null,
     displayImageSourceType: (log.photo_url ? 'user' : log.previewPhotoUrl ? 'google' : null) as any,
-    imageUrl: log.photo_url ?? null, previewPhotoUrl: log.previewPhotoUrl ?? null,
+    imageUrl: log.photo_url ?? null,
+    previewPhotoUrl: log.previewPhotoUrl ?? null,
   };
 
   const thumbSize = isHero ? 140 : 120;

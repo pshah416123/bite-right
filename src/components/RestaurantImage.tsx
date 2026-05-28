@@ -22,6 +22,7 @@ import {
 import {
   getCachedRestaurantPhoto,
   getRestaurantFoodPhoto,
+  invalidateRestaurantPhoto,
   primeRestaurantPhotoCache,
 } from '../utils/restaurantPhoto';
 
@@ -225,8 +226,26 @@ export function RestaurantImage({
             setLoading(false);
           }}
           onError={() => {
+            // The persisted URL failed to load (404, stale, etc). Invalidate
+            // the cache and trigger a confidence-gated retry via the centralized
+            // resolver. Placeholder shows while we re-resolve.
+            if (__DEV__) {
+              console.log('[BiteRight][RestaurantImage] image load failed — retrying via resolver', {
+                cacheKey, failedUri: uri,
+              });
+            }
             setFailed(true);
-            setLoading(false);
+            setUri(null);
+            setLoading(true);
+            if (cacheKey) invalidateRestaurantPhoto(restaurantSnapshot);
+            getRestaurantFoodPhoto(restaurantSnapshot)
+              .then((resolved) => {
+                if (resolved) {
+                  setUri(resolved);
+                  setFailed(false);
+                }
+              })
+              .finally(() => setLoading(false));
           }}
         />
       ) : null}
