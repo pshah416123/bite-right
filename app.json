@@ -37,7 +37,12 @@
       "output": "static"
     },
     "plugins": [
-      ["expo-router", { "origin": "https://biteright.app" }],
+      [
+        "expo-router",
+        {
+          "origin": "https://biteright.app"
+        }
+      ],
       "expo-font",
       [
         "expo-location",
@@ -55,6 +60,15 @@
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "apiUrl": "http://localhost:4000",
+      "router": {
+        "origin": "https://biteright.app"
+      },
+      "eas": {
+        "projectId": "21b21448-abd1-493f-84b1-36745712a71c"
+      }
     }
   }
 }
