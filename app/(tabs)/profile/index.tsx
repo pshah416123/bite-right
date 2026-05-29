@@ -549,19 +549,37 @@ export default function ProfileScreen() {
                 <Text style={s.locationText}>Chicago, IL</Text>
               </View>
             </View>
-            <TouchableOpacity
-              style={s.settingsBtn}
-              onPress={() => router.push('/(tabs)/profile/settings')}
-              activeOpacity={0.7}
-              hitSlop={8}
-            >
-              <Ionicons name="settings-outline" size={22} color={colors.textMuted} />
-            </TouchableOpacity>
+            <View style={s.headerActions}>
+              {isSelf ? (
+                <TouchableOpacity
+                  style={s.headerIconBtn}
+                  onPress={() => router.push('/(tabs)/profile/find-friends')}
+                  activeOpacity={0.7}
+                  hitSlop={8}
+                >
+                  <Ionicons name="person-add-outline" size={22} color={colors.textMuted} />
+                </TouchableOpacity>
+              ) : null}
+              <TouchableOpacity
+                style={s.headerIconBtn}
+                onPress={() => router.push('/(tabs)/profile/settings')}
+                activeOpacity={0.7}
+                hitSlop={8}
+              >
+                <Ionicons name="settings-outline" size={22} color={colors.textMuted} />
+              </TouchableOpacity>
+            </View>
           </View>
 
           <View style={s.statsCard}>
-            {stats.map((stat, index) => (
-              <View key={stat.key} style={s.statBlock}>
+            {stats.map((stat, index) => {
+              const target =
+                stat.key === 'followers'
+                  ? '/(tabs)/profile/followers'
+                  : stat.key === 'following'
+                    ? '/(tabs)/profile/following'
+                    : null;
+              const content = (
                 <View style={s.stat}>
                   <View style={s.statValueRow}>
                     {stat.icon ? (
@@ -576,9 +594,24 @@ export default function ProfileScreen() {
                   </View>
                   <Text style={s.statLabel}>{stat.label}</Text>
                 </View>
-                {index < stats.length - 1 ? <View style={s.statDivider} /> : null}
-              </View>
-            ))}
+              );
+              return (
+                <View key={stat.key} style={s.statBlock}>
+                  {target ? (
+                    <TouchableOpacity
+                      onPress={() => router.push(target as never)}
+                      activeOpacity={0.6}
+                      style={s.statTouchable}
+                    >
+                      {content}
+                    </TouchableOpacity>
+                  ) : (
+                    content
+                  )}
+                  {index < stats.length - 1 ? <View style={s.statDivider} /> : null}
+                </View>
+              );
+            })}
           </View>
         </View>
 
@@ -935,6 +968,17 @@ const s = StyleSheet.create({
   },
   settingsBtn: {
     padding: 6,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  headerIconBtn: {
+    padding: 6,
+  },
+  statTouchable: {
+    flex: 1,
   },
   avatar: {
     width: 56,
