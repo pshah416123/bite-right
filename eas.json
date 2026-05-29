@@ -15,7 +15,9 @@
       "distribution": "store",
       "channel": "preview",
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://bite-right.onrender.com"
+        "EXPO_PUBLIC_API_URL": "https://bite-right.onrender.com",
+        "EXPO_PUBLIC_SUPABASE_URL": "https://wgobcofdggncoofuzdyt.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_VkdqgV3e5mLJG8wW8xzx6Q_fKXWLQ53"
       },
       "ios": {
         "autoIncrement": true
@@ -25,7 +27,9 @@
       "distribution": "store",
       "channel": "production",
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://bite-right.onrender.com"
+        "EXPO_PUBLIC_API_URL": "https://bite-right.onrender.com",
+        "EXPO_PUBLIC_SUPABASE_URL": "https://wgobcofdggncoofuzdyt.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_VkdqgV3e5mLJG8wW8xzx6Q_fKXWLQ53"
       },
       "ios": {
         "autoIncrement": true
