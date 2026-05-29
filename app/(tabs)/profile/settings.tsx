@@ -4,6 +4,7 @@
  */
 import { useState } from 'react';
 import {
+  Alert,
   ScrollView,
   StyleSheet,
   Switch,
@@ -17,6 +18,8 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { colors } from '~/src/theme/colors';
 import { useTestMode } from '~/src/context/TestModeContext';
+import { useAuthContext } from '~/src/context/AuthContext';
+import { supabase, supabaseConfigured } from '~/src/lib/supabase';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -85,6 +88,52 @@ function SettingsToggle({ icon, label, value, onValueChange }: ToggleItem) {
 export default function SettingsScreen() {
   const router = useRouter();
   const { isTestMode, toggleTestMode } = useTestMode();
+  const { user, signOut } = useAuthContext();
+  const email = user?.email ?? null;
+
+  const handleLogOut = () => {
+    Alert.alert('Log out?', 'You’ll need to log back in to keep using ByteRite.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Log out',
+        style: 'destructive',
+        onPress: async () => {
+          await signOut();
+          // AuthContext's protected-route effect picks up the cleared session
+          // and redirects to /(auth)/login automatically; no explicit nav here.
+        },
+      },
+    ]);
+  };
+
+  const handleChangePassword = async () => {
+    if (!email || !supabaseConfigured) {
+      Alert.alert('Not available', 'Password reset requires a signed-in email.');
+      return;
+    }
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email);
+      if (error) {
+        Alert.alert('Could not send reset email', error.message);
+        return;
+      }
+      Alert.alert('Check your inbox', `We sent a password reset link to ${email}.`);
+    } catch (e) {
+      Alert.alert('Could not send reset email', (e as Error)?.message ?? 'Unknown error');
+    }
+  };
+
+  const handleDeleteAccount = () => {
+    Alert.alert(
+      'Delete account?',
+      'Account deletion is coming soon. For now, email pooja@biteright.app and we’ll remove your data within 30 days.',
+      [{ text: 'OK', style: 'cancel' }],
+    );
+  };
+
+  const handleComingSoon = (feature: string) => () => {
+    Alert.alert(feature, 'Coming soon — not available yet.');
+  };
 
   // Notifications
   const [notifRecs, setNotifRecs] = useState(true);
@@ -115,23 +164,28 @@ export default function SettingsScreen() {
         {/* ── Account ── */}
         <Text style={styles.sectionHeader}>ACCOUNT</Text>
         <View style={styles.group}>
-          <SettingsRow icon="person-outline" label="Name" value="Pooja" onPress={() => {}} />
+          <SettingsRow icon="person-outline" label="Name" value="Pooja" onPress={handleComingSoon('Edit name')} />
           <View style={styles.separator} />
-          <SettingsRow icon="at-outline" label="Username" value="@pooja" onPress={() => {}} />
+          <SettingsRow icon="at-outline" label="Username" value="@pooja" onPress={handleComingSoon('Edit username')} />
           <View style={styles.separator} />
-          <SettingsRow icon="mail-outline" label="Email" value="pooja@example.com" onPress={() => {}} />
+          <SettingsRow
+            icon="mail-outline"
+            label="Email"
+            value={email ?? 'Not signed in'}
+            chevron={false}
+          />
           <View style={styles.separator} />
-          <SettingsRow icon="call-outline" label="Add phone number" onPress={() => {}} />
+          <SettingsRow icon="call-outline" label="Add phone number" onPress={handleComingSoon('Add phone number')} />
           <View style={styles.separator} />
-          <SettingsRow icon="lock-closed-outline" label="Change password" onPress={() => {}} />
+          <SettingsRow icon="lock-closed-outline" label="Change password" onPress={handleChangePassword} />
           <View style={styles.separator} />
-          <SettingsRow icon="camera-outline" label="Profile photo" onPress={() => {}} />
+          <SettingsRow icon="camera-outline" label="Profile photo" onPress={handleComingSoon('Profile photo')} />
         </View>
 
         {/* ── Privacy & Security ── */}
         <Text style={styles.sectionHeader}>PRIVACY & SECURITY</Text>
         <View style={styles.group}>
-          <SettingsRow icon="eye-outline" label="Who can see my posts" value="Everyone" onPress={() => {}} />
+          <SettingsRow icon="eye-outline" label="Who can see my posts" value="Everyone" onPress={handleComingSoon('Post visibility')} />
           <View style={styles.separator} />
           <SettingsToggle
             icon="star-outline"
@@ -147,7 +201,7 @@ export default function SettingsScreen() {
             onValueChange={setShowActivity}
           />
           <View style={styles.separator} />
-          <SettingsRow icon="people-outline" label="Blocked users" onPress={() => {}} />
+          <SettingsRow icon="people-outline" label="Blocked users" onPress={handleComingSoon('Blocked users')} />
         </View>
 
         {/* ── Notifications ── */}
@@ -225,13 +279,13 @@ export default function SettingsScreen() {
             </View>
           </TouchableOpacity>
           <View style={styles.separator} />
-          <SettingsRow icon="help-circle-outline" label="Help & Support" onPress={() => {}} />
+          <SettingsRow icon="help-circle-outline" label="Help & Support" onPress={handleComingSoon('Help & Support')} />
           <View style={styles.separator} />
-          <SettingsRow icon="document-text-outline" label="Terms & Privacy Policy" onPress={() => {}} />
+          <SettingsRow icon="document-text-outline" label="Terms & Privacy Policy" onPress={handleComingSoon('Terms & Privacy Policy')} />
           <View style={styles.separator} />
           <TouchableOpacity
             style={styles.row}
-            onPress={() => {}}
+            onPress={handleLogOut}
             activeOpacity={0.6}
             onLongPress={() => {
               toggleTestMode();
@@ -261,7 +315,7 @@ export default function SettingsScreen() {
 
         {/* ── Danger zone ── */}
         <View style={[styles.group, styles.dangerGroup]}>
-          <TouchableOpacity style={styles.row} onPress={() => {}} activeOpacity={0.6}>
+          <TouchableOpacity style={styles.row} onPress={handleDeleteAccount} activeOpacity={0.6}>
             <View style={styles.rowLeft}>
               <Ionicons name="trash-outline" size={18} color="rgba(192, 57, 43, 0.75)" />
               <Text style={[styles.rowLabel, styles.dangerText]}>Delete account</Text>
