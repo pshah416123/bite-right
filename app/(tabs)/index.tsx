@@ -170,7 +170,10 @@ export default function FeedScreen() {
         {/* ── Header ── */}
         <View style={s.header}>
           <View style={s.headerTopRow}>
-            <Text style={s.brandName}>ByteRite</Text>
+            <View style={s.brandBlock}>
+              <Text style={s.brandName}>ByteRite</Text>
+              <Text style={s.brandTagline}>Your Taste, Perfected</Text>
+            </View>
             <TouchableOpacity
               style={s.searchBtn}
               onPress={() => setSearchOpen(true)}
@@ -236,7 +239,9 @@ const s = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: 6,
   },
+  brandBlock: { flexShrink: 1 },
   brandName: { fontSize: 14, fontWeight: '700', color: colors.textMuted, letterSpacing: -0.2 },
+  brandTagline: { fontSize: 11, color: colors.accentText, fontStyle: 'italic', marginTop: 1, letterSpacing: 0.1 },
   searchBtn: { padding: 6, borderRadius: 20, backgroundColor: colors.surfaceSoft },
   headline: {
     fontSize: 20,

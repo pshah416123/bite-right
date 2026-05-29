@@ -21,6 +21,7 @@ const { width: SCREEN_W } = Dimensions.get('window');
 type Slide = {
   key: string;
   title: string;
+  tagline?: string;
   body: string;
   icon: keyof typeof Ionicons.glyphMap;
 };
@@ -29,6 +30,7 @@ const SLIDES: Slide[] = [
   {
     key: 'welcome',
     title: 'Welcome to ByteRite',
+    tagline: 'Your Taste, Perfected',
     body: 'Log meals you love. Discover places you’ll love. Built around your real taste, not generic ratings.',
     icon: 'restaurant',
   },
@@ -103,6 +105,7 @@ export default function TutorialScreen() {
               <Ionicons name={item.icon} size={64} color={colors.accent} />
             </View>
             <Text style={s.title}>{item.title}</Text>
+            {item.tagline ? <Text style={s.tagline}>{item.tagline}</Text> : null}
             <Text style={s.body}>{item.body}</Text>
           </View>
         )}
@@ -156,7 +159,15 @@ const s = StyleSheet.create({
     fontWeight: '800',
     color: colors.text,
     textAlign: 'center',
-    marginBottom: 12,
+    marginBottom: 8,
+  },
+  tagline: {
+    fontSize: 15,
+    fontStyle: 'italic',
+    color: colors.accentText,
+    textAlign: 'center',
+    marginBottom: 14,
+    letterSpacing: 0.2,
   },
   body: {
     fontSize: 16,
