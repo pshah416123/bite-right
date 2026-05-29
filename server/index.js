@@ -1306,8 +1306,68 @@ async function addTagsToLog(logId, taggedBy, candidateUserIds) {
   return { added, rejected };
 }
 
+// GET /api/feed?scope=global — returns the most recent logs across all users,
+// shaped to match the iOS FeedLog. The "scope" param is accepted for forward
+// compatibility (future: scope=following filters to the requester's follow
+// graph) but currently always returns the global feed.
+app.get('/api/feed', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit, 10) || 100, 200);
+    const allLogs = await db.getAllLogs();
+    const recent = allLogs.slice(0, limit);
+
+    const items = await Promise.all(recent.map(async (l) => {
+      const info = await getRestaurantInfo(l.restaurantId).catch(() => null);
+      const standoutDishObj = l.standoutDish
+        ? { label: 'Best dish', name: l.standoutDish }
+        : undefined;
+      return {
+        id: l.id,
+        userId: l.userId || null,
+        userName: l.userName || 'Someone',
+        restaurantId: l.restaurantId,
+        restaurantName: info?.name || 'Unknown',
+        cuisine: info?.cuisine || '',
+        neighborhood: info?.neighborhood || null,
+        city: info?.city || null,
+        state: null,
+        address: info?.address || '',
+        score: l.rating,
+        createdAt: l.createdAt,
+        note: l.notes || undefined,
+        previewPhotoUrl: l.previewPhotoUrl || undefined,
+        photo_url: Array.isArray(l.photos) && l.photos.length > 0 ? l.photos[0] : null,
+        standoutDish: standoutDishObj,
+        standoutDishes: l.standoutDish ? [l.standoutDish] : undefined,
+        dishes: l.dishes || undefined,
+        vibeTags: l.vibeTags || undefined,
+        quickTip: l.quickTip || null,
+        highlight: l.highlight || null,
+      };
+    }));
+
+    res.json(items);
+  } catch (e) {
+    console.error('[feed] error', e?.message);
+    res.status(500).json({ error: 'feed_failed' });
+  }
+});
+
 app.post('/api/logs', async (req, res) => {
-  const { restaurantId, rating, notes, photos, userId, taggedUserIds } = req.body || {};
+  const {
+    restaurantId,
+    rating,
+    notes,
+    photos,
+    userId,
+    userName,
+    standoutDish,
+    dishes,
+    vibeTags,
+    quickTip,
+    highlight,
+    taggedUserIds,
+  } = req.body || {};
 
   if (!restaurantId || typeof rating !== 'number') {
     return res.status(400).json({ error: 'restaurantId and numeric rating are required' });
@@ -1332,17 +1392,25 @@ app.post('/api/logs', async (req, res) => {
     console.log('[BiteRight] addLog image', { restaurantId, previewPhotoUrl: previewPhotoUrlAbsolute, source });
   }
 
-  const id = `log_${logs.length + 1}`;
+  // Use a UUID-style id so concurrent submissions don't collide and so the id
+  // is stable across server restarts (the prior counter restarted at 1).
+  const id = `log_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   const createdAt = new Date().toISOString();
 
   const log = {
     id,
     restaurantId,
     userId: typeof userId === 'string' ? userId : 'default',
+    userName: typeof userName === 'string' && userName.trim() ? userName.trim() : null,
     rating,
     notes,
     photos,
     previewPhotoUrl: previewPhotoUrlAbsolute || null,
+    standoutDish: typeof standoutDish === 'string' && standoutDish.trim() ? standoutDish.trim() : null,
+    dishes: Array.isArray(dishes) ? dishes.filter((d) => typeof d === 'string' && d.trim()) : null,
+    vibeTags: Array.isArray(vibeTags) ? vibeTags.filter((v) => typeof v === 'string') : null,
+    quickTip: typeof quickTip === 'string' && quickTip.trim() ? quickTip.trim() : null,
+    highlight: typeof highlight === 'string' ? highlight : null,
     createdAt,
   };
 
@@ -1365,9 +1433,16 @@ app.post('/api/logs', async (req, res) => {
     address: info.address || '',
     lat: info.lat ?? null,
     lng: info.lng ?? null,
+    userId: log.userId,
+    userName: log.userName,
     rating,
     notes,
     previewPhotoUrl: previewPhotoUrlAbsolute || null,
+    standoutDish: log.standoutDish,
+    dishes: log.dishes,
+    vibeTags: log.vibeTags,
+    quickTip: log.quickTip,
+    highlight: log.highlight,
     createdAt,
     taggedUserIds: tagResult.added,
     tagsRejected: tagResult.rejected,

@@ -6,6 +6,22 @@ import { normalizeRestaurantName } from '../utils/nameNormalize';
 import { useTestMode } from './TestModeContext';
 import { TEST_FEED_LOGS } from '../data/testMockData';
 import { SOCIAL_PROFILES } from '../data/socialProfiles';
+import { useAuthContext } from './AuthContext';
+import { createLog as apiCreateLog, getFeed as apiGetFeed } from '../api/logs';
+
+// Derive a friendly display name from a Supabase auth user. Falls back to
+// the email prefix capitalized when no metadata is set. Skipped entirely
+// when there's no session (dev mode / mocks).
+function deriveDisplayName(user: { email?: string | null; user_metadata?: Record<string, unknown> | null } | null | undefined): string {
+  if (!user) return 'You';
+  const meta = (user.user_metadata ?? {}) as Record<string, unknown>;
+  const fromMeta = typeof meta.displayName === 'string' && meta.displayName.trim();
+  if (fromMeta) return fromMeta;
+  const email = user.email ?? '';
+  const prefix = email.split('@')[0] || '';
+  if (!prefix) return 'Someone';
+  return prefix.charAt(0).toUpperCase() + prefix.slice(1);
+}
 
 // Resolves tagged userNames to feed-friendly profile objects. Returns
 // undefined when the input has no names so callers can fall back to existing.
@@ -250,14 +266,41 @@ function buildInitialVisits(logs: FeedLog[]): Visit[] {
 
 export function FeedProvider({ children }: { children: ReactNode }) {
   const { isTestMode } = useTestMode();
+  const auth = useAuthContext();
+  const ownUserId = auth.user?.id ?? null;
+  const ownDisplayName = useMemo(() => deriveDisplayName(auth.user), [auth.user]);
   const [items, setItems] = useState<FeedLog[]>(INITIAL_LOGS);
   const restaurantLogsRef = useRef<Map<string, RestaurantLog>>(buildInitialRestaurantLogs(INITIAL_LOGS));
   const visitsRef = useRef<Visit[]>(buildInitialVisits(INITIAL_LOGS));
 
   // Swap feed data when test mode toggles
   useEffect(() => {
-    setItems(isTestMode ? TEST_FEED_LOGS : INITIAL_LOGS);
+    if (isTestMode) {
+      setItems(TEST_FEED_LOGS);
+    }
   }, [isTestMode]);
+
+  // Fetch the live feed from the server. Own logs are relabeled to "You" so
+  // the existing UI heuristics (which key on userName === 'You') keep working
+  // without a deeper refactor. If the server returns nothing (cold start,
+  // fresh deploy), fall back to the seeded INITIAL_LOGS so the demo still
+  // has content.
+  const fetchFeed = useCallback(async () => {
+    if (isTestMode) return;
+    try {
+      const serverFeed = await apiGetFeed();
+      const relabeled = serverFeed.map((log) =>
+        ownUserId && log.userId === ownUserId ? { ...log, userName: CURRENT_USER } : log,
+      );
+      setItems(relabeled.length > 0 ? relabeled : INITIAL_LOGS);
+    } catch {
+      // Server unavailable — keep whatever we have (mock seed or last fetch)
+    }
+  }, [isTestMode, ownUserId]);
+
+  useEffect(() => {
+    fetchFeed();
+  }, [fetchFeed]);
 
   const buildLog = (input: NewLogInput, existing?: FeedLog): FeedLog => {
     const {
@@ -336,10 +379,34 @@ export function FeedProvider({ children }: { children: ReactNode }) {
     const base = buildLog(input);
     const newLog: FeedLog = {
       ...base,
+      userId: isCurrentUser ? ownUserId : base.userId ?? null,
       visitNumber,
       visitCount: newVisitCount,
       previousRating,
     };
+
+    // Persist to server for the current user. Send the real display name (not
+    // the literal "You") so other testers see it as the right author. The
+    // local optimistic entry keeps userName === "You" so the current user's
+    // UI stays consistent. Fire-and-forget: failures are logged but don't
+    // block the optimistic add — the next fetchFeed will reconcile state.
+    if (isCurrentUser && !isTestMode) {
+      apiCreateLog({
+        restaurantId: input.restaurantId,
+        rating: input.rating,
+        notes: input.note,
+        photos: input.photoUris,
+        userId: ownUserId ?? undefined,
+        userName: ownDisplayName,
+        standoutDish: input.dishHighlight?.trim() || undefined,
+        dishes: input.dishes,
+        vibeTags: input.vibeTags,
+        quickTip: input.quickTip,
+        highlight: input.highlight,
+      }).catch((e) => {
+        if (__DEV__) console.log('[BiteRight][feed] createLog failed', e?.message);
+      });
+    }
 
     // Update restaurant_log (canonical record)
     if (isCurrentUser) {
@@ -376,7 +443,7 @@ export function FeedProvider({ children }: { children: ReactNode }) {
     } else {
       setItems((prev) => [newLog, ...prev]);
     }
-  }, []);
+  }, [isTestMode, ownDisplayName, ownUserId]);
 
   const updateLog = useCallback((id: string, input: NewLogInput) => {
     setItems((prev) => {

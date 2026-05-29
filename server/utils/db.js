@@ -70,10 +70,16 @@ function logToRow(l) {
     id: l.id,
     restaurant_id: l.restaurantId,
     user_id: l.userId ?? 'default',
+    user_name: l.userName ?? null,
     rating: l.rating,
     notes: l.notes ?? null,
     photos: l.photos ?? null,
     preview_photo_url: l.previewPhotoUrl ?? null,
+    standout_dish: l.standoutDish ?? null,
+    dishes: l.dishes ?? null,
+    vibe_tags: l.vibeTags ?? null,
+    quick_tip: l.quickTip ?? null,
+    highlight: l.highlight ?? null,
     created_at: l.createdAt ?? new Date().toISOString(),
   };
 }
@@ -83,10 +89,16 @@ function rowToLog(row) {
     id: row.id,
     restaurantId: row.restaurant_id,
     userId: row.user_id,
+    userName: row.user_name ?? null,
     rating: Number(row.rating),
     notes: row.notes,
     photos: row.photos,
     previewPhotoUrl: row.preview_photo_url,
+    standoutDish: row.standout_dish ?? null,
+    dishes: row.dishes ?? null,
+    vibeTags: row.vibe_tags ?? null,
+    quickTip: row.quick_tip ?? null,
+    highlight: row.highlight ?? null,
     createdAt: row.created_at,
   };
 }

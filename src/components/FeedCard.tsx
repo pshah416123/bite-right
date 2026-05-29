@@ -37,6 +37,10 @@ export type VibeTag =
 
 export interface FeedLog {
   id: string;
+  /** Stable user id (Supabase UUID or null for legacy mock data). Lets the
+   *  client re-label own logs as "You" by comparing to the auth session,
+   *  since the server stores real display names. */
+  userId?: string | null;
   userName: string;
   userAvatar?: string;
   restaurantName: string;
