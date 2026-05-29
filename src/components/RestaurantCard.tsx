@@ -277,17 +277,12 @@ export function RestaurantCard({ item, saved, userCoords }: Props) {
                   </Text>
                 </Pressable>
               ) : null}
-              {/* Price + Try-the-top-dish on one line. Dish name uses the
-                  accentText token (warmer than CTA orange) to highlight food
-                  without screaming. */}
+              {/* Price only for now. "Try the X" was driven by a cuisine-based
+                  guess that often didn't match the actual menu; re-enable once
+                  dish persistence lands and we can surface the most-favorited
+                  dish from real logs. */}
               <Text style={styles.secondary} numberOfLines={1}>
                 {Array.from({ length: restaurant.priceLevel ?? 0 }).map(() => '$').join('')}
-                {restaurant.recommendedDishes && restaurant.recommendedDishes[0]?.name ? (
-                  <>
-                    {(restaurant.priceLevel ?? 0) > 0 ? ' \u00b7 ' : ''}
-                    Try: <Text style={styles.dishHighlight}>{restaurant.recommendedDishes[0].name}</Text>
-                  </>
-                ) : null}
               </Text>
             </View>
           </View>
