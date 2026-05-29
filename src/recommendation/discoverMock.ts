@@ -249,7 +249,7 @@ export function getDiscoverRecommendations(userId: string = CURRENT_USER_ID): Di
       return {
         restaurant: r,
         percentMatch,
-        explanations: ['Popular with BiteRight diners while we learn your taste'],
+        explanations: ['Popular with ByteRite diners while we learn your taste'],
         sourceClusterId: 0,
         isExploratory: true,
       };

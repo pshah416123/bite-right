@@ -92,7 +92,7 @@ export default function FindFriendsScreen() {
           <Text style={styles.backText}>Back</Text>
         </TouchableOpacity>
         <Text style={styles.title}>Find friends</Text>
-        <Text style={styles.subtitle}>Follow friends to see their BiteRight activity</Text>
+        <Text style={styles.subtitle}>Follow friends to see their ByteRite activity</Text>
       </View>
       <View style={styles.searchRow}>
         <Ionicons name="search-outline" size={16} color={colors.textMuted} />

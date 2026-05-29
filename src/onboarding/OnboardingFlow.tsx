@@ -59,7 +59,7 @@ export function OnboardingFlow({ onDone }: Props) {
   const renderWelcome = () => (
     <SafeAreaView style={styles.safe}>
       <View style={styles.header}>
-        <Text style={styles.title}>BiteRight</Text>
+        <Text style={styles.title}>ByteRite</Text>
         <Text style={styles.subtitle}>Your Taste, Perfected</Text>
       </View>
       <View style={styles.body}>
@@ -93,7 +93,7 @@ export function OnboardingFlow({ onDone }: Props) {
             <Text style={styles.backText}>Back</Text>
           </TouchableOpacity>
           <Text style={styles.title}>Create account</Text>
-          <Text style={styles.subtitle}>Set up your BiteRight profile</Text>
+          <Text style={styles.subtitle}>Set up your ByteRite profile</Text>
         </View>
         <View style={styles.form}>
           <Text style={styles.label}>Name</Text>
@@ -141,7 +141,7 @@ export function OnboardingFlow({ onDone }: Props) {
   const renderPermissions = () => (
     <SafeAreaView style={styles.safe}>
       <View style={styles.header}>
-        <Text style={styles.title}>Set up BiteRight</Text>
+        <Text style={styles.title}>Set up ByteRite</Text>
         <Text style={styles.subtitle}>Help us show distance and friends nearby.</Text>
       </View>
       <View style={styles.body}>
@@ -166,7 +166,7 @@ export function OnboardingFlow({ onDone }: Props) {
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Contacts</Text>
           <Text style={styles.cardBody}>
-            Optionally match your contacts to find friends on BiteRight later.
+            Optionally match your contacts to find friends on ByteRite later.
           </Text>
           <View style={styles.cardActions}>
             <TouchableOpacity

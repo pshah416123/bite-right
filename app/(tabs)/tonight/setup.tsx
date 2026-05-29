@@ -390,7 +390,7 @@ export default function TonightSetupScreen() {
 
   const handleShareCode = () => {
     if (!code) return;
-    Share.share({ message: `Join my BiteRight session! Code: ${code}\n\nbiteright://tonight/join?code=${code}` }).catch(() => {});
+    Share.share({ message: `Join my ByteRite session! Code: ${code}\n\nbiteright://tonight/join?code=${code}` }).catch(() => {});
   };
 
   const handleNext = () => {

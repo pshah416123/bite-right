@@ -170,7 +170,7 @@ export default function FeedScreen() {
         {/* ── Header ── */}
         <View style={s.header}>
           <View style={s.headerTopRow}>
-            <Text style={s.brandName}>BiteRight</Text>
+            <Text style={s.brandName}>ByteRite</Text>
             <TouchableOpacity
               style={s.searchBtn}
               onPress={() => setSearchOpen(true)}

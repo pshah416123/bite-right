@@ -69,7 +69,7 @@ export function LoginScreen() {
         >
           {/* Wordmark */}
           <View style={s.wordmarkWrap}>
-            <Text style={s.wordmark}>BiteRight</Text>
+            <Text style={s.wordmark}>ByteRite</Text>
             <Text style={s.tagline}>Your Taste, Perfected</Text>
           </View>
 
