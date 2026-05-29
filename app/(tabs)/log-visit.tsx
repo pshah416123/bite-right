@@ -73,6 +73,7 @@ export default function LogVisitScreen() {
   const [primaryIndex, setPrimaryIndex] = useState<number | null>(null);
   const [searchHealth, setSearchHealth] = useState<SearchHealth | null | undefined>(undefined);
   const [restaurantInputFocused, setRestaurantInputFocused] = useState(false);
+  const [fallbackSuggestions, setFallbackSuggestions] = useState<AutocompleteSuggestion[]>([]);
   const [revisitCount, setRevisitCount] = useState<number>(0);
   const scrollRef = useRef<ScrollView>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -140,6 +141,39 @@ export default function LogVisitScreen() {
     }
   }, [payloadRaw]);
 
+  // Dynamic suggestions: recently logged restaurants, then saved spots not yet logged.
+  // Shown when the input is focused but empty — surfaces "places you might be logging again."
+  const dynamicSuggestions = useMemo<AutocompleteSuggestion[]>(() => {
+    const myLogs = items.filter((l) => l.userName === 'You');
+    const seen = new Set<string>();
+    const result: AutocompleteSuggestion[] = [];
+
+    for (const log of myLogs) {
+      if (seen.has(log.restaurantId)) continue;
+      seen.add(log.restaurantId);
+      const seed = RESTAURANTS.find((r) => r.id === log.restaurantId);
+      result.push({
+        placeId: `mock_${log.restaurantId}`,
+        name: log.restaurantName,
+        address: [log.neighborhood ?? seed?.neighborhood, log.city ?? seed?.city ?? log.state ?? seed?.state].filter(Boolean).join(', '),
+      });
+      if (result.length >= 3) return result;
+    }
+
+    for (const saved of savedRestaurants) {
+      const id = saved.restaurantId ?? saved.place_id;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      result.push({
+        placeId: saved.place_id ?? `mock_${id}`,
+        name: saved.name,
+        address: [saved.neighborhood, saved.city].filter(Boolean).join(', '),
+      });
+      if (result.length >= 3) break;
+    }
+
+    return result;
+  }, [items, savedRestaurants]);
 
   // Personal dish history: dishes the user previously logged at this restaurant,
   // with standouts first. Only shown when meaningful personal data exists.
