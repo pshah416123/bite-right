@@ -282,9 +282,13 @@ export function FeedProvider({ children }: { children: ReactNode }) {
 
   // Fetch the live feed from the server. Own logs are relabeled to "You" so
   // the existing UI heuristics (which key on userName === 'You') keep working
-  // without a deeper refactor. If the server returns nothing (cold start,
-  // fresh deploy), fall back to the seeded INITIAL_LOGS so the demo still
-  // has content.
+  // without a deeper refactor.
+  //
+  // Real logs go first; the seeded INITIAL_LOGS is appended below as ambient
+  // social proof until there's enough organic activity to fill the feed
+  // (TestFlight starts empty otherwise). Once real activity threshold is hit,
+  // the mock seed drops away.
+  const SEED_THRESHOLD = 20;
   const fetchFeed = useCallback(async () => {
     if (isTestMode) return;
     try {
@@ -292,7 +296,10 @@ export function FeedProvider({ children }: { children: ReactNode }) {
       const relabeled = serverFeed.map((log) =>
         ownUserId && log.userId === ownUserId ? { ...log, userName: CURRENT_USER } : log,
       );
-      setItems(relabeled.length > 0 ? relabeled : INITIAL_LOGS);
+      const merged = relabeled.length >= SEED_THRESHOLD
+        ? relabeled
+        : [...relabeled, ...INITIAL_LOGS];
+      setItems(merged);
     } catch {
       // Server unavailable — keep whatever we have (mock seed or last fetch)
     }
