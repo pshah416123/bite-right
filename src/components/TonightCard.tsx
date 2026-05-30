@@ -1,7 +1,9 @@
+import { useEffect, useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../theme/colors';
 import { RestaurantImage } from './RestaurantImage';
+import { getRestaurantDetail, type RestaurantDetail } from '../api/restaurants';
 
 export interface RecommendedDish {
   name: string;
@@ -182,6 +184,19 @@ export function TonightCard({
   // Clean meta: $ · Cuisine · distance · Open (no address/neighborhood)
   const metaParts = [priceStr, restaurant.cuisine, distStr].filter(Boolean);
 
+  // Lazy-load Google detail (rating, reviews, hours) once per card. Server
+  // caches detail by id so subsequent renders for the same restaurant are
+  // cheap. If the fetch fails, the card silently degrades to what it had.
+  const [detail, setDetail] = useState<RestaurantDetail | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    getRestaurantDetail(restaurant.id)
+      .then((d) => { if (!cancelled) setDetail(d); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [restaurant.id]);
+  const topReview = detail?.googleReviews?.[0] ?? null;
+
   return (
     <View style={styles.card}>
       {swipeIntent && (
@@ -264,6 +279,32 @@ export function TonightCard({
                 </View>
               ))}
             </View>
+          </View>
+        )}
+
+        {/* Google rating + first review snippet (from /api/restaurants/:id). */}
+        {(detail?.googleRating != null || topReview) && (
+          <View style={styles.googleSection}>
+            {detail?.googleRating != null && (
+              <Text style={styles.googleRating}>
+                {'★'} {detail.googleRating.toFixed(1)}
+                {detail.googleRatingsTotal != null ? (
+                  <Text style={styles.googleRatingCount}>
+                    {' '}({detail.googleRatingsTotal >= 1000
+                      ? `${(detail.googleRatingsTotal / 1000).toFixed(1)}k`
+                      : detail.googleRatingsTotal} Google)
+                  </Text>
+                ) : null}
+              </Text>
+            )}
+            {topReview && (
+              <Text style={styles.googleReview} numberOfLines={2}>
+                {'“'}{topReview.text}{'”'}
+                {topReview.relativeTime ? (
+                  <Text style={styles.googleReviewMeta}> — {topReview.relativeTime}</Text>
+                ) : null}
+              </Text>
+            )}
           </View>
         )}
 
@@ -446,6 +487,32 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: colors.text,
+  },
+
+  // ── Google enrichment (rating + review snippet) ──
+  googleSection: {
+    marginTop: 8,
+    gap: 4,
+  },
+  googleRating: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  googleRatingCount: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: colors.textFaint,
+  },
+  googleReview: {
+    fontSize: 12,
+    fontStyle: 'italic',
+    color: colors.textMuted,
+    lineHeight: 16,
+  },
+  googleReviewMeta: {
+    fontStyle: 'normal',
+    color: colors.textFaint,
   },
 
   // ── Decision helper ──

@@ -282,15 +282,20 @@ export default function SwipeDeck({
           <EmptyState />
         ) : (
           <>
+            {/* Keying each SwipeCard by restaurant id forces React to unmount
+                and remount when the underlying restaurant changes. Without
+                this, RestaurantImage's internal uri state carries the old
+                image forward for a frame before the new one loads — the
+                "glitch when a new restaurant loads" the user noticed. */}
             {card3 && (
               <Animated.View style={[styles.cardSlot, { zIndex: 1 }, card3Style]}>
-                <SwipeCard card={card3} isSaved={isSaved?.(card3.restaurant.id)} />
+                <SwipeCard key={card3.restaurant.id} card={card3} isSaved={isSaved?.(card3.restaurant.id)} />
               </Animated.View>
             )}
 
             {card2 && (
               <Animated.View style={[styles.cardSlot, { zIndex: 2 }, card2Style]}>
-                <SwipeCard card={card2} isSaved={isSaved?.(card2.restaurant.id)} />
+                <SwipeCard key={card2.restaurant.id} card={card2} isSaved={isSaved?.(card2.restaurant.id)} />
               </Animated.View>
             )}
 
@@ -325,7 +330,7 @@ export default function SwipeDeck({
                   <Text style={styles.feedbackSuperLabel}>{'\u2605'} CRAVING</Text>
                 </Animated.View>
 
-                <SwipeCard card={card1} isSaved={isSaved?.(card1.restaurant.id)} />
+                <SwipeCard key={card1.restaurant.id} card={card1} isSaved={isSaved?.(card1.restaurant.id)} />
               </Animated.View>
             )}
           </>
