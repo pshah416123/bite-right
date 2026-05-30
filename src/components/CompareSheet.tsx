@@ -497,7 +497,22 @@ export function CompareSheet() {
   const handlePress = useCallback(
     (r: CompareRestaurant) => {
       closeSheet();
-      router.push(`/(tabs)/restaurant/${encodeURIComponent(r.id)}`);
+      // Pass the restaurant data as a payload so the detail screen renders
+      // the name + image immediately instead of falling back to the raw
+      // internal id (which read as "restaurant_<hash>") while the
+      // /api/restaurants lookup is in flight or unsuccessful.
+      const payload = encodeURIComponent(JSON.stringify({
+        id: r.id,
+        name: r.name,
+        cuisine: r.cuisine,
+        neighborhood: r.neighborhood ?? null,
+        priceLevel: r.priceLevel ?? null,
+        matchScore: r.matchScore ?? null,
+        displayImageUrl: r.imageUrl ?? null,
+        imageUrl: r.imageUrl ?? null,
+        previewPhotoUrl: r.imageUrl ?? null,
+      }));
+      router.push(`/(tabs)/restaurant/${encodeURIComponent(r.id)}?payload=${payload}`);
     },
     [closeSheet, router],
   );
