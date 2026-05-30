@@ -196,10 +196,9 @@ export default function FeedScreen() {
             renderItem={renderItem}
             contentContainerStyle={[s.listContent, { paddingBottom: insets.bottom + 130 }]}
             showsVerticalScrollIndicator={false}
-            initialNumToRender={5}
-            maxToRenderPerBatch={5}
-            windowSize={7}
-            removeClippedSubviews={true}
+            initialNumToRender={8}
+            maxToRenderPerBatch={8}
+            windowSize={9}
           />
           <LinearGradient
             colors={[`${colors.bg}00`, `${colors.bg}D9`, colors.bg]}
