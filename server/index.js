@@ -1664,6 +1664,85 @@ app.get('/api/users/me', async (req, res) => {
   return res.json(userRowToSummary(me, counts));
 });
 
+// PATCH /api/users/me — edit display name and/or username. Validates length +
+// username character set + case-insensitive uniqueness. Returns the updated
+// record so the client can refresh state.
+app.patch('/api/users/me', async (req, res) => {
+  if (!supabaseConfigured) return res.status(503).json({ error: 'Supabase not configured' });
+  const myId = getCurrentUserId(req);
+  if (!myId) return res.status(401).json({ error: 'Not signed in' });
+  // Ensure the row exists before we patch (covers users who never called /me).
+  await ensureUserRecord(req);
+
+  const { displayName, username } = req.body || {};
+  const patch = {};
+  if (typeof displayName === 'string') {
+    const trimmed = displayName.trim();
+    if (trimmed.length < 1 || trimmed.length > 60) {
+      return res.status(400).json({ error: 'Display name must be 1–60 characters.' });
+    }
+    patch.display_name = trimmed;
+  }
+  if (typeof username === 'string') {
+    const trimmed = username.trim().toLowerCase();
+    if (!/^[a-z0-9_]{3,20}$/.test(trimmed)) {
+      return res.status(400).json({ error: 'Username must be 3–20 chars: letters, numbers, underscores.' });
+    }
+    // Uniqueness — case-insensitive thanks to the index, but check explicitly
+    // so we can return a friendly error rather than a 500 on the conflict.
+    const { data: existing } = await supabase
+      .from('users')
+      .select('id')
+      .ilike('username', trimmed)
+      .neq('id', myId)
+      .maybeSingle();
+    if (existing) {
+      return res.status(409).json({ error: 'That username is already taken.' });
+    }
+    patch.username = trimmed;
+  }
+  if (Object.keys(patch).length === 0) {
+    return res.status(400).json({ error: 'Nothing to update.' });
+  }
+  patch.updated_at = new Date().toISOString();
+
+  const { data, error } = await supabase
+    .from('users')
+    .update(patch)
+    .eq('id', myId)
+    .select()
+    .single();
+  if (error) {
+    console.error('[users] patch error', error.message);
+    return res.status(500).json({ error: 'Could not update profile.' });
+  }
+  const counts = await getFollowCounts(myId);
+  return res.json(userRowToSummary(data, counts));
+});
+
+// DELETE /api/users/me — delete the user's data (users row + their logs +
+// saved restaurants + friendships). The Supabase auth.users row itself is
+// untouched (would require a service-role key); a subsequent login would
+// auto-create a fresh users row with the same id. For TestFlight purposes
+// this gives a "clean slate" experience.
+app.delete('/api/users/me', async (req, res) => {
+  if (!supabaseConfigured) return res.status(503).json({ error: 'Supabase not configured' });
+  const myId = getCurrentUserId(req);
+  if (!myId) return res.status(401).json({ error: 'Not signed in' });
+
+  const tasks = [
+    supabase.from('logs').delete().eq('user_id', myId),
+    supabase.from('saved_restaurants').delete().eq('user_id', myId),
+    supabase.from('friendships').delete().or(`user_a.eq.${myId},user_b.eq.${myId}`),
+    supabase.from('users').delete().eq('id', myId),
+  ];
+  const results = await Promise.all(tasks.map((t) => t.catch((err) => ({ error: err }))));
+  for (const r of results) {
+    if (r?.error) console.error('[users] delete error', r.error?.message ?? r.error);
+  }
+  return res.json({ ok: true });
+});
+
 // GET /api/users/suggested — up to 10 users that aren't the caller.
 app.get('/api/users/suggested', async (req, res) => {
   if (!supabaseConfigured) return res.json([]);

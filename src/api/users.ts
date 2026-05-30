@@ -14,6 +14,16 @@ export async function getMe(): Promise<UserSummary> {
   return data;
 }
 
+export async function updateMe(patch: { displayName?: string; username?: string }): Promise<UserSummary> {
+  const { data } = await apiClient.patch<UserSummary>('/api/users/me', patch);
+  return data;
+}
+
+export async function deleteMe(): Promise<{ ok: boolean }> {
+  const { data } = await apiClient.delete<{ ok: boolean }>('/api/users/me');
+  return data;
+}
+
 export async function getUser(id: string): Promise<UserSummary> {
   const { data } = await apiClient.get<UserSummary>(`/api/users/${encodeURIComponent(id)}`);
   return data;

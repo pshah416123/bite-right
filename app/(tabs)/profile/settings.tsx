@@ -2,9 +2,10 @@
  * Settings — Account-focused settings screen with iOS grouped list style.
  * Taste preferences are in a separate sub-screen.
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Alert,
+  Linking,
   ScrollView,
   StyleSheet,
   Switch,
@@ -19,6 +20,10 @@ import * as Haptics from 'expo-haptics';
 import { colors } from '~/src/theme/colors';
 import { useTestMode } from '~/src/context/TestModeContext';
 import { useAuthContext } from '~/src/context/AuthContext';
+import { getMe, deleteMe, type UserSummary } from '~/src/api/users';
+
+const SUPPORT_EMAIL = 'support@biteright.app';
+const PRIVACY_URL = 'https://biteright.app/privacy';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -90,6 +95,18 @@ export default function SettingsScreen() {
   const { user, signOut } = useAuthContext();
   const email = user?.email ?? null;
 
+  // Pull the user row from the server so Name/Username display the truth,
+  // not stale hardcoded "Pooja" / "@pooja". Refreshes whenever the screen
+  // mounts (returning from edit-name / edit-username).
+  const [me, setMe] = useState<UserSummary | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    getMe()
+      .then((u) => { if (!cancelled) setMe(u); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
   const handleLogOut = () => {
     Alert.alert('Log out?', 'You’ll need to log back in to keep using ByteRite.', [
       { text: 'Cancel', style: 'cancel' },
@@ -109,11 +126,44 @@ export default function SettingsScreen() {
     router.push('/(tabs)/profile/change-password' as never);
   };
 
+  const handleEditName = () => {
+    router.push('/(tabs)/profile/edit-name' as never);
+  };
+  const handleEditUsername = () => {
+    router.push('/(tabs)/profile/edit-username' as never);
+  };
+
+  const openExternal = (url: string) => async () => {
+    const ok = await Linking.canOpenURL(url).catch(() => false);
+    if (!ok) {
+      Alert.alert('Could not open link', url);
+      return;
+    }
+    Linking.openURL(url);
+  };
+
   const handleDeleteAccount = () => {
     Alert.alert(
       'Delete account?',
-      'Account deletion is coming soon. For now, email pooja@biteright.app and we’ll remove your data within 30 days.',
-      [{ text: 'OK', style: 'cancel' }],
+      'This will erase your profile, logs, saved restaurants, and friendships. This can’t be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deleteMe();
+              await signOut();
+            } catch (e: any) {
+              Alert.alert(
+                'Could not delete account',
+                e?.response?.data?.error || e?.message || 'Please try again.',
+              );
+            }
+          },
+        },
+      ],
     );
   };
 
@@ -150,9 +200,9 @@ export default function SettingsScreen() {
         {/* ── Account ── */}
         <Text style={styles.sectionHeader}>ACCOUNT</Text>
         <View style={styles.group}>
-          <SettingsRow icon="person-outline" label="Name" value="Pooja" onPress={handleComingSoon('Edit name')} />
+          <SettingsRow icon="person-outline" label="Name" value={me?.displayName ?? '…'} onPress={handleEditName} />
           <View style={styles.separator} />
-          <SettingsRow icon="at-outline" label="Username" value="@pooja" onPress={handleComingSoon('Edit username')} />
+          <SettingsRow icon="at-outline" label="Username" value={me ? `@${me.username}` : '…'} onPress={handleEditUsername} />
           <View style={styles.separator} />
           <SettingsRow
             icon="mail-outline"
@@ -265,9 +315,9 @@ export default function SettingsScreen() {
             </View>
           </TouchableOpacity>
           <View style={styles.separator} />
-          <SettingsRow icon="help-circle-outline" label="Help & Support" onPress={handleComingSoon('Help & Support')} />
+          <SettingsRow icon="help-circle-outline" label="Help & Support" onPress={openExternal(`mailto:${SUPPORT_EMAIL}?subject=ByteRite%20feedback`)} />
           <View style={styles.separator} />
-          <SettingsRow icon="document-text-outline" label="Terms & Privacy Policy" onPress={handleComingSoon('Terms & Privacy Policy')} />
+          <SettingsRow icon="document-text-outline" label="Terms & Privacy Policy" onPress={openExternal(PRIVACY_URL)} />
           <View style={styles.separator} />
           <TouchableOpacity
             style={styles.row}
