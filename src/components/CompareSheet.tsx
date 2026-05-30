@@ -7,7 +7,7 @@
  * - Decision nudge at the top when one restaurant clearly wins
  * - Factors highlight the winner in each category
  */
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Dimensions,
   Modal,
@@ -22,6 +22,7 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useCompare, type CompareRestaurant } from '../context/CompareContext';
 import { colors } from '../theme/colors';
+import { getRestaurantDetail, type RestaurantDetail } from '../api/restaurants';
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 const SHEET_HEIGHT = SCREEN_H * 0.82;
@@ -396,6 +397,7 @@ function RestaurantColumn({
   factors,
   dishes,
   whyReasons,
+  detail,
   onPress,
   onRemove,
 }: {
@@ -405,6 +407,7 @@ function RestaurantColumn({
   factors: Factor[];
   dishes: string[];
   whyReasons: string[];
+  detail: RestaurantDetail | null | undefined;
   onPress: () => void;
   onRemove: () => void;
 }) {
@@ -479,6 +482,44 @@ function RestaurantColumn({
         </View>
       )}
 
+      {/* ── From Google: hours status + rating + top review ── */}
+      {detail && (
+        <View style={s.googleWrap}>
+          {detail.isOpenNow != null ? (
+            <View style={[s.openPill, detail.isOpenNow ? s.openPillOpen : s.openPillClosed]}>
+              <Text style={[s.openPillText, detail.isOpenNow ? s.openPillTextOpen : s.openPillTextClosed]}>
+                {detail.isOpenNow ? 'Open now' : 'Closed'}
+              </Text>
+            </View>
+          ) : null}
+
+          {detail.googleRating != null ? (
+            <Text style={s.googleRating}>
+              {'★'} {detail.googleRating.toFixed(1)}
+              {detail.googleRatingsTotal != null ? (
+                <Text style={s.googleRatingCount}>
+                  {' '}({detail.googleRatingsTotal >= 1000
+                    ? `${(detail.googleRatingsTotal / 1000).toFixed(1)}k`
+                    : detail.googleRatingsTotal} Google)
+                </Text>
+              ) : null}
+            </Text>
+          ) : null}
+
+          {detail.googleReviews && detail.googleReviews.length > 0 ? (
+            <View style={s.reviewWrap}>
+              <Text style={s.reviewText} numberOfLines={3}>
+                {'“'}{detail.googleReviews[0].text}{'”'}
+              </Text>
+              <Text style={s.reviewAuthor}>
+                — {detail.googleReviews[0].authorName}
+                {detail.googleReviews[0].relativeTime ? ` · ${detail.googleReviews[0].relativeTime}` : ''}
+              </Text>
+            </View>
+          ) : null}
+        </View>
+      )}
+
       {/* CTA — pinned to bottom */}
       <TouchableOpacity style={s.viewBtn} onPress={onPress} activeOpacity={0.8}>
         <Text style={s.viewBtnText}>Go with this one</Text>
@@ -493,6 +534,34 @@ function RestaurantColumn({
 export function CompareSheet() {
   const { selected, sheetOpen, closeSheet, remove, clear } = useCompare();
   const router = useRouter();
+  const [details, setDetails] = useState<Map<string, RestaurantDetail | null>>(new Map());
+
+  // Fetch Google details (hours + reviews + rating) for each compared restaurant
+  // when the sheet opens. Cached by id so reopening doesn't refetch.
+  useEffect(() => {
+    if (!sheetOpen || selected.length === 0) return;
+    let cancelled = false;
+    const missing = selected.filter((r) => !details.has(r.id));
+    if (missing.length === 0) return;
+
+    Promise.all(missing.map(async (r) => {
+      try {
+        const d = await getRestaurantDetail(r.id);
+        return [r.id, d] as const;
+      } catch {
+        return [r.id, null] as const;
+      }
+    })).then((entries) => {
+      if (cancelled) return;
+      setDetails((prev) => {
+        const next = new Map(prev);
+        for (const [id, d] of entries) next.set(id, d);
+        return next;
+      });
+    });
+
+    return () => { cancelled = true; };
+  }, [sheetOpen, selected, details]);
 
   const handlePress = useCallback(
     (r: CompareRestaurant) => {
@@ -639,6 +708,7 @@ export function CompareSheet() {
                   factors={c?.factors ?? []}
                   dishes={c?.dishes ?? []}
                   whyReasons={c?.whyReasons ?? []}
+                  detail={details.get(r.id)}
                   onPress={() => handlePress(r)}
                   onRemove={() => remove(r.id)}
                 />
@@ -870,6 +940,59 @@ const s = StyleSheet.create({
     fontSize: 11,
     fontWeight: '600',
     color: colors.textMuted,
+  },
+
+  // ── From Google (hours + rating + review) ──
+  googleWrap: {
+    marginTop: 12,
+    gap: 6,
+  },
+  openPill: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+  },
+  openPillOpen: {
+    backgroundColor: '#E8F4EA',
+  },
+  openPillClosed: {
+    backgroundColor: '#F5E5E5',
+  },
+  openPillText: {
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  openPillTextOpen: {
+    color: '#2E7D32',
+  },
+  openPillTextClosed: {
+    color: '#B83A3A',
+  },
+  googleRating: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  googleRatingCount: {
+    fontSize: 10,
+    fontWeight: '500',
+    color: colors.textFaint,
+  },
+  reviewWrap: {
+    paddingTop: 4,
+    gap: 3,
+  },
+  reviewText: {
+    fontSize: 11,
+    fontStyle: 'italic',
+    color: colors.textMuted,
+    lineHeight: 15,
+  },
+  reviewAuthor: {
+    fontSize: 10,
+    color: colors.textFaint,
   },
 
   // ── CTA ──

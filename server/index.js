@@ -421,7 +421,7 @@ async function googlePlaceDetails(placeId) {
   const params = {
     place_id: placeId,
     key: GOOGLE_PLACES_API_KEY,
-    fields: 'name,formatted_address,geometry,photos,website,url,international_phone_number,opening_hours,price_level',
+    fields: 'name,formatted_address,geometry,photos,website,url,international_phone_number,opening_hours,price_level,rating,user_ratings_total,reviews',
   };
 
   const { data } = await axios.get(url, { params });
@@ -1586,6 +1586,19 @@ app.get('/api/restaurants/:restaurantId', async (req, res) => {
   const phoneFromGoogle = placeDetails?.international_phone_number || null;
   const websiteFromGoogle = placeDetails?.website || null;
   const priceLevelFromGoogle = typeof placeDetails?.price_level === 'number' ? placeDetails.price_level : null;
+  const googleRating = typeof placeDetails?.rating === 'number' ? placeDetails.rating : null;
+  const googleRatingsTotal = typeof placeDetails?.user_ratings_total === 'number' ? placeDetails.user_ratings_total : null;
+  // Slim the review payload — Google returns 5 reviews; we keep the 3 most
+  // recent with just the fields we render. text is trimmed to 280 chars so
+  // the card stays compact.
+  const googleReviews = Array.isArray(placeDetails?.reviews)
+    ? placeDetails.reviews.slice(0, 3).map((r) => ({
+        authorName: r.author_name || 'Google user',
+        rating: typeof r.rating === 'number' ? r.rating : null,
+        text: typeof r.text === 'string' ? r.text.slice(0, 280) : '',
+        relativeTime: r.relative_time_description || null,
+      }))
+    : null;
 
   // Heuristic fallback: when no curated links exist, see if the restaurant's
   // website URL is itself a booking-provider page (OpenTable / Resy / etc.).
@@ -1662,6 +1675,9 @@ app.get('/api/restaurants/:restaurantId', async (req, res) => {
         neighborhood: info.neighborhood || null,
         hours,
         isOpenNow,
+        googleRating,
+        googleRatingsTotal,
+        googleReviews,
         ...(debug ? { imageSource: source } : {}),
       });
     })
@@ -1686,6 +1702,9 @@ app.get('/api/restaurants/:restaurantId', async (req, res) => {
         imageUrl: null,
         hours,
         isOpenNow,
+        googleRating,
+        googleRatingsTotal,
+        googleReviews,
       });
     });
 });

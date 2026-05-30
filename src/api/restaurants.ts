@@ -190,8 +190,21 @@ export interface RestaurantDetail {
   hours?: string[] | null;
   /** Whether the restaurant is currently open. */
   isOpenNow?: boolean | null;
+  /** Average Google rating (1.0–5.0). */
+  googleRating?: number | null;
+  /** Total number of Google ratings. */
+  googleRatingsTotal?: number | null;
+  /** Up to 3 recent Google reviews, slimmed. */
+  googleReviews?: GoogleReview[] | null;
   /** Present when `?debug=1` on GET /api/restaurants/:id */
   imageSource?: string;
+}
+
+export interface GoogleReview {
+  authorName: string;
+  rating: number | null;
+  text: string;
+  relativeTime: string | null;
 }
 
 export interface MenuPhoto {
