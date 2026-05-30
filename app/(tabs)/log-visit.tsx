@@ -488,7 +488,9 @@ export default function LogVisitScreen() {
       <ScrollView ref={scrollRef} contentContainerStyle={styles.content} keyboardShouldPersistTaps="always">
         <Text style={styles.title}>{isEditMode ? 'Edit your visit' : 'Log a visit'}</Text>
         <Text style={styles.subtitle}>
-          {isEditMode ? 'Give the review a little more personality.' : 'Write a quick personal review.'}
+          {isEditMode
+            ? 'Give the review a little more personality.'
+            : 'Only the restaurant is required — add as much or as little as you like.'}
         </Text>
 
         {searchHealth === null ? (
@@ -512,7 +514,10 @@ export default function LogVisitScreen() {
         ) : null}
 
         <View style={styles.section}>
-          <Text style={styles.label}>Where did you go?</Text>
+          <View style={styles.labelRow}>
+            <Text style={styles.label}>Where did you go?</Text>
+            <Text style={styles.requiredTag}>Required</Text>
+          </View>
           <View
             style={[
               styles.restaurantInputWrap,
@@ -914,6 +919,18 @@ const styles = StyleSheet.create({
   },
   label: { fontSize: 14, fontWeight: '600', color: colors.text, marginBottom: 6 },
   labelMuted: { fontSize: 13, fontWeight: '500', color: colors.textMuted, marginBottom: 4, textAlign: 'center' as const },
+  labelRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 },
+  requiredTag: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.accent,
+    backgroundColor: colors.accentSoft,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 999,
+    overflow: 'hidden',
+    letterSpacing: 0.4,
+  },
   chipHint: { fontSize: 12, color: colors.textMuted, marginBottom: 8 },
   suggestions: {
     marginTop: 6,
