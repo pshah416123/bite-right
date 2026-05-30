@@ -213,7 +213,10 @@ export interface SwipeCardProps {
 export function SwipeCard({ card, isSaved, friendAvatars }: SwipeCardProps) {
   const { restaurant, matchScore, rating, imageUrl, heroPhotoUrl, distanceMi, whyLine, fallbackNote } = card;
 
-  const metaParts = [restaurant.cuisine, restaurant.neighborhood].filter(Boolean);
+  // Always surface a cuisine pill, even when the upstream API didn't tag one.
+  // Falling back to "Restaurant" beats showing only a neighborhood pill.
+  const cuisineLabel = restaurant.cuisine && restaurant.cuisine.trim() ? restaurant.cuisine : 'Restaurant';
+  const metaParts = [cuisineLabel, restaurant.neighborhood].filter(Boolean);
   const priceStr = restaurant.priceLevel
     ? Array.from({ length: Math.min(4, restaurant.priceLevel) }, () => '$').join('')
     : '';

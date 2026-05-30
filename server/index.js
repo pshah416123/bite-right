@@ -414,6 +414,89 @@ async function googlePlacesAutocomplete(query, lat, lng) {
   return filtered;
 }
 
+// ─── Popular-dishes extraction from Google reviews ──────────────────────────
+// Heuristic: anchor against a food-word dictionary, then capture 1-2 lowercase
+// words preceding each anchor to form a dish phrase ("spicy tuna roll", "pad
+// thai", "lamb biryani"). Counts occurrences across all reviews and returns
+// the top 3.
+//
+// Not perfect — won't catch chef-y names ("the Genovese") or pure proper-noun
+// dishes — but works well for the long tail of "I had the X" mentions.
+const DISH_ANCHOR_WORDS = new Set([
+  'pizza', 'pasta', 'lasagna', 'ravioli', 'gnocchi', 'risotto', 'carbonara',
+  'bolognese', 'alfredo', 'parmesan', 'marinara', 'scampi', 'tiramisu',
+  'salad', 'soup', 'sandwich', 'burger', 'fries', 'wings', 'nuggets',
+  'taco', 'tacos', 'burrito', 'quesadilla', 'enchilada', 'nachos', 'guacamole',
+  'sushi', 'roll', 'rolls', 'sashimi', 'nigiri', 'tempura', 'edamame',
+  'ramen', 'udon', 'soba', 'pho', 'noodle', 'noodles', 'dumpling', 'dumplings',
+  'bao', 'bun', 'pancake', 'pancakes', 'waffle', 'waffles', 'omelette',
+  'curry', 'tikka', 'masala', 'biryani', 'naan', 'samosa', 'pakora',
+  'falafel', 'hummus', 'gyro', 'shawarma', 'kebab', 'kabob', 'tagine',
+  'banh mi', 'pad thai', 'pad', 'larb', 'satay', 'spring roll',
+  'bibimbap', 'bulgogi', 'kimchi', 'mandu',
+  'chicken', 'beef', 'pork', 'lamb', 'duck', 'tofu',
+  'shrimp', 'salmon', 'tuna', 'lobster', 'crab', 'scallop', 'oyster', 'octopus',
+  'steak', 'ribs', 'brisket', 'pulled pork',
+  'wrap', 'bowl', 'plate', 'platter',
+  'cake', 'pie', 'cookie', 'donut', 'cannoli', 'gelato', 'churro',
+  'latte', 'cappuccino', 'espresso', 'cortado', 'mocha',
+  'cocktail', 'martini', 'margarita', 'sangria', 'mimosa',
+]);
+const STOP_PREFIX_WORDS = new Set([
+  'the', 'a', 'an', 'some', 'this', 'that', 'their', 'his', 'her', 'my',
+  'our', 'their', 'and', 'or', 'with', 'in', 'on', 'of', 'for', 'to', 'at',
+  'is', 'was', 'were', 'are', 'be', 'so', 'very', 'really', 'so', 'just',
+  'one', 'two', 'three', 'few', 'many', 'most', 'some',
+  'i', 'we', 'you', 'they', 'he', 'she', 'it',
+]);
+
+function extractPopularDishesFromReviews(reviews) {
+  if (!Array.isArray(reviews) || reviews.length === 0) return [];
+  const counts = new Map();
+
+  for (const r of reviews) {
+    const text = typeof r?.text === 'string' ? r.text : '';
+    if (!text) continue;
+    // Normalize: lowercase, strip punctuation that breaks word boundaries.
+    const norm = text.toLowerCase().replace(/[.,!?;:"()\[\]]/g, ' ');
+    const tokens = norm.split(/\s+/).filter(Boolean);
+
+    for (let i = 0; i < tokens.length; i++) {
+      const t = tokens[i];
+      // Check single-word anchor
+      if (!DISH_ANCHOR_WORDS.has(t)) {
+        // Also check two-word anchors like "pad thai" / "banh mi"
+        const two = tokens[i] + ' ' + (tokens[i + 1] ?? '');
+        if (!DISH_ANCHOR_WORDS.has(two)) continue;
+      }
+      // Build dish phrase: 1-2 preceding non-stop words + anchor
+      const phraseWords = [];
+      const start = Math.max(0, i - 2);
+      for (let j = start; j < i; j++) {
+        const w = tokens[j];
+        if (!w || STOP_PREFIX_WORDS.has(w) || !/^[a-z][a-z'-]*$/.test(w)) {
+          phraseWords.length = 0; // reset: only take contiguous adjectives
+          continue;
+        }
+        phraseWords.push(w);
+      }
+      phraseWords.push(t);
+      const phrase = phraseWords.join(' ').trim();
+      if (phrase.length < 3) continue;
+      counts.set(phrase, (counts.get(phrase) ?? 0) + 1);
+    }
+  }
+
+  return Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([name, mentionCount]) => ({
+      // Title-case the dish for display.
+      name: name.replace(/\b([a-z])/g, (m) => m.toUpperCase()),
+      mentionCount,
+    }));
+}
+
 async function googlePlaceDetails(placeId) {
   if (!GOOGLE_PLACES_API_KEY) return null;
 
@@ -1600,6 +1683,12 @@ app.get('/api/restaurants/:restaurantId', async (req, res) => {
       }))
     : null;
 
+  // Extract popular dishes from the FULL review text (before trimming). Uses
+  // food-word anchors + noun-phrase capture; see extractPopularDishesFromReviews.
+  const popularDishesFromReviews = extractPopularDishesFromReviews(
+    Array.isArray(placeDetails?.reviews) ? placeDetails.reviews : [],
+  );
+
   // Heuristic fallback: when no curated links exist, see if the restaurant's
   // website URL is itself a booking-provider page (OpenTable / Resy / etc.).
   if (reservationLinks.length === 0) {
@@ -1678,6 +1767,7 @@ app.get('/api/restaurants/:restaurantId', async (req, res) => {
         googleRating,
         googleRatingsTotal,
         googleReviews,
+        popularDishesFromReviews,
         ...(debug ? { imageSource: source } : {}),
       });
     })
@@ -1705,6 +1795,7 @@ app.get('/api/restaurants/:restaurantId', async (req, res) => {
         googleRating,
         googleRatingsTotal,
         googleReviews,
+        popularDishesFromReviews,
       });
     });
 });

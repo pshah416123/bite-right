@@ -283,7 +283,7 @@ export function TonightCard({
         )}
 
         {/* Google rating + first review snippet (from /api/restaurants/:id). */}
-        {(detail?.googleRating != null || topReview) && (
+        {(detail?.googleRating != null || topReview || (detail?.popularDishesFromReviews?.length ?? 0) > 0) && (
           <View style={styles.googleSection}>
             {detail?.googleRating != null && (
               <Text style={styles.googleRating}>
@@ -295,6 +295,11 @@ export function TonightCard({
                       : detail.googleRatingsTotal} Google)
                   </Text>
                 ) : null}
+              </Text>
+            )}
+            {(detail?.popularDishesFromReviews?.length ?? 0) > 0 && (
+              <Text style={styles.popularDishes} numberOfLines={1}>
+                Popular: {detail!.popularDishesFromReviews!.map((d) => d.name).join(' · ')}
               </Text>
             )}
             {topReview && (
@@ -503,6 +508,11 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '500',
     color: colors.textFaint,
+  },
+  popularDishes: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.accentText,
   },
   googleReview: {
     fontSize: 12,

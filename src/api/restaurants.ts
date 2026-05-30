@@ -196,6 +196,8 @@ export interface RestaurantDetail {
   googleRatingsTotal?: number | null;
   /** Up to 3 recent Google reviews, slimmed. */
   googleReviews?: GoogleReview[] | null;
+  /** Dishes extracted from review text (top 3 by mention count). */
+  popularDishesFromReviews?: PopularDish[] | null;
   /** Present when `?debug=1` on GET /api/restaurants/:id */
   imageSource?: string;
 }
@@ -205,6 +207,11 @@ export interface GoogleReview {
   rating: number | null;
   text: string;
   relativeTime: string | null;
+}
+
+export interface PopularDish {
+  name: string;
+  mentionCount: number;
 }
 
 export interface MenuPhoto {

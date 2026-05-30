@@ -506,6 +506,12 @@ function RestaurantColumn({
             </Text>
           ) : null}
 
+          {(detail.popularDishesFromReviews?.length ?? 0) > 0 ? (
+            <Text style={s.popularDishes} numberOfLines={2}>
+              Popular: {detail.popularDishesFromReviews!.map((d) => d.name).join(' · ')}
+            </Text>
+          ) : null}
+
           {detail.googleReviews && detail.googleReviews.length > 0 ? (
             <View style={s.reviewWrap}>
               <Text style={s.reviewText} numberOfLines={3}>
@@ -979,6 +985,11 @@ const s = StyleSheet.create({
     fontSize: 10,
     fontWeight: '500',
     color: colors.textFaint,
+  },
+  popularDishes: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: colors.accentText,
   },
   reviewWrap: {
     paddingTop: 4,
