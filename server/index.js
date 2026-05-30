@@ -487,13 +487,42 @@ function extractPopularDishesFromReviews(reviews) {
     }
   }
 
-  return Array.from(counts.entries())
-    .sort((a, b) => b[1] - a[1])
+  // Dedup near-duplicates and collapse generic/specific pairs.
+  //
+  // - Normalize hyphens + extra whitespace so "deep-dish pizza" and
+  //   "deep dish pizza" merge.
+  // - Group by anchor (last word). Within a group, keep the longest phrase
+  //   and sum the counts of all variants — "Pizza" (3) + "Deep Dish Pizza" (3)
+  //   becomes "Deep Dish Pizza" (6) rather than three near-duplicate entries.
+  const normalize = (s) => s.replace(/[-_]/g, ' ').replace(/\s+/g, ' ').trim();
+  const titleCase = (s) => s.replace(/\b([a-z])/g, (m) => m.toUpperCase());
+
+  const byAnchor = new Map(); // anchor -> { name, count }
+  for (const [phrase, count] of counts.entries()) {
+    const normalized = normalize(phrase);
+    const parts = normalized.split(' ');
+    const anchor = parts[parts.length - 1];
+    const existing = byAnchor.get(anchor);
+    if (!existing) {
+      byAnchor.set(anchor, { name: normalized, count });
+    } else {
+      existing.count += count;
+      // Prefer the longer phrase (more specific). Tie-break by alphabetic.
+      if (
+        normalized.length > existing.name.length ||
+        (normalized.length === existing.name.length && normalized < existing.name)
+      ) {
+        existing.name = normalized;
+      }
+    }
+  }
+
+  return Array.from(byAnchor.values())
+    .sort((a, b) => b.count - a.count)
     .slice(0, 3)
-    .map(([name, mentionCount]) => ({
-      // Title-case the dish for display.
-      name: name.replace(/\b([a-z])/g, (m) => m.toUpperCase()),
-      mentionCount,
+    .map(({ name, count }) => ({
+      name: titleCase(name),
+      mentionCount: count,
     }));
 }
 
