@@ -762,13 +762,65 @@ export default function RestaurantScreen() {
     </View>
   ) : null;
 
+  // Clean junk out of scraped menus before rendering. Same logic used for
+  // computing popularItems above — modifiers (mild/extra), time ranges,
+  // operational text ("Order online"), and pure-number rows get stripped.
+  const filteredMenu = useMemo(() => {
+    if (!menu) return null;
+    const MODIFIER_RE = /^(half|no|extra|mild|medium|hot|full|less|more|light|double|triple|add|side of)\s/i;
+    const MODIFIER_SUFFIX_RE = /\s(spice|spicy|heat|size|style|option|level|topping|add-on|upgrade)$/i;
+    const MODIFIER_EXACT = new Set([
+      'spice', 'no spice', 'half spice', 'full spice', 'extra spice', 'mild', 'medium', 'hot',
+      'small', 'regular', 'large', 'extra large', 'gluten free', 'vegetarian', 'vegan',
+    ]);
+    const NOT_A_DISH_RE = /\b(we are closed|we're closed|closed|kitchen open|kitchen closed|open now|currently open|currently closed|opening hours|hours of operation|order online|delivery|takeout|pickup|dine.in|reservations?|book a table|call us|contact|follow us|visit us)\b/i;
+    const TIME_RANGE_RE = /^\d{1,2}[:.]\d{2}\s*(am|pm|AM|PM)?\s*[-–]\s*\d{1,2}[:.]\d{2}\s*(am|pm|AM|PM)?$/;
+    const NON_DISH_RE = /^[\d\s$€£.,+\-()/#]+$/;
+    const isJunk = (name: string) => {
+      if (!name) return true;
+      const lower = name.toLowerCase().trim();
+      if (lower.length <= 2) return true;
+      if (MODIFIER_EXACT.has(lower)) return true;
+      if (MODIFIER_RE.test(lower)) return true;
+      if (MODIFIER_SUFFIX_RE.test(lower)) return true;
+      if (lower.includes('spice') && lower.length < 20) return true;
+      if (NOT_A_DISH_RE.test(lower)) return true;
+      if (TIME_RANGE_RE.test(lower.trim())) return true;
+      if (NON_DISH_RE.test(lower.trim())) return true;
+      return false;
+    };
+    const sections = menu.sections
+      .map((sec) => ({ ...sec, items: sec.items.filter((it) => !isJunk(it.name)) }))
+      .filter((sec) => sec.items.length > 0);
+    if (sections.length === 0) return null;
+    return { ...menu, sections };
+  }, [menu]);
+
+  // Fallback when no menu is available: surface dishes mined from Google
+  // reviews. Real signal, no fabrication — beats showing nothing.
+  const peopleOrderDishes = (!filteredMenu && detail?.popularDishesFromReviews?.length)
+    ? detail.popularDishesFromReviews
+    : null;
+
   const menuBlock = menuLoading ? (
     <View style={styles.section}>
       <Text style={styles.sectionTitle}>Menu</Text>
       <ActivityIndicator size="small" color={colors.accent} style={{ marginTop: 12 }} />
     </View>
-  ) : menu ? (
-    <MenuTemplate menu={menu} restaurantName={restaurantName} />
+  ) : filteredMenu ? (
+    <MenuTemplate menu={filteredMenu} restaurantName={restaurantName} />
+  ) : peopleOrderDishes ? (
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>What people order</Text>
+      <Text style={styles.sectionSubtitle}>From recent Google reviews</Text>
+      <View style={styles.peopleOrderRow}>
+        {peopleOrderDishes.map((d) => (
+          <View key={d.name} style={styles.peopleOrderChip}>
+            <Text style={styles.peopleOrderText}>{d.name}</Text>
+          </View>
+        ))}
+      </View>
+    </View>
   ) : null;
 
   const afterSpotsBlock = afterSpots.length > 0 ? (
@@ -1455,6 +1507,15 @@ const styles = StyleSheet.create({
   // Sections (rating, dishes, vibe, posts)
   section: { marginTop: 20 },
   sectionTitle: { fontSize: 16, fontWeight: '700', color: colors.text, marginBottom: 8 },
+  sectionSubtitle: { fontSize: 12, color: colors.textMuted, marginTop: -4, marginBottom: 10 },
+  peopleOrderRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  peopleOrderChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: colors.accentSoft,
+  },
+  peopleOrderText: { fontSize: 13, fontWeight: '600', color: colors.accent },
   ratingBreakdown: {
     paddingVertical: 12,
     paddingHorizontal: 14,
