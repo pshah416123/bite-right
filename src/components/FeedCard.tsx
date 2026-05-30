@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   Animated,
   Image,
@@ -204,15 +204,13 @@ export function FeedCard({ log, socialLabel, isHero }: Props) {
   const hookText = generateHookText(log, friendVisits.length);
   const supportingLine = getSupportingLine(log, friendVisits.length);
 
-  // Entrance animation
-  const fadeAnim = useRef(new Animated.Value(0)).current;
-  const slideAnim = useRef(new Animated.Value(12)).current;
-  useEffect(() => {
-    Animated.parallel([
-      Animated.timing(fadeAnim, { toValue: 1, duration: 300, useNativeDriver: true }),
-      Animated.spring(slideAnim, { toValue: 0, damping: 20, stiffness: 160, useNativeDriver: true }),
-    ]).start();
-  }, [fadeAnim, slideAnim]);
+  // Entrance animation removed: when the feed first loads, every visible card
+  // ran its own translateY+fade in parallel, then fetchFeed prepended real
+  // logs and those animated in too. The combined effect read as the feed
+  // "growing" on cold start. Cards now appear instantly — press scale below
+  // still gives tactile feedback when tapping.
+  const fadeAnim = useRef(new Animated.Value(1)).current;
+  const slideAnim = useRef(new Animated.Value(0)).current;
 
   // Press scale
   const scaleAnim = useRef(new Animated.Value(1)).current;
