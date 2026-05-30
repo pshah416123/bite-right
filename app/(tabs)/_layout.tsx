@@ -61,6 +61,13 @@ export default function TabsLayout() {
       <Tabs.Screen name="profile/following" options={{ href: null }} />
       <Tabs.Screen name="profile/taste-preferences" options={{ href: null }} />
       <Tabs.Screen name="profile/test-preview" options={{ href: null }} />
+      <Tabs.Screen name="profile/change-password" options={{ href: null }} />
+      <Tabs.Screen name="profile/edit-name" options={{ href: null }} />
+      <Tabs.Screen name="profile/edit-username" options={{ href: null }} />
+      <Tabs.Screen name="profile/edit-phone" options={{ href: null }} />
+      <Tabs.Screen name="profile/visibility" options={{ href: null }} />
+      <Tabs.Screen name="profile/blocked-users" options={{ href: null }} />
+      <Tabs.Screen name="profile/profile-photo" options={{ href: null }} />
       <Tabs.Screen name="restaurant/[id]" options={{ href: null }} />
       <Tabs.Screen name="log-visit" options={{ href: null }} />
       <Tabs.Screen name="tonight/join" options={{ href: null }} />
