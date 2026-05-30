@@ -1,10 +1,14 @@
 import { apiClient } from './client';
 
+export type UserVisibility = 'public' | 'friends' | 'private';
+
 export interface UserSummary {
   id: string;
   username: string;
   displayName: string;
   avatarUrl?: string | null;
+  phone?: string | null;
+  visibility?: UserVisibility;
   followingCount?: number;
   followerCount?: number;
 }
@@ -14,8 +18,29 @@ export async function getMe(): Promise<UserSummary> {
   return data;
 }
 
-export async function updateMe(patch: { displayName?: string; username?: string }): Promise<UserSummary> {
+export async function updateMe(patch: {
+  displayName?: string;
+  username?: string;
+  phone?: string | null;
+  visibility?: UserVisibility;
+  avatarUrl?: string | null;
+}): Promise<UserSummary> {
   const { data } = await apiClient.patch<UserSummary>('/api/users/me', patch);
+  return data;
+}
+
+export async function getBlockedUsers(): Promise<UserSummary[]> {
+  const { data } = await apiClient.get<UserSummary[]>('/api/users/me/blocked');
+  return data;
+}
+
+export async function blockUser(userId: string): Promise<{ ok: boolean }> {
+  const { data } = await apiClient.post<{ ok: boolean }>(`/api/blocks/${encodeURIComponent(userId)}`);
+  return data;
+}
+
+export async function unblockUser(userId: string): Promise<{ ok: boolean }> {
+  const { data } = await apiClient.delete<{ ok: boolean }>(`/api/blocks/${encodeURIComponent(userId)}`);
   return data;
 }
 

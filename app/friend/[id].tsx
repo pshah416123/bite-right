@@ -5,13 +5,13 @@
  * and a Follow CTA. Future enhancement: their recent logs feed.
  */
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter, Stack } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { colors } from '~/src/theme/colors';
-import { followUser, getUser, type UserSummary } from '~/src/api/users';
+import { blockUser, followUser, getUser, type UserSummary } from '~/src/api/users';
 
 export default function FriendProfileScreen() {
   const router = useRouter();
@@ -83,6 +83,32 @@ export default function FriendProfileScreen() {
         <TouchableOpacity onPress={() => router.back()} hitSlop={8}>
           <Ionicons name="chevron-back" size={22} color={colors.text} />
         </TouchableOpacity>
+        <TouchableOpacity
+          onPress={() => {
+            Alert.alert(
+              `Block @${user.username}?`,
+              'They won’t see your logs and you won’t see theirs.',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Block',
+                  style: 'destructive',
+                  onPress: async () => {
+                    try {
+                      await blockUser(user.id);
+                      router.back();
+                    } catch (e: any) {
+                      Alert.alert('Could not block', e?.response?.data?.error || e?.message || 'Try again.');
+                    }
+                  },
+                },
+              ],
+            );
+          }}
+          hitSlop={8}
+        >
+          <Ionicons name="ellipsis-horizontal" size={22} color={colors.text} />
+        </TouchableOpacity>
       </View>
 
       <View style={s.profileHeader}>
@@ -135,6 +161,9 @@ export default function FriendProfileScreen() {
 const s = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
   headerBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     paddingHorizontal: 16,
     paddingVertical: 8,
   },

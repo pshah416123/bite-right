@@ -1396,8 +1396,51 @@ async function addTagsToLog(logId, taggedBy, candidateUserIds) {
 app.get('/api/feed', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit, 10) || 100, 200);
+    const myId = getCurrentUserId(req);
     const allLogs = await db.getAllLogs();
-    const recent = allLogs.slice(0, limit);
+
+    // Build filter context: blocked edges (both directions), accepted
+    // friendships, and per-poster visibility. Skipped when Supabase isn't
+    // configured (dev mode) — feed degrades to fully open.
+    const blockedIds = new Set();
+    const friendIds = new Set();
+    const visibilityById = new Map();
+
+    if (supabaseConfigured && myId) {
+      const [bOut, bIn] = await Promise.all([
+        supabase.from('blocked_users').select('blocked_id').eq('blocker_id', myId),
+        supabase.from('blocked_users').select('blocker_id').eq('blocked_id', myId),
+      ]);
+      bOut.data?.forEach((b) => blockedIds.add(b.blocked_id));
+      bIn.data?.forEach((b) => blockedIds.add(b.blocker_id));
+
+      const [fA, fB] = await Promise.all([
+        supabase.from('friendships').select('user_b').eq('user_a', myId).eq('status', 'accepted'),
+        supabase.from('friendships').select('user_a').eq('user_b', myId).eq('status', 'accepted'),
+      ]);
+      fA.data?.forEach((f) => friendIds.add(f.user_b));
+      fB.data?.forEach((f) => friendIds.add(f.user_a));
+
+      const posterIds = Array.from(new Set(allLogs.map((l) => l.userId).filter(Boolean)));
+      if (posterIds.length > 0) {
+        const { data: rows } = await supabase
+          .from('users')
+          .select('id, visibility')
+          .in('id', posterIds);
+        rows?.forEach((r) => visibilityById.set(r.id, r.visibility ?? 'public'));
+      }
+    }
+
+    const visible = allLogs.filter((l) => {
+      if (blockedIds.has(l.userId)) return false;
+      const v = visibilityById.get(l.userId) ?? 'public';
+      if (v === 'public') return true;
+      if (v === 'private') return !!myId && l.userId === myId;
+      // 'friends'
+      return !!myId && (l.userId === myId || friendIds.has(l.userId));
+    });
+
+    const recent = visible.slice(0, limit);
 
     const items = await Promise.all(recent.map(async (l) => {
       const info = await getRestaurantInfo(l.restaurantId).catch(() => null);
@@ -1638,6 +1681,8 @@ function userRowToSummary(row, counts = null) {
     username: row.username,
     displayName: row.display_name,
     avatarUrl: row.avatar_url ?? null,
+    phone: row.phone ?? null,
+    visibility: row.visibility ?? 'public',
     followingCount: counts?.followingCount ?? 0,
     followerCount: counts?.followerCount ?? 0,
   };
@@ -1674,7 +1719,7 @@ app.patch('/api/users/me', async (req, res) => {
   // Ensure the row exists before we patch (covers users who never called /me).
   await ensureUserRecord(req);
 
-  const { displayName, username } = req.body || {};
+  const { displayName, username, phone, visibility, avatarUrl } = req.body || {};
   const patch = {};
   if (typeof displayName === 'string') {
     const trimmed = displayName.trim();
@@ -1700,6 +1745,28 @@ app.patch('/api/users/me', async (req, res) => {
       return res.status(409).json({ error: 'That username is already taken.' });
     }
     patch.username = trimmed;
+  }
+  if (phone === null || (typeof phone === 'string' && phone.trim() === '')) {
+    patch.phone = null;
+  } else if (typeof phone === 'string') {
+    // Light validation: keep digits + + - ( ) space. Server doesn't verify it's
+    // a real number — that would require Twilio. Stored as a contact field.
+    const cleaned = phone.trim().replace(/[^+\d\-()\s]/g, '');
+    if (cleaned.length < 6 || cleaned.length > 20) {
+      return res.status(400).json({ error: 'Phone must be 6–20 characters.' });
+    }
+    patch.phone = cleaned;
+  }
+  if (typeof visibility === 'string') {
+    if (!['public', 'friends', 'private'].includes(visibility)) {
+      return res.status(400).json({ error: 'Visibility must be public, friends, or private.' });
+    }
+    patch.visibility = visibility;
+  }
+  if (avatarUrl === null) {
+    patch.avatar_url = null;
+  } else if (typeof avatarUrl === 'string' && avatarUrl.trim()) {
+    patch.avatar_url = avatarUrl.trim();
   }
   if (Object.keys(patch).length === 0) {
     return res.status(400).json({ error: 'Nothing to update.' });
@@ -1783,6 +1850,60 @@ app.get('/api/users/:id', async (req, res) => {
   if (error || !data) return res.status(404).json({ error: 'Not found' });
   const counts = await getFollowCounts(id);
   return res.json(userRowToSummary(data, counts));
+});
+
+// ─── Blocks ─────────────────────────────────────────────────────────────────
+// Edges are directional (blocker → blocked); the feed filter excludes BOTH
+// directions so a blocked user can't see your logs either.
+
+// GET /api/users/me/blocked — list users I've blocked, with their summary.
+app.get('/api/users/me/blocked', async (req, res) => {
+  if (!supabaseConfigured) return res.json([]);
+  const myId = getCurrentUserId(req);
+  if (!myId) return res.status(401).json({ error: 'Not signed in' });
+  const { data: edges, error } = await supabase
+    .from('blocked_users')
+    .select('blocked_id')
+    .eq('blocker_id', myId);
+  if (error || !edges || edges.length === 0) return res.json([]);
+  const ids = edges.map((e) => e.blocked_id);
+  const { data: rows } = await supabase.from('users').select('*').in('id', ids);
+  return res.json((rows || []).map((r) => userRowToSummary(r)));
+});
+
+// POST /api/blocks/:userId — block a user. Idempotent. Also removes any
+// existing follow edge so you stop showing up in each other's feeds.
+app.post('/api/blocks/:userId', async (req, res) => {
+  if (!supabaseConfigured) return res.status(503).json({ error: 'Supabase not configured' });
+  const myId = getCurrentUserId(req);
+  if (!myId) return res.status(401).json({ error: 'Not signed in' });
+  const otherId = req.params.userId;
+  if (!otherId || otherId === myId) return res.status(400).json({ error: 'Invalid target' });
+
+  await Promise.all([
+    supabase.from('blocked_users').upsert(
+      { blocker_id: myId, blocked_id: otherId },
+      { onConflict: 'blocker_id,blocked_id' },
+    ),
+    // Tear down any friendship between them (canonical ordering).
+    (async () => {
+      const [a, b] = myId < otherId ? [myId, otherId] : [otherId, myId];
+      await supabase.from('friendships').delete().eq('user_a', a).eq('user_b', b);
+    })(),
+  ]);
+  return res.json({ ok: true });
+});
+
+// DELETE /api/blocks/:userId — unblock.
+app.delete('/api/blocks/:userId', async (req, res) => {
+  if (!supabaseConfigured) return res.status(503).json({ error: 'Supabase not configured' });
+  const myId = getCurrentUserId(req);
+  if (!myId) return res.status(401).json({ error: 'Not signed in' });
+  const otherId = req.params.userId;
+  if (!otherId) return res.status(400).json({ error: 'Invalid target' });
+  await supabase.from('blocked_users').delete()
+    .eq('blocker_id', myId).eq('blocked_id', otherId);
+  return res.json({ ok: true });
 });
 
 // POST /api/follows/:userId — follow another user. Symmetric for now: writes

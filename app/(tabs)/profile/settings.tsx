@@ -167,9 +167,6 @@ export default function SettingsScreen() {
     );
   };
 
-  const handleComingSoon = (feature: string) => () => {
-    Alert.alert(feature, 'Coming soon — not available yet.');
-  };
 
   // Notifications
   const [notifRecs, setNotifRecs] = useState(true);
@@ -211,17 +208,27 @@ export default function SettingsScreen() {
             chevron={false}
           />
           <View style={styles.separator} />
-          <SettingsRow icon="call-outline" label="Add phone number" onPress={handleComingSoon('Add phone number')} />
+          <SettingsRow
+            icon="call-outline"
+            label={me?.phone ? 'Phone number' : 'Add phone number'}
+            value={me?.phone ?? undefined}
+            onPress={() => router.push('/(tabs)/profile/edit-phone' as never)}
+          />
           <View style={styles.separator} />
           <SettingsRow icon="lock-closed-outline" label="Change password" onPress={handleChangePassword} />
           <View style={styles.separator} />
-          <SettingsRow icon="camera-outline" label="Profile photo" onPress={handleComingSoon('Profile photo')} />
+          <SettingsRow icon="camera-outline" label="Profile photo" onPress={() => router.push('/(tabs)/profile/profile-photo' as never)} />
         </View>
 
         {/* ── Privacy & Security ── */}
         <Text style={styles.sectionHeader}>PRIVACY & SECURITY</Text>
         <View style={styles.group}>
-          <SettingsRow icon="eye-outline" label="Who can see my posts" value="Everyone" onPress={handleComingSoon('Post visibility')} />
+          <SettingsRow
+            icon="eye-outline"
+            label="Who can see my posts"
+            value={me?.visibility === 'friends' ? 'Friends only' : me?.visibility === 'private' ? 'Only me' : 'Everyone'}
+            onPress={() => router.push('/(tabs)/profile/visibility' as never)}
+          />
           <View style={styles.separator} />
           <SettingsToggle
             icon="star-outline"
@@ -237,7 +244,7 @@ export default function SettingsScreen() {
             onValueChange={setShowActivity}
           />
           <View style={styles.separator} />
-          <SettingsRow icon="people-outline" label="Blocked users" onPress={handleComingSoon('Blocked users')} />
+          <SettingsRow icon="people-outline" label="Blocked users" onPress={() => router.push('/(tabs)/profile/blocked-users' as never)} />
         </View>
 
         {/* ── Notifications ── */}
