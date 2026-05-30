@@ -15,24 +15,38 @@ export const apiClient = axios.create({
   timeout: 60000,
 });
 
-// Attach the Supabase auth identity to every outbound request so the server
-// can identify the caller without us threading userId through every URL.
-// This is a soft signal — not cryptographically verified — but matches the
-// existing convention where /api/users/:userId/... already accepts the id as
-// a parameter the client supplies. JWT verification can layer on top later
-// without changing call sites.
-apiClient.interceptors.request.use(async (config) => {
-  if (!supabaseConfigured) return config;
-  try {
-    const { data } = await supabase.auth.getSession();
-    const user = data.session?.user;
-    if (user) {
-      config.headers = config.headers ?? {};
-      config.headers['X-User-Id'] = user.id;
-      if (user.email) config.headers['X-User-Email'] = user.email;
-    }
-  } catch {
-    // Don't block requests if session retrieval fails.
+// Identity cache — filled by the Supabase auth listener below, read
+// synchronously by the request interceptor. The first version of this
+// awaited supabase.auth.getSession() per request, which stalled cold-start
+// fetches (the detail page came up empty because getRestaurantDetail
+// timed out waiting on the session promise). With the cache, the
+// interceptor is fast + non-blocking.
+let _userId: string | null = null;
+let _userEmail: string | null = null;
+
+if (supabaseConfigured) {
+  supabase.auth
+    .getSession()
+    .then(({ data }) => {
+      const user = data.session?.user;
+      if (user) {
+        _userId = user.id;
+        _userEmail = user.email ?? null;
+      }
+    })
+    .catch(() => {});
+
+  supabase.auth.onAuthStateChange((_event, session) => {
+    const user = session?.user;
+    _userId = user?.id ?? null;
+    _userEmail = user?.email ?? null;
+  });
+}
+
+apiClient.interceptors.request.use((config) => {
+  if (_userId && config.headers) {
+    config.headers['X-User-Id'] = _userId;
+    if (_userEmail) config.headers['X-User-Email'] = _userEmail;
   }
   return config;
 });
