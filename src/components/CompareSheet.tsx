@@ -578,6 +578,8 @@ export function CompareSheet() {
       // /api/restaurants lookup is in flight or unsuccessful.
       const payload = encodeURIComponent(JSON.stringify({
         id: r.id,
+        placeId: r.placeId ?? null,
+        googlePlaceId: r.googlePlaceId ?? r.placeId ?? null,
         name: r.name,
         cuisine: r.cuisine,
         neighborhood: r.neighborhood ?? null,

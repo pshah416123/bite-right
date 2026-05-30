@@ -156,6 +156,8 @@ export function RestaurantCard({ item, saved, userCoords }: Props) {
   const addToCompare = () => {
     toggleCompare({
       id: restaurant.id, name: restaurant.name, cuisine,
+      placeId: restaurant.placeId ?? null,
+      googlePlaceId: restaurant.googlePlaceId ?? restaurant.placeId ?? null,
       neighborhood: restaurant.neighborhood ?? null,
       priceLevel: restaurant.priceLevel ?? null, matchScore,
       imageUrl: restaurant.displayImageUrl ?? restaurant.imageUrl ?? restaurant.previewPhotoUrl ?? null,

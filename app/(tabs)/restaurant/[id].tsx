@@ -202,6 +202,8 @@ export default function RestaurantScreen() {
     const name = restaurant?.name ?? log?.restaurantName ?? '';
     toggleCompare({
       id,
+      placeId: restaurantFromPayload?.placeId ?? detail?.placeId ?? null,
+      googlePlaceId: restaurantFromPayload?.googlePlaceId ?? detail?.googlePlaceId ?? restaurantFromPayload?.placeId ?? detail?.placeId ?? null,
       name,
       cuisine: cuisineText || log?.cuisine || '',
       neighborhood: restaurant?.neighborhood ?? log?.neighborhood ?? null,
@@ -212,7 +214,7 @@ export default function RestaurantScreen() {
       standoutDish: log?.standoutDish?.name ?? log?.dishHighlight ?? null,
       vibeTags: log?.vibeTags,
       note: log?.note ?? null,
-      imageUrl: restaurantFromPayload?.displayImageUrl ?? log?.previewPhotoUrl ?? null,
+      imageUrl: restaurantFromPayload?.displayImageUrl ?? detail?.displayImageUrl ?? log?.previewPhotoUrl ?? null,
     });
   };
   const logsForRestaurant = useMemo(

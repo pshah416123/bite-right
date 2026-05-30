@@ -4,6 +4,10 @@ import { createContext, useCallback, useContext, useMemo, useState, type ReactNo
 
 export interface CompareRestaurant {
   id: string;
+  /** Optional Google identifiers — needed so the detail screen can resolve
+   *  the photo via the photo resolver even when imageUrl is null. */
+  placeId?: string | null;
+  googlePlaceId?: string | null;
   name: string;
   cuisine: string;
   neighborhood?: string | null;
