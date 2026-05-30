@@ -1575,6 +1575,165 @@ app.post('/api/logs/:logId/tags/:userId/remove-self', async (req, res) => {
 });
 
 // "Dining partners" — friends ranked by # of co-visits with the requesting user.
+// ─── Users system — Phase 1 of the social graph ────────────────────────────
+// Identity comes from the X-User-Id header attached by the iOS client's
+// request interceptor (sourced from Supabase auth). Not cryptographically
+// verified yet — sufficient for TestFlight, JWT validation can layer in later.
+
+function getCurrentUserId(req) {
+  const h = req.headers['x-user-id'];
+  return typeof h === 'string' && h.trim() ? h.trim() : null;
+}
+function getCurrentUserEmail(req) {
+  const h = req.headers['x-user-email'];
+  return typeof h === 'string' && h.trim() ? h.trim() : null;
+}
+
+function deriveUsernameFromEmail(email) {
+  if (!email) return null;
+  const prefix = email.split('@')[0] || '';
+  const cleaned = prefix.toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 20);
+  return cleaned || null;
+}
+function deriveDisplayNameFromEmail(email) {
+  const u = deriveUsernameFromEmail(email);
+  if (!u) return 'Someone';
+  return u.charAt(0).toUpperCase() + u.slice(1);
+}
+
+/** Look up the user by id; create if missing. Used for auto-onboard on first
+ *  authed request so we never have orphaned auth users with no app row. */
+async function ensureUserRecord(req) {
+  if (!supabaseConfigured) return null;
+  const id = getCurrentUserId(req);
+  if (!id) return null;
+  const email = getCurrentUserEmail(req);
+
+  const { data: existing } = await supabase.from('users').select('*').eq('id', id).maybeSingle();
+  if (existing) return existing;
+
+  const base = deriveUsernameFromEmail(email) || `user${id.replace(/[^a-z0-9]/gi, '').slice(0, 6).toLowerCase()}`;
+  const display = deriveDisplayNameFromEmail(email);
+  // Retry with numeric suffix on username collision (max 10 attempts).
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const username = attempt === 0 ? base : `${base}${attempt}`;
+    const { error } = await supabase.from('users').insert({
+      id, username, display_name: display, email,
+    });
+    if (!error) break;
+    if (error.code !== '23505') {
+      console.error('[users] ensureUserRecord insert error', error.message);
+      return null;
+    }
+  }
+
+  const { data: created } = await supabase.from('users').select('*').eq('id', id).maybeSingle();
+  return created;
+}
+
+function userRowToSummary(row, counts = null) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    username: row.username,
+    displayName: row.display_name,
+    avatarUrl: row.avatar_url ?? null,
+    followingCount: counts?.followingCount ?? 0,
+    followerCount: counts?.followerCount ?? 0,
+  };
+}
+
+async function getFollowCounts(userId) {
+  if (!supabaseConfigured) return { followingCount: 0, followerCount: 0 };
+  // accepted friendships involving this user, in either column
+  const [{ data: asA }, { data: asB }] = await Promise.all([
+    supabase.from('friendships').select('user_a').eq('user_b', userId).eq('status', 'accepted'),
+    supabase.from('friendships').select('user_b').eq('user_a', userId).eq('status', 'accepted'),
+  ]);
+  const count = (asA?.length ?? 0) + (asB?.length ?? 0);
+  // For now treat the graph as symmetric (mutual follows) — return the same
+  // number for follower + following. When we add directed follows we'll split.
+  return { followingCount: count, followerCount: count };
+}
+
+// GET /api/users/me — current user (auto-creates on first call).
+app.get('/api/users/me', async (req, res) => {
+  const me = await ensureUserRecord(req);
+  if (!me) return res.status(401).json({ error: 'Not signed in' });
+  const counts = await getFollowCounts(me.id);
+  return res.json(userRowToSummary(me, counts));
+});
+
+// GET /api/users/suggested — up to 10 users that aren't the caller.
+app.get('/api/users/suggested', async (req, res) => {
+  if (!supabaseConfigured) return res.json([]);
+  const myId = getCurrentUserId(req);
+  let query = supabase.from('users').select('*').limit(10);
+  if (myId) query = query.neq('id', myId);
+  const { data, error } = await query;
+  if (error) {
+    console.error('[users] suggested error', error.message);
+    return res.json([]);
+  }
+  return res.json((data || []).map((r) => userRowToSummary(r)));
+});
+
+// GET /api/users?query=foo — search by username or display name.
+app.get('/api/users', async (req, res) => {
+  if (!supabaseConfigured) return res.json([]);
+  const q = typeof req.query.query === 'string' ? req.query.query.trim() : '';
+  if (!q) return res.json([]);
+  const pattern = `%${q.toLowerCase()}%`;
+  const { data, error } = await supabase
+    .from('users')
+    .select('*')
+    .or(`username.ilike.${pattern},display_name.ilike.${pattern}`)
+    .limit(20);
+  if (error) {
+    console.error('[users] search error', error.message);
+    return res.json([]);
+  }
+  return res.json((data || []).map((r) => userRowToSummary(r)));
+});
+
+// GET /api/users/:id — look up a single user.
+app.get('/api/users/:id', async (req, res) => {
+  if (!supabaseConfigured) return res.status(404).json({ error: 'Not found' });
+  const id = req.params.id;
+  const { data, error } = await supabase.from('users').select('*').eq('id', id).maybeSingle();
+  if (error || !data) return res.status(404).json({ error: 'Not found' });
+  const counts = await getFollowCounts(id);
+  return res.json(userRowToSummary(data, counts));
+});
+
+// POST /api/follows/:userId — follow another user. Symmetric for now: writes
+// an accepted row to the friendships table (the existing tag system reads
+// from this same table). Idempotent.
+app.post('/api/follows/:userId', async (req, res) => {
+  if (!supabaseConfigured) return res.status(503).json({ error: 'Supabase not configured' });
+  const myId = getCurrentUserId(req);
+  if (!myId) return res.status(401).json({ error: 'Not signed in' });
+  const otherId = req.params.userId;
+  if (!otherId || otherId === myId) return res.status(400).json({ error: 'Invalid target' });
+
+  // Canonical ordering per friendships schema (user_a < user_b lexically).
+  const [userA, userB] = myId < otherId ? [myId, otherId] : [otherId, myId];
+  const { error } = await supabase
+    .from('friendships')
+    .upsert({
+      user_a: userA,
+      user_b: userB,
+      status: 'accepted',
+      initiated_by: myId,
+      accepted_at: new Date().toISOString(),
+    }, { onConflict: 'user_a,user_b' });
+  if (error) {
+    console.error('[follows] upsert error', error.message);
+    return res.status(500).json({ error: 'Could not follow' });
+  }
+  return res.json({ ok: true, following: true });
+});
+
 app.get('/api/users/:userId/dining-partners', async (req, res) => {
   const { userId } = req.params;
   const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 10));
