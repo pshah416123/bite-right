@@ -11,6 +11,7 @@ export interface SavedRestaurantItem {
   lat: number | null;
   lng: number | null;
   googlePlaceId?: string | null;
+  cuisine?: string | null;
   displayImageUrl?: string | null;
   displayImageSourceType?: 'override' | 'user' | 'google' | 'placeholder' | null;
   displayImageLastResolvedAt?: string | null;

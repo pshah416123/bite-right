@@ -3895,6 +3895,7 @@ app.get('/api/users/:userId/saved', async (req, res) => {
         restaurantId: canonicalId,
         place_id: placeId || canonicalId,
         name,
+        cuisine: info?.cuisine || snap?.cuisine || null,
         address,
         city,
         neighborhood,

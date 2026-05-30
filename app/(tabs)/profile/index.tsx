@@ -213,18 +213,20 @@ function SavedCard({ item, onPress }: { item: SavedRestaurantItem; onPress: () =
   const isSwipe = item.source === 'swipe';
   return (
     <TouchableOpacity style={sv.card} onPress={onPress} activeOpacity={0.88}>
+      {/* Image props mirror what Discover (RestaurantCard) and Tonight pass
+          so the resolver and cache hit identical paths — same id, same
+          fallbacks, same retry chain. */}
       <RestaurantImage
         restaurant={{
           id: item.restaurantId,
-          place_id: item.place_id,
           name: item.name,
+          cuisine: item.cuisine ?? '',
           googlePlaceId: item.googlePlaceId ?? null,
-          displayImageUrl: item.displayImageUrl ?? item.previewPhotoUrl,
+          displayImageUrl: item.displayImageUrl ?? item.previewPhotoUrl ?? null,
           displayImageSourceType: item.displayImageSourceType ?? null,
           displayImageLastResolvedAt: item.displayImageLastResolvedAt ?? null,
-          previewPhotoUrl: item.previewPhotoUrl,
-          cover_image_url: item.cover_image_url ?? null,
-          food_image_urls: item.food_image_urls ?? null,
+          imageUrl: null,
+          previewPhotoUrl: item.previewPhotoUrl ?? null,
         }}
         aspectRatio={1}
         fallbackType="icon"
