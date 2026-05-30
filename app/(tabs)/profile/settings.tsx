@@ -19,7 +19,6 @@ import * as Haptics from 'expo-haptics';
 import { colors } from '~/src/theme/colors';
 import { useTestMode } from '~/src/context/TestModeContext';
 import { useAuthContext } from '~/src/context/AuthContext';
-import { supabase, supabaseConfigured } from '~/src/lib/supabase';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -106,21 +105,8 @@ export default function SettingsScreen() {
     ]);
   };
 
-  const handleChangePassword = async () => {
-    if (!email || !supabaseConfigured) {
-      Alert.alert('Not available', 'Password reset requires a signed-in email.');
-      return;
-    }
-    try {
-      const { error } = await supabase.auth.resetPasswordForEmail(email);
-      if (error) {
-        Alert.alert('Could not send reset email', error.message);
-        return;
-      }
-      Alert.alert('Check your inbox', `We sent a password reset link to ${email}.`);
-    } catch (e) {
-      Alert.alert('Could not send reset email', (e as Error)?.message ?? 'Unknown error');
-    }
+  const handleChangePassword = () => {
+    router.push('/(tabs)/profile/change-password' as never);
   };
 
   const handleDeleteAccount = () => {
