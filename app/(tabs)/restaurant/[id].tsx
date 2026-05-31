@@ -881,7 +881,15 @@ export default function RestaurantScreen() {
     <View style={styles.section}>
       <Text style={styles.sectionTitle}>Next stop</Text>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.afterSpotsScroll}>
-        {afterSpots.map((spot) => (
+        {afterSpots.map((spot) => {
+          // Next Stop spot.restaurantId is typically a Google place id
+          // (ChIJ...) so we thread it through as placeId/googlePlaceId.
+          // The detail page uses these as fallbacks before the async
+          // /api/restaurants/:id fetch lands, and they let the
+          // RestaurantImage resolver chase a photo right away.
+          const isChIJ = typeof spot.restaurantId === 'string' && spot.restaurantId.startsWith('ChIJ');
+          const placeId = isChIJ ? spot.restaurantId : null;
+          return (
           <TouchableOpacity
             key={spot.restaurantId}
             style={styles.afterCard}
@@ -895,8 +903,11 @@ export default function RestaurantScreen() {
                   name: spot.name,
                   cuisine: spot.category || '',
                   neighborhood: spot.address || '',
+                  placeId,
+                  googlePlaceId: placeId,
                   displayImageUrl: spot.imageUrl,
                   imageUrl: spot.imageUrl,
+                  previewPhotoUrl: spot.imageUrl,
                 })),
               },
             })}
@@ -932,7 +943,8 @@ export default function RestaurantScreen() {
               )}
             </View>
           </TouchableOpacity>
-        ))}
+          );
+        })}
       </ScrollView>
     </View>
   ) : null;
