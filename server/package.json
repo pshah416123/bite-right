@@ -5,7 +5,8 @@
   "private": true,
   "scripts": {
     "start": "NODE_ENV=production node index.js",
-    "dev": "nodemon index.js"
+    "dev": "nodemon index.js",
+    "postinstall": "node -e \"if (!process.env.PUPPETEER_SKIP_DOWNLOAD) { require('child_process').execSync('npx --yes puppeteer browsers install chrome', { stdio: 'inherit' }); }\""
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.100.0",
