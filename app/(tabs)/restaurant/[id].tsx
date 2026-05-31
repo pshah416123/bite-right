@@ -839,7 +839,17 @@ export default function RestaurantScreen() {
     </View>
   ) : null;
 
-  const menuBlock = menuLoading ? (
+  // Menu block — four possible states:
+  //  1. menuLoading                              -> spinner
+  //  2. filteredMenu present                     -> full menu
+  //  3. no menu but popular-dishes available     -> "What people order" chips
+  //  4. no menu, detail still fetching reviews   -> spinner ("hold on")
+  //  5. no menu and detail returned no dishes    -> "Menu unavailable" message
+  // The detail fetch (which produces popularDishesFromReviews) is independent
+  // of the menu fetch and may finish later. Without state 4 there's a
+  // visible "section disappears" gap.
+  const detailStillLoading = !detail && !!id;
+  const menuBlock = menuLoading || (!filteredMenu && detailStillLoading) ? (
     <View style={styles.section}>
       <Text style={styles.sectionTitle}>Menu</Text>
       <ActivityIndicator size="small" color={colors.accent} style={{ marginTop: 12 }} />
@@ -858,7 +868,14 @@ export default function RestaurantScreen() {
         ))}
       </View>
     </View>
-  ) : null;
+  ) : (
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>Menu</Text>
+      <Text style={styles.sectionSubtitle}>
+        Menu unavailable — try the restaurant{'’'}s website or social.
+      </Text>
+    </View>
+  );
 
   const afterSpotsBlock = afterSpots.length > 0 ? (
     <View style={styles.section}>
