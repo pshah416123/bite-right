@@ -5152,6 +5152,10 @@ async function attachImageAndPlaceId(rec, userId, ctx) {
     : null;
   const placeId = placeIdFromRow || placeIdFromRec || placeIdFromIdPrefix || null;
   const derivedCuisines = deriveCuisinesFromPlace(rec.types || [], rec.name, rec.cuisine);
+  // Kept alongside displayCuisine because the `cuisines` array fallback
+  // below still references it. Removing this caused a ReferenceError that
+  // crash-looped every Discover call on Render.
+  const mappedCat = mapFoodCategory(rec.types || [], rec.name);
   // Always non-empty — coalesceCuisine has a final "Restaurant" fallback so
   // no Discover card ever ships without a cuisine label.
   const displayCuisine = coalesceCuisine({ types: rec.types, name: rec.name, hint: rec.cuisine });
