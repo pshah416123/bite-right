@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Dimensions,
+  Image,
   Modal,
   ScrollView,
   StyleSheet,
@@ -10,7 +11,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useFeedContext } from '~/src/context/FeedContext';
@@ -310,10 +311,19 @@ export default function ProfileScreen() {
   const cityCacheRef = useRef<Record<string, { label: string }[]>>({});
   const [bannerDismissed, setBannerDismissed] = useState(false);
 
-  useEffect(() => {
-    if (!isSelf) return;
-    getMe().then(setMe).catch(() => setMe(null));
-  }, [isSelf]);
+  // Refresh on every focus, not just mount — so returning from edit-name /
+  // edit-username / profile-photo immediately reflects the new value
+  // (avatarUrl in particular wouldn't update otherwise).
+  useFocusEffect(
+    useCallback(() => {
+      if (!isSelf) return;
+      let cancelled = false;
+      getMe()
+        .then((u) => { if (!cancelled) setMe(u); })
+        .catch(() => { if (!cancelled) setMe(null); });
+      return () => { cancelled = true; };
+    }, [isSelf]),
+  );
 
 
   const profileLogs = useMemo(
@@ -536,14 +546,25 @@ export default function ProfileScreen() {
         {/* ── Header ──────────────────────────────────────────────────── */}
         <View style={s.header}>
           <View style={s.headerTop}>
-            <LinearGradient
-              colors={['#C4899A', '#8B3A4A']}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={s.avatar}
-            >
-              <Text style={s.avatarInitial}>{displayName[0]?.toUpperCase() ?? '?'}</Text>
-            </LinearGradient>
+            {(() => {
+              // Self only — show the uploaded avatar when present, otherwise
+              // gradient + initial. Mock SocialProfile data has no avatar
+              // field; non-self profiles always render the gradient fallback.
+              const avatarUrl = isSelf ? me?.avatarUrl : null;
+              if (avatarUrl) {
+                return <Image source={{ uri: avatarUrl }} style={s.avatar} />;
+              }
+              return (
+                <LinearGradient
+                  colors={['#C4899A', '#8B3A4A']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={s.avatar}
+                >
+                  <Text style={s.avatarInitial}>{displayName[0]?.toUpperCase() ?? '?'}</Text>
+                </LinearGradient>
+              );
+            })()}
             <View style={s.headerInfo}>
               <Text style={s.displayName}>{displayName}</Text>
               <View style={s.locationRow}>
