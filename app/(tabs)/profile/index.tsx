@@ -326,9 +326,13 @@ export default function ProfileScreen() {
   );
 
 
+  // Match by userName AND require userId — INITIAL_LOGS (mock seed) has a
+  // demo "You went to Lou Malnati's" entry with no userId, which inflated
+  // the self-profile log count by 1. Real logs from /api/feed always carry
+  // a userId; the seed never will.
   const profileLogs = useMemo(
-    () => items.filter((l) => l.userName === profileUserName),
-    [items, profileUserName],
+    () => items.filter((l) => l.userName === profileUserName && (!isSelf || !!l.userId)),
+    [items, profileUserName, isSelf],
   );
 
   const visitGroups = useMemo<VisitGroup[]>(() => {
