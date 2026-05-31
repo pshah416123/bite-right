@@ -198,6 +198,9 @@ export interface RestaurantDetail {
   googleReviews?: GoogleReview[] | null;
   /** Dishes extracted from review text (top 3 by mention count). */
   popularDishesFromReviews?: PopularDish[] | null;
+  /** Descriptor+noun phrases mined from reviews ("great pizza", "cozy spot").
+   *  Surfaces the same kind of keyword signal Google highlights in its UI. */
+  whatPeopleAreSaying?: SayingPhrase[] | null;
   /** Present when `?debug=1` on GET /api/restaurants/:id */
   imageSource?: string;
 }
@@ -211,6 +214,11 @@ export interface GoogleReview {
 
 export interface PopularDish {
   name: string;
+  mentionCount: number;
+}
+
+export interface SayingPhrase {
+  phrase: string;
   mentionCount: number;
 }
 

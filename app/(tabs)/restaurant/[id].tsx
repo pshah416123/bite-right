@@ -802,6 +802,40 @@ export default function RestaurantScreen() {
     ? detail.popularDishesFromReviews
     : null;
 
+  // "What people are saying" — descriptor+noun phrases mined from Google
+  // reviews ("great pizza", "cozy atmosphere"). Renders as a chip cloud
+  // sized roughly by mention count.
+  const sayings = detail?.whatPeopleAreSaying ?? [];
+  const whatPeopleAreSayingBlock = sayings.length > 0 ? (
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>What people are saying</Text>
+      <Text style={styles.sectionSubtitle}>From recent Google reviews</Text>
+      <View style={styles.sayingsWrap}>
+        {sayings.map((s) => (
+          <View
+            key={s.phrase}
+            style={[
+              styles.sayingChip,
+              s.mentionCount >= 3 && styles.sayingChipBig,
+            ]}
+          >
+            <Text
+              style={[
+                styles.sayingText,
+                s.mentionCount >= 3 && styles.sayingTextBig,
+              ]}
+            >
+              {s.phrase}
+            </Text>
+            {s.mentionCount > 1 ? (
+              <Text style={styles.sayingCount}> · {s.mentionCount}</Text>
+            ) : null}
+          </View>
+        ))}
+      </View>
+    </View>
+  ) : null;
+
   const menuBlock = menuLoading ? (
     <View style={styles.section}>
       <Text style={styles.sectionTitle}>Menu</Text>
@@ -1174,6 +1208,7 @@ export default function RestaurantScreen() {
             {standoutDishesBlock}
             {!isFromFriendPost && id && <QuickTipsBlock restaurantId={id} />}
             {!isFromFriendPost && detailsBlock}
+            {!isFromFriendPost && whatPeopleAreSayingBlock}
             {!isFromFriendPost && menuBlock}
             {!isFromFriendPost && afterSpotsBlock}
             {isFromFriendPost && (
@@ -1212,6 +1247,7 @@ export default function RestaurantScreen() {
             {friendQuotesBlock}
             {id && <QuickTipsBlock restaurantId={id} />}
             {!isFromFriendPost && detailsBlock}
+            {!isFromFriendPost && whatPeopleAreSayingBlock}
             {!isFromFriendPost && menuBlock}
             {!isFromFriendPost && afterSpotsBlock}
             {isFromFriendPost && (
@@ -1508,6 +1544,26 @@ const styles = StyleSheet.create({
   section: { marginTop: 20 },
   sectionTitle: { fontSize: 16, fontWeight: '700', color: colors.text, marginBottom: 8 },
   sectionSubtitle: { fontSize: 12, color: colors.textMuted, marginTop: -4, marginBottom: 10 },
+  sayingsWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  sayingChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: colors.surfaceSoft,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  sayingChipBig: {
+    backgroundColor: colors.accentSoft,
+    borderColor: colors.accent,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+  },
+  sayingText: { fontSize: 12, fontWeight: '600', color: colors.text },
+  sayingTextBig: { fontSize: 13, fontWeight: '700', color: colors.accent },
+  sayingCount: { fontSize: 11, color: colors.textMuted, marginLeft: 2 },
   peopleOrderRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   peopleOrderChip: {
     paddingHorizontal: 12,

@@ -230,6 +230,50 @@ async function getRestaurantInfo(restaurantId) {
     }
     return _buildInfoFromDb(fromDb);
   }
+  // Google passthrough: for ChIJ-prefixed (or g_-prefixed) ids that aren't in
+  // our DB, synthesize an info object from Google Places Details. Lets tap
+  // targets like Next-stop spots open a real detail page even before they're
+  // enriched into restaurants.
+  const candidatePlaceId = String(restaurantId).startsWith('g_')
+    ? String(restaurantId).slice(2)
+    : String(restaurantId).startsWith('ChIJ')
+      ? String(restaurantId)
+      : null;
+  if (candidatePlaceId && GOOGLE_PLACES_API_KEY) {
+    try {
+      const details = await googlePlaceDetails(candidatePlaceId);
+      if (details) {
+        const cuisine = coalesceCuisine({
+          types: details.types || [],
+          name: details.name || '',
+          hint: '',
+        });
+        return {
+          restaurantId,
+          placeId: candidatePlaceId,
+          googlePlaceId: candidatePlaceId,
+          name: details.name || 'Restaurant',
+          address: details.formatted_address || '',
+          city: null,
+          neighborhood: null,
+          lat: details.geometry?.location?.lat ?? null,
+          lng: details.geometry?.location?.lng ?? null,
+          cuisine,
+          types: details.types || [],
+          websiteUrl: details.website || null,
+          googleMapsUrl: details.url || null,
+          phone: details.international_phone_number || null,
+          reservationUrl: null,
+          priceLevel: typeof details.price_level === 'number' ? details.price_level : null,
+          displayImageUrl: null,
+          displayImageSourceType: null,
+          displayImageLastResolvedAt: null,
+        };
+      }
+    } catch (err) {
+      console.error('[BiteRight] google passthrough failed', err?.message);
+    }
+  }
   return null;
 }
 
@@ -526,6 +570,70 @@ function extractPopularDishesFromReviews(reviews) {
     }));
 }
 
+// ─── "What people are saying" extraction ────────────────────────────────────
+// Pulls descriptor+noun phrases (e.g. "great pizza", "cozy atmosphere",
+// "slow service") out of review text, counts occurrences across all reviews,
+// and returns the most-mentioned phrases. Surfaces the same kind of recurring
+// signal that Google's own UI highlights as keywords.
+const SAYING_DESCRIPTORS = new Set([
+  'great', 'amazing', 'best', 'incredible', 'wonderful', 'fantastic', 'excellent',
+  'perfect', 'delicious', 'awesome', 'phenomenal', 'outstanding', 'stellar',
+  'fresh', 'crispy', 'juicy', 'spicy', 'creamy', 'tender', 'flavorful', 'rich',
+  'cozy', 'romantic', 'lively', 'friendly', 'welcoming', 'cute', 'charming',
+  'authentic', 'casual', 'fancy', 'elegant', 'intimate', 'loud', 'quiet',
+  'fast', 'quick', 'slow', 'long', 'short',
+  'small', 'big', 'huge', 'large', 'generous', 'tiny',
+  'cheap', 'expensive', 'pricey', 'affordable', 'reasonable', 'overpriced',
+  'attentive', 'rude', 'helpful', 'knowledgeable', 'professional',
+  'cold', 'hot', 'warm', 'bland', 'salty', 'bitter', 'sweet',
+  'crowded', 'packed', 'busy', 'empty', 'spacious',
+]);
+const SAYING_NOUNS = new Set([
+  'food', 'meal', 'dish', 'dishes', 'menu', 'experience', 'flavor', 'flavors',
+  'service', 'staff', 'waiter', 'waitress', 'server', 'host', 'bartender',
+  'atmosphere', 'vibe', 'ambiance', 'ambience', 'space', 'decor', 'patio',
+  'view', 'music', 'lighting', 'interior', 'setting',
+  'wait', 'line', 'reservation', 'seating', 'table', 'tables',
+  'drinks', 'cocktails', 'wine', 'beer', 'coffee', 'desserts', 'dessert',
+  'place', 'spot', 'restaurant', 'bar', 'cafe',
+  'pizza', 'pasta', 'sushi', 'ramen', 'tacos', 'burger', 'burgers', 'salad',
+  'chicken', 'steak', 'fries', 'wings', 'soup', 'noodles', 'rice',
+  'portions', 'serving', 'sauce',
+]);
+
+function extractWhatPeopleAreSaying(reviews) {
+  if (!Array.isArray(reviews) || reviews.length === 0) return [];
+  const counts = new Map();
+
+  for (const r of reviews) {
+    const text = typeof r?.text === 'string' ? r.text : '';
+    if (!text) continue;
+    const norm = text.toLowerCase().replace(/[.,!?;:"()\[\]]/g, ' ');
+    const tokens = norm.split(/\s+/).filter(Boolean);
+
+    for (let i = 0; i < tokens.length; i++) {
+      const noun = tokens[i];
+      if (!SAYING_NOUNS.has(noun)) continue;
+      // Look back up to 2 words for a descriptor. Pattern is "[descriptor] [noun]"
+      // or "[descriptor] [filler] [noun]" (skipping one filler word like "the").
+      const prev = tokens[i - 1];
+      const prevPrev = tokens[i - 2];
+      let descriptor = null;
+      if (prev && SAYING_DESCRIPTORS.has(prev)) descriptor = prev;
+      else if (prevPrev && SAYING_DESCRIPTORS.has(prevPrev)) descriptor = prevPrev;
+      if (!descriptor) continue;
+      const phrase = `${descriptor} ${noun}`;
+      counts.set(phrase, (counts.get(phrase) ?? 0) + 1);
+    }
+  }
+
+  const titleCase = (s) => s.replace(/\b([a-z])/g, (m) => m.toUpperCase());
+  return Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6)
+    .map(([phrase, count]) => ({ phrase: titleCase(phrase), mentionCount: count }));
+}
+
 async function googlePlaceDetails(placeId) {
   if (!GOOGLE_PLACES_API_KEY) return null;
 
@@ -820,6 +928,28 @@ function deriveCuisinesFromPlace(types, name, cuisineHint) {
   for (const g of taxonomyGroups) labels.add(g);
 
   return Array.from(labels);
+}
+
+// Centralized non-empty cuisine label. Use as the final stop on every API
+// response that exposes a `cuisine` string — guarantees the client never
+// has to render an empty pill. Order:
+//   1. derivedCuisines from Google types + name keywords
+//   2. the hint string (if it's not the generic "Restaurant")
+//   3. mapFoodCategory fallback
+//   4. broad type families (bar / cafe / bakery / fast food)
+//   5. "Restaurant" as the last-ditch label
+function coalesceCuisine({ types, name, hint }) {
+  const derived = deriveCuisinesFromPlace(types || [], name || '', hint || '');
+  if (derived.length) return derived[0];
+  if (typeof hint === 'string' && hint.trim() && hint.trim() !== 'Restaurant') return hint.trim();
+  const mapped = mapFoodCategory(types || [], name || '');
+  if (mapped && mapped !== 'Restaurant') return mapped;
+  const t = new Set(Array.isArray(types) ? types : []);
+  if (t.has('bar') || t.has('night_club')) return 'Bar';
+  if (t.has('cafe') || t.has('coffee_shop')) return 'Cafe';
+  if (t.has('bakery')) return 'Bakery';
+  if (t.has('meal_takeaway') || t.has('fast_food_restaurant')) return 'Takeout';
+  return 'Restaurant';
 }
 
 // ── Recommended dishes by cuisine (popular picks for Tonight cards) ──────────
@@ -1482,7 +1612,7 @@ app.get('/api/feed', async (req, res) => {
         userName: l.userName || 'Someone',
         restaurantId: l.restaurantId,
         restaurantName: info?.name || 'Unknown',
-        cuisine: info?.cuisine || '',
+        cuisine: coalesceCuisine({ types: info?.types, name: info?.name, hint: info?.cuisine }),
         neighborhood: info?.neighborhood || null,
         city: info?.city || null,
         state: null,
@@ -2037,7 +2167,7 @@ app.get('/api/users/:userId/logs', async (req, res) => {
         userName: l.userName || 'Someone',
         restaurantId: l.restaurantId,
         restaurantName: info?.name || 'Unknown',
-        cuisine: info?.cuisine || '',
+        cuisine: coalesceCuisine({ types: info?.types, name: info?.name, hint: info?.cuisine }),
         neighborhood: info?.neighborhood || null,
         city: info?.city || null,
         state: null,
@@ -2203,6 +2333,12 @@ app.get('/api/restaurants/:restaurantId', async (req, res) => {
   const popularDishesFromReviews = extractPopularDishesFromReviews(
     Array.isArray(placeDetails?.reviews) ? placeDetails.reviews : [],
   );
+  // Highlight phrases — same "great pizza", "cozy atmosphere" kind of signal
+  // Google surfaces in its own UI. Used for the "What people are saying"
+  // section on the restaurant detail page.
+  const whatPeopleAreSaying = extractWhatPeopleAreSaying(
+    Array.isArray(placeDetails?.reviews) ? placeDetails.reviews : [],
+  );
 
   // Heuristic fallback: when no curated links exist, see if the restaurant's
   // website URL is itself a booking-provider page (OpenTable / Resy / etc.).
@@ -2283,6 +2419,7 @@ app.get('/api/restaurants/:restaurantId', async (req, res) => {
         googleRatingsTotal,
         googleReviews,
         popularDishesFromReviews,
+        whatPeopleAreSaying,
         ...(debug ? { imageSource: source } : {}),
       });
     })
@@ -2311,6 +2448,7 @@ app.get('/api/restaurants/:restaurantId', async (req, res) => {
         googleRatingsTotal,
         googleReviews,
         popularDishesFromReviews,
+        whatPeopleAreSaying,
       });
     });
 });
@@ -4520,7 +4658,7 @@ app.get('/api/users/:userId/saved', async (req, res) => {
         restaurantId: canonicalId,
         place_id: placeId || canonicalId,
         name,
-        cuisine: info?.cuisine || snap?.cuisine || null,
+        cuisine: coalesceCuisine({ types: info?.types, name: info?.name || name, hint: info?.cuisine || snap?.cuisine }),
         address,
         city,
         neighborhood,
@@ -4817,12 +4955,9 @@ async function attachImageAndPlaceId(rec, userId, ctx) {
     : null;
   const placeId = placeIdFromRow || placeIdFromRec || placeIdFromIdPrefix || null;
   const derivedCuisines = deriveCuisinesFromPlace(rec.types || [], rec.name, rec.cuisine);
-  const mappedCat = mapFoodCategory(rec.types || [], rec.name);
-  const displayCuisine =
-    (derivedCuisines.length && derivedCuisines[0]) ||
-    (rec.cuisine && String(rec.cuisine).trim() && rec.cuisine !== 'Restaurant' ? rec.cuisine : '') ||
-    mappedCat ||
-    '';
+  // Always non-empty — coalesceCuisine has a final "Restaurant" fallback so
+  // no Discover card ever ships without a cuisine label.
+  const displayCuisine = coalesceCuisine({ types: rec.types, name: rec.name, hint: rec.cuisine });
   const rawUrl = await resolveRestaurantCardImage(rec.restaurantId, placeId, undefined);
   let finalImageUrl = rawUrl ? toAbsoluteImageUrl(rawUrl) : null;
 
