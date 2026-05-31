@@ -3679,21 +3679,33 @@ async function writeCachedMenu({ restaurantId, sections, sourceType, sourceUrl, 
     : status === 'low_quality' ? MENU_TTL_LOW_QUALITY_DAYS
     : MENU_TTL_FAILED_DAYS;
   const next = new Date(Date.now() + ttlDays * 24 * 60 * 60 * 1000).toISOString();
-  await supabase.from('restaurant_menus').upsert({
-    restaurant_id: restaurantId,
-    source_type: sourceType,
-    source_url: sourceUrl ?? null,
-    pdf_url: pdfUrl ?? null,
-    raw_data: rawData ?? null,
-    structured_data: { sections: sections || [] },
-    quality_score: qualityScore,
-    scrape_status: status,
-    scrape_attempts: 1,
-    last_scraped_at: new Date().toISOString(),
-    next_refresh_at: next,
-  }, { onConflict: 'restaurant_id' }).catch((e) => {
-    console.error('[menu-cache] write error', e?.message);
-  });
+  // supabase-js's query builder is thenable but NOT a Promise — it has no
+  // .catch(). Use try/await + result.error so a write failure (e.g. FK
+  // violation for ChIJ-prefixed ids not yet in the restaurants table)
+  // logs and is swallowed instead of crashing the process.
+  try {
+    const { error } = await supabase
+      .from('restaurant_menus')
+      .upsert(
+        {
+          restaurant_id: restaurantId,
+          source_type: sourceType,
+          source_url: sourceUrl ?? null,
+          pdf_url: pdfUrl ?? null,
+          raw_data: rawData ?? null,
+          structured_data: { sections: sections || [] },
+          quality_score: qualityScore,
+          scrape_status: status,
+          scrape_attempts: 1,
+          last_scraped_at: new Date().toISOString(),
+          next_refresh_at: next,
+        },
+        { onConflict: 'restaurant_id' },
+      );
+    if (error) console.error('[menu-cache] write error', error.message);
+  } catch (e) {
+    console.error('[menu-cache] write threw', e?.message);
+  }
 }
 
 app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
