@@ -555,10 +555,9 @@ export default function ProfileScreen() {
               // gradient + initial. Mock SocialProfile data has no avatar
               // field; non-self profiles always render the gradient fallback.
               const avatarUrl = isSelf ? me?.avatarUrl : null;
-              if (avatarUrl) {
-                return <Image source={{ uri: avatarUrl }} style={s.avatar} />;
-              }
-              return (
+              const avatarNode = avatarUrl ? (
+                <Image source={{ uri: avatarUrl }} style={s.avatar} />
+              ) : (
                 <LinearGradient
                   colors={['#C4899A', '#8B3A4A']}
                   start={{ x: 0, y: 0 }}
@@ -567,6 +566,19 @@ export default function ProfileScreen() {
                 >
                   <Text style={s.avatarInitial}>{displayName[0]?.toUpperCase() ?? '?'}</Text>
                 </LinearGradient>
+              );
+              // For self, tapping the avatar opens the profile-photo editor
+              // directly — faster than digging into Settings.
+              if (!isSelf) return avatarNode;
+              return (
+                <TouchableOpacity
+                  onPress={() => router.push('/(tabs)/profile/profile-photo' as never)}
+                  activeOpacity={0.8}
+                  accessibilityLabel="Change profile photo"
+                  accessibilityRole="button"
+                >
+                  {avatarNode}
+                </TouchableOpacity>
               );
             })()}
             <View style={s.headerInfo}>
