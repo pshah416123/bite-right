@@ -3650,8 +3650,15 @@ async function readCachedMenu(restaurantId) {
     .eq('restaurant_id', restaurantId)
     .maybeSingle();
   if (error || !data) return null;
-  if (new Date(data.next_refresh_at).getTime() < Date.now()) return null;
+  // Note: stale rows are still returned. Callers can check
+  // `next_refresh_at <= now` and decide to serve stale + refresh in
+  // background (stale-while-revalidate).
   return data;
+}
+
+function isCacheFresh(row) {
+  if (!row) return false;
+  return new Date(row.next_refresh_at).getTime() > Date.now();
 }
 
 async function writeCachedMenu({ restaurantId, sections, sourceType, sourceUrl, pdfUrl, rawData, qualityScore, status }) {
@@ -3681,11 +3688,20 @@ async function writeCachedMenu({ restaurantId, sections, sourceType, sourceUrl, 
 app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
   const restaurantId = req.params.restaurantId;
 
-  // ── Cache lookup ──
-  // Return immediately if we have a non-stale cached menu with passing score.
-  // Stale or low-quality rows fall through and get re-extracted.
+  // ── Cache lookup (stale-while-revalidate) ──
+  // Fresh, high-quality row -> serve and return.
+  // Stale, high-quality row -> serve immediately AND fire background refresh.
+  // Low-quality row -> serve "unavailable" without re-running on every read
+  //   (TTL still gates a future re-attempt; user gets the popular-dishes
+  //   fallback in the meantime).
   const cached = await readCachedMenu(restaurantId);
   if (cached && cached.scrape_status === 'success' && cached.quality_score >= MENU_QUALITY_THRESHOLD) {
+    if (!isCacheFresh(cached)) {
+      // Fire-and-forget background refresh; never block the response on it.
+      refreshOneMenu(restaurantId).catch((e) =>
+        console.error('[menu-cache] background refresh failed', restaurantId, e?.message),
+      );
+    }
     return res.json({
       sections: cached.structured_data?.sections ?? [],
       menuPhotos: [],
@@ -3695,8 +3711,7 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
       lastScrapedAt: cached.last_scraped_at,
     });
   }
-  if (cached && cached.scrape_status === 'low_quality') {
-    // Don't re-scrape on every request; honor the TTL even for low-quality.
+  if (cached && cached.scrape_status === 'low_quality' && isCacheFresh(cached)) {
     return res.json({
       sections: [], menuPhotos: [], source: null,
       qualityScore: cached.quality_score, available: false,

@@ -182,6 +182,223 @@ function popmenuFlatItemsToSections(items) {
   return { sections, rawData: items, source: 'popmenu' };
 }
 
+// ─── ChowNow (widget config / iframe) ───────────────────────────────────────
+
+/**
+ * ChowNow embeds via either:
+ *   a) widget script that initializes from window.chownow_widget = {...}
+ *   b) iframe to order.chownow.com/restaurant/<slug>
+ *
+ * For (a), the config blob carries the restaurant slug, which we use to fetch
+ * the canonical menu page from order.chownow.com.
+ * For (b), we follow the iframe src and parse the order page.
+ *
+ * The order page itself embeds menu data in a Next.js __NEXT_DATA__ blob,
+ * with shape:
+ *   pageProps.menu.categories[].items[]
+ */
+async function parseChowNowMenu(html, baseUrl) {
+  try {
+    // Find iframe or widget config
+    let orderUrl = null;
+    const iframeRe = /<iframe[^>]+src\s*=\s*["']([^"']*chownow\.com[^"']*)["']/i;
+    const im = html.match(iframeRe);
+    if (im) orderUrl = im[1];
+
+    if (!orderUrl) {
+      const widgetRe = /chownow_widget\s*=\s*\{[^}]*?["']restaurant_slug["']\s*:\s*["']([^"']+)["']/;
+      const wm = html.match(widgetRe);
+      if (wm) orderUrl = `https://order.chownow.com/restaurant/${wm[1]}`;
+    }
+    if (!orderUrl) return null;
+    const absoluteOrderUrl = absoluteUrl(orderUrl, baseUrl) || orderUrl;
+
+    const { data: orderHtml } = await axios.get(absoluteOrderUrl, {
+      timeout: 10000,
+      headers: SCRAPE_HEADERS,
+      maxRedirects: 5,
+      responseType: 'text',
+    });
+    if (typeof orderHtml !== 'string') return null;
+
+    // Parse __NEXT_DATA__ on the order page
+    const m = orderHtml.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i);
+    if (!m) return null;
+    const data = JSON.parse(m[1]);
+    const menuRoot = data?.props?.pageProps?.menu || data?.props?.pageProps?.restaurantMenu;
+    if (!menuRoot) return null;
+    const categories = menuRoot.categories || menuRoot.menuCategories || [];
+    const sections = categories.map((c) => ({
+      title: c.name || 'Menu',
+      items: (c.items || c.menuItems || []).map(chowNowItemToMenuItem).filter((it) => it && it.name),
+    })).filter((s) => s.items.length > 0);
+    if (sections.length === 0) return null;
+    return { sections, rawData: data, source: 'chownow' };
+  } catch {
+    return null;
+  }
+}
+
+function chowNowItemToMenuItem(it) {
+  if (!it) return null;
+  const name = it.name || it.title;
+  if (!name) return null;
+  let priceStr = null;
+  const raw = it.price ?? it.basePrice ?? it.amount;
+  if (typeof raw === 'number' && raw > 0) {
+    priceStr = `$${(raw > 1000 ? raw / 100 : raw).toFixed(2)}`;
+  } else if (typeof raw === 'string' && /\d/.test(raw)) {
+    priceStr = raw.startsWith('$') ? raw : `$${raw}`;
+  }
+  return {
+    name: String(name).trim(),
+    description: typeof it.description === 'string' ? it.description.trim() : null,
+    price: priceStr,
+    tags: null,
+    photoUrl: it.imageUrl || it.image_url || null,
+  };
+}
+
+// ─── BentoBox ───────────────────────────────────────────────────────────────
+
+/**
+ * BentoBox uses two patterns:
+ *   a) menu sections rendered as DOM with `.menu-section` / `.menu-item` classes
+ *   b) menus as linked PDFs (handled by PDF pipeline)
+ *
+ * The DOM pattern is consistent across BentoBox sites — pull section
+ * titles and item name/price/description from predictable selectors.
+ */
+function parseBentoBoxMenu(html) {
+  try {
+    // Quick check: is this actually BentoBox?
+    if (!/bentobox|bento-cms|getbento\.com/i.test(html)) return null;
+
+    // BentoBox menus are server-rendered. Use regex over HTML rather than
+    // pulling in cheerio for one parser — selectors are simple.
+    const sectionBlocks = [...html.matchAll(
+      /<(?:div|section)[^>]+class="[^"]*menu-section[^"]*"[^>]*>([\s\S]*?)(?=<(?:div|section)[^>]+class="[^"]*menu-section|<\/main|<\/body|$)/gi,
+    )];
+    if (sectionBlocks.length === 0) return null;
+
+    const sections = [];
+    for (const block of sectionBlocks) {
+      const inner = block[1];
+      const titleMatch = inner.match(/<(?:h[1-4])[^>]*>([\s\S]*?)<\/h[1-4]>/i);
+      const title = (titleMatch ? stripHtml(titleMatch[1]) : 'Menu').trim() || 'Menu';
+
+      const itemBlocks = [...inner.matchAll(
+        /<(?:div|li)[^>]+class="[^"]*menu-item[^"]*"[^>]*>([\s\S]*?)(?=<(?:div|li)[^>]+class="[^"]*menu-item|<\/(?:ul|ol|section|div)\s*>)/gi,
+      )];
+      const items = [];
+      for (const ib of itemBlocks) {
+        const itemInner = ib[1];
+        const nameMatch = itemInner.match(/<(?:h[3-6]|span|div)[^>]*class="[^"]*(?:menu-item-name|item-title|name)[^"]*"[^>]*>([\s\S]*?)<\/\w+>/i);
+        if (!nameMatch) continue;
+        const name = stripHtml(nameMatch[1]).trim();
+        if (!name || name.length < 2 || name.length > 80) continue;
+        const priceMatch = itemInner.match(/<[^>]+class="[^"]*(?:menu-item-price|price)[^"]*"[^>]*>([\s\S]*?)<\/\w+>/i);
+        const descMatch = itemInner.match(/<[^>]+class="[^"]*(?:menu-item-description|description|item-description)[^"]*"[^>]*>([\s\S]*?)<\/\w+>/i);
+        items.push({
+          name,
+          description: descMatch ? stripHtml(descMatch[1]).trim() || null : null,
+          price: priceMatch ? normalizePrice(stripHtml(priceMatch[1])) : null,
+          tags: null,
+          photoUrl: null,
+        });
+      }
+      if (items.length > 0) sections.push({ title, items });
+    }
+    if (sections.length === 0) return null;
+    return { sections, rawData: null, source: 'bentobox' };
+  } catch {
+    return null;
+  }
+}
+
+function stripHtml(s) {
+  return String(s || '').replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function normalizePrice(s) {
+  const m = String(s || '').match(/\$?\s*(\d{1,4}(?:\.\d{1,2})?)/);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  if (!Number.isFinite(n) || n <= 0 || n > 500) return null;
+  return `$${n.toFixed(2)}`;
+}
+
+function absoluteUrl(href, baseUrl) {
+  try {
+    return new URL(href, baseUrl).href;
+  } catch {
+    return null;
+  }
+}
+
+// ─── Wix Restaurants ────────────────────────────────────────────────────────
+
+/**
+ * Wix Restaurants embeds menu data in a JSON blob via their app component.
+ * The blob lives in a script tag with id matching `wix-warmup-data` or
+ * inside `window.__WIX_WARMUP_DATA__`. Structure varies but typically:
+ *   appsWarmupData.<menuAppId>.<key>.menus[].sections[].items[]
+ *
+ * Best-effort: walk the JSON to find any object that looks like a menu tree.
+ */
+function parseWixMenu(html) {
+  try {
+    const m =
+      html.match(/<script id="wix-warmup-data"[^>]*>([\s\S]*?)<\/script>/i) ||
+      html.match(/window\.__WIX_WARMUP_DATA__\s*=\s*(\{[\s\S]*?\});/);
+    if (!m) return null;
+    const data = JSON.parse(m[1]);
+    const sections = findWixMenuSections(data);
+    if (!sections || sections.length === 0) return null;
+    return { sections, rawData: data, source: 'wix' };
+  } catch {
+    return null;
+  }
+}
+
+function findWixMenuSections(node, depth = 0) {
+  if (!node || depth > 6) return null;
+  // Match: { sections: [{ name, items: [...] }] } or { menus: [{ sections: [...] }] }
+  if (Array.isArray(node?.sections) && node.sections.some((s) => s?.items?.length)) {
+    return wixSectionsToMenu(node.sections);
+  }
+  if (Array.isArray(node?.menus)) {
+    for (const m of node.menus) {
+      const r = findWixMenuSections(m, depth + 1);
+      if (r) return r;
+    }
+  }
+  if (typeof node === 'object') {
+    for (const key of Object.keys(node)) {
+      const r = findWixMenuSections(node[key], depth + 1);
+      if (r) return r;
+    }
+  }
+  return null;
+}
+
+function wixSectionsToMenu(rawSections) {
+  return rawSections
+    .map((s) => ({
+      title: s.name || s.title || 'Menu',
+      items: (s.items || []).map((it) => ({
+        name: String(it.name || it.title || '').trim(),
+        description: typeof it.description === 'string' ? it.description.trim() : null,
+        price: typeof it.price === 'number'
+          ? `$${(it.price > 1000 ? it.price / 100 : it.price).toFixed(2)}`
+          : (typeof it.price === 'string' && /\d/.test(it.price) ? normalizePrice(it.price) : null),
+        tags: null,
+        photoUrl: it.imageUrl || it.image || null,
+      })).filter((it) => it.name),
+    }))
+    .filter((s) => s.items.length > 0);
+}
+
 // ─── Square / JSON-LD (schema.org Menu) ─────────────────────────────────────
 
 function parseJsonLdMenu(html) {
@@ -351,6 +568,26 @@ async function extractMenuFromUrl(url) {
     const r = parseJsonLdMenu(html);
     if (r) return r;
   }
+  if (provider === 'chownow') {
+    const r = await parseChowNowMenu(html, url);
+    if (r) return r;
+  }
+  if (provider === 'bentobox') {
+    const r = parseBentoBoxMenu(html);
+    if (r) return r;
+  }
+  if (provider === 'wix') {
+    const r = parseWixMenu(html);
+    if (r) return r;
+  }
+
+  // Cross-platform: even when the primary provider missed, try BentoBox
+  // selectors and ChowNow iframe-detect — many sites embed third-party
+  // ordering on top of their own template.
+  const crossCN = await parseChowNowMenu(html, url);
+  if (crossCN) return crossCN;
+  const crossBB = parseBentoBoxMenu(html);
+  if (crossBB) return crossBB;
   // JSON-LD parser is a useful general fallback for many other sites that
   // happen to publish schema.org markup (BentoBox, some WordPress sites).
   const jsonLd = parseJsonLdMenu(html);
@@ -375,6 +612,9 @@ module.exports = {
   parseToastMenu,
   parsePopmenuMenu,
   parseJsonLdMenu,
+  parseChowNowMenu,
+  parseBentoBoxMenu,
+  parseWixMenu,
   scoreMenu,
   extractMenuFromUrl,
 };
