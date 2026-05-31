@@ -282,6 +282,51 @@ const sv = StyleSheet.create({
   tagText: { fontSize: 11, fontWeight: '600', color: colors.accent },
 });
 
+// ── Avatar with image-error fallback ──────────────────────────────────────────
+// Renders the uploaded photo when present. If the Image fails to load
+// (404, Supabase URL inaccessible, network blip), falls back to the
+// gradient + initial so the slot never goes blank. Tap opens the photo
+// editor for self.
+
+function AvatarHeader({
+  isSelf, avatarUrl, displayName, onPress,
+}: {
+  isSelf: boolean;
+  avatarUrl: string | null;
+  displayName: string;
+  onPress: () => void;
+}) {
+  const [errored, setErrored] = useState(false);
+  const showImage = !!avatarUrl && !errored;
+  const node = showImage ? (
+    <Image
+      source={{ uri: avatarUrl as string }}
+      style={s.avatar}
+      onError={() => setErrored(true)}
+    />
+  ) : (
+    <LinearGradient
+      colors={['#C4899A', '#8B3A4A']}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={s.avatar}
+    >
+      <Text style={s.avatarInitial}>{displayName[0]?.toUpperCase() ?? '?'}</Text>
+    </LinearGradient>
+  );
+  if (!isSelf) return node;
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      activeOpacity={0.8}
+      accessibilityLabel="Change profile photo"
+      accessibilityRole="button"
+    >
+      {node}
+    </TouchableOpacity>
+  );
+}
+
 // ── ProfileScreen ─────────────────────────────────────────────────────────────
 
 export default function ProfileScreen() {
@@ -550,37 +595,12 @@ export default function ProfileScreen() {
         {/* ── Header ──────────────────────────────────────────────────── */}
         <View style={s.header}>
           <View style={s.headerTop}>
-            {(() => {
-              // Self only — show the uploaded avatar when present, otherwise
-              // gradient + initial. Mock SocialProfile data has no avatar
-              // field; non-self profiles always render the gradient fallback.
-              const avatarUrl = isSelf ? me?.avatarUrl : null;
-              const avatarNode = avatarUrl ? (
-                <Image source={{ uri: avatarUrl }} style={s.avatar} />
-              ) : (
-                <LinearGradient
-                  colors={['#C4899A', '#8B3A4A']}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={s.avatar}
-                >
-                  <Text style={s.avatarInitial}>{displayName[0]?.toUpperCase() ?? '?'}</Text>
-                </LinearGradient>
-              );
-              // For self, tapping the avatar opens the profile-photo editor
-              // directly — faster than digging into Settings.
-              if (!isSelf) return avatarNode;
-              return (
-                <TouchableOpacity
-                  onPress={() => router.push('/(tabs)/profile/profile-photo' as never)}
-                  activeOpacity={0.8}
-                  accessibilityLabel="Change profile photo"
-                  accessibilityRole="button"
-                >
-                  {avatarNode}
-                </TouchableOpacity>
-              );
-            })()}
+            <AvatarHeader
+              isSelf={isSelf}
+              avatarUrl={isSelf ? me?.avatarUrl ?? null : null}
+              displayName={displayName}
+              onPress={() => router.push('/(tabs)/profile/profile-photo' as never)}
+            />
             <View style={s.headerInfo}>
               <Text style={s.displayName}>{displayName}</Text>
               <View style={s.locationRow}>
