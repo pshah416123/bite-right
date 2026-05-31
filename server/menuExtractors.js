@@ -10,6 +10,7 @@
  */
 
 const axios = require('axios');
+const { detectMenuPdfUrls, extractMenuFromPdfUrl } = require('./menuPdf');
 
 const SCRAPE_HEADERS = {
   'User-Agent':
@@ -338,13 +339,33 @@ async function extractMenuFromUrl(url) {
   }
 
   const provider = detectProvider(url, html);
-  if (provider === 'toast') return parseToastMenu(html);
-  if (provider === 'popmenu') return parsePopmenuMenu(html);
-  if (provider === 'square') return parseJsonLdMenu(html) || null;
+  if (provider === 'toast') {
+    const r = parseToastMenu(html);
+    if (r) return r;
+  }
+  if (provider === 'popmenu') {
+    const r = parsePopmenuMenu(html);
+    if (r) return r;
+  }
+  if (provider === 'square') {
+    const r = parseJsonLdMenu(html);
+    if (r) return r;
+  }
   // JSON-LD parser is a useful general fallback for many other sites that
   // happen to publish schema.org markup (BentoBox, some WordPress sites).
   const jsonLd = parseJsonLdMenu(html);
   if (jsonLd) return { ...jsonLd, source: jsonLd.source || provider };
+
+  // PDF pipeline: ~30-40% of independent restaurants link to a PDF menu
+  // (especially fine dining + bars). Scan the HTML for ranked PDF
+  // candidates and try them in order until one yields a structured menu.
+  const pdfCandidates = detectMenuPdfUrls(html, url);
+  for (const pdfUrl of pdfCandidates) {
+    try {
+      const r = await extractMenuFromPdfUrl(pdfUrl);
+      if (r) return { ...r, pdfUrl };
+    } catch { /* try next */ }
+  }
 
   return null;
 }

@@ -3654,7 +3654,7 @@ async function readCachedMenu(restaurantId) {
   return data;
 }
 
-async function writeCachedMenu({ restaurantId, sections, sourceType, sourceUrl, rawData, qualityScore, status }) {
+async function writeCachedMenu({ restaurantId, sections, sourceType, sourceUrl, pdfUrl, rawData, qualityScore, status }) {
   if (!supabaseConfigured) return;
   const ttlDays = status === 'success'
     ? MENU_TTL_SUCCESS_DAYS
@@ -3665,6 +3665,7 @@ async function writeCachedMenu({ restaurantId, sections, sourceType, sourceUrl, 
     restaurant_id: restaurantId,
     source_type: sourceType,
     source_url: sourceUrl ?? null,
+    pdf_url: pdfUrl ?? null,
     raw_data: rawData ?? null,
     structured_data: { sections: sections || [] },
     quality_score: qualityScore,
@@ -3717,7 +3718,7 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
 
   // Score + cache helper called by every exit path so even legacy code persists
   // and quality-gates consistently. Returns the response object.
-  const finalize = async (sourceType, sourceUrl = null, rawData = null) => {
+  const finalize = async (sourceType, sourceUrl = null, rawData = null, pdfUrl = null) => {
     const sections = result.sections || [];
     const { score } = scoreMenu(sections);
     const status =
@@ -3729,6 +3730,7 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
       sections: status === 'success' ? sections : [],
       sourceType: sourceType || 'generic_scrape',
       sourceUrl,
+      pdfUrl,
       rawData,
       qualityScore: score,
       status,
@@ -3784,11 +3786,12 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
     return res.json(await finalize('chain_curated', websiteUrl));
   }
 
-  // ── Priority 0.5: Provider-aware extractors (Toast / Popmenu / JSON-LD) ──
+  // ── Priority 0.5: Provider-aware extractors (Toast / Popmenu / JSON-LD / PDF) ──
   // Try the new structured-data extractors before falling through to the
   // generic scrape pipeline. Each provider parser returns the full structured
   // menu directly from the page's embedded JSON, which is dramatically more
-  // reliable than DOM heuristics.
+  // reliable than DOM heuristics. The PDF pipeline is the last fallback
+  // inside extractMenuFromUrl — finds linked menu PDFs and parses them.
   if (websiteUrl) {
     try {
       const extracted = await extractMenuFromUrl(websiteUrl);
@@ -3797,8 +3800,9 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
         result.source = extracted.source;
         console.log('[BiteRight] menu: provider extractor hit', {
           restaurantId, source: extracted.source, sections: extracted.sections.length,
+          pdfUrl: extracted.pdfUrl || null,
         });
-        return res.json(await finalize(extracted.source, websiteUrl, extracted.rawData));
+        return res.json(await finalize(extracted.source, websiteUrl, extracted.rawData, extracted.pdfUrl ?? null));
       }
     } catch (e) {
       console.log('[BiteRight] menu: provider extractor failed', e?.message);
@@ -6050,6 +6054,86 @@ const CATEGORY_LABELS = {
 function categoryLabel(category) {
   return CATEGORY_LABELS[category] || null;
 }
+
+// ─── Menu refresh worker ────────────────────────────────────────────────────
+// Periodically re-runs extraction on stale cache rows so users hit fresh
+// data on their next view. Lightweight: max 25 entries per run, 6h interval,
+// runs in-process. On Render free tier the server sleeps when idle so the
+// interval pauses too — that's fine, refreshes resume when traffic resumes.
+
+const MENU_REFRESH_BATCH = 25;
+const MENU_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6h
+const MENU_REFRESH_STARTUP_DELAY_MS = 60 * 1000;     // 1 min after boot
+
+async function refreshOneMenu(restaurantId) {
+  try {
+    const info = await getRestaurantInfo(restaurantId);
+    const websiteUrl = info?.websiteUrl || null;
+    if (!websiteUrl) {
+      // No URL = nothing to re-extract. Push the refresh deadline out so we
+      // don't churn on this row every cycle.
+      await writeCachedMenu({
+        restaurantId, sections: [], sourceType: 'generic_scrape',
+        sourceUrl: null, qualityScore: 0, status: 'failed',
+      });
+      return;
+    }
+    const extracted = await extractMenuFromUrl(websiteUrl);
+    if (extracted && extracted.sections && extracted.sections.length > 0) {
+      const { score } = scoreMenu(extracted.sections);
+      const status =
+        score >= MENU_QUALITY_THRESHOLD ? 'success' : 'low_quality';
+      await writeCachedMenu({
+        restaurantId,
+        sections: status === 'success' ? extracted.sections : [],
+        sourceType: extracted.source,
+        sourceUrl: websiteUrl,
+        pdfUrl: extracted.pdfUrl ?? null,
+        rawData: extracted.rawData,
+        qualityScore: score,
+        status,
+      });
+      return;
+    }
+    await writeCachedMenu({
+      restaurantId, sections: [], sourceType: 'generic_scrape',
+      sourceUrl: websiteUrl, qualityScore: 0, status: 'failed',
+    });
+  } catch (e) {
+    console.error('[menu-refresh] entry error', restaurantId, e?.message);
+  }
+}
+
+async function refreshStaleMenus() {
+  if (!supabaseConfigured) return;
+  try {
+    const { data: stale, error } = await supabase
+      .from('restaurant_menus')
+      .select('restaurant_id')
+      .lt('next_refresh_at', new Date().toISOString())
+      .neq('scrape_status', 'blocked')
+      .order('next_refresh_at', { ascending: true })
+      .limit(MENU_REFRESH_BATCH);
+    if (error) {
+      console.error('[menu-refresh] select error', error.message);
+      return;
+    }
+    if (!stale || stale.length === 0) return;
+    console.log(`[menu-refresh] processing ${stale.length} stale entries`);
+    // Sequential to avoid hammering the same host; PDFs + Puppeteer are heavy.
+    for (const row of stale) {
+      await refreshOneMenu(row.restaurant_id);
+    }
+    console.log('[menu-refresh] batch complete');
+  } catch (e) {
+    console.error('[menu-refresh] worker error', e?.message);
+  }
+}
+
+setTimeout(() => {
+  refreshStaleMenus();
+  setInterval(refreshStaleMenus, MENU_REFRESH_INTERVAL_MS);
+}, MENU_REFRESH_STARTUP_DELAY_MS);
 
 const server = app.listen(PORT, () => {
   console.log(`BiteRight backend listening on http://localhost:${PORT}`);
