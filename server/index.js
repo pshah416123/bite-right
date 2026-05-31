@@ -4857,12 +4857,26 @@ app.get('/api/users/:userId/saved', async (req, res) => {
       const neighborhood = info?.neighborhood ?? snap?.neighborhood ?? null;
       const lat = info?.lat ?? snap?.lat ?? null;
       const lng = info?.lng ?? snap?.lng ?? null;
-      const resolvedDisplayImageUrl =
+      const canonicalId = info?.restaurantId || s.restaurantId;
+      const placeId = info?.placeId || (String(s.restaurantId).startsWith('ChIJ') ? s.restaurantId : null);
+
+      // Match Discover's photo resolution path: prefer stored URLs, then
+      // fall back to the full Google-Places resolver. Without this fallback,
+      // saved cards for unenriched Google places ship with null
+      // displayImageUrl while the exact same restaurant on Discover renders
+      // a photo — same data, different surface, inconsistent UX.
+      let resolvedDisplayImageUrl =
         toAbsoluteImageUrl(
           info?.displayImageUrl || info?.previewPhotoUrl || snap?.previewPhotoUrl || null,
         ) || null;
-      const canonicalId = info?.restaurantId || s.restaurantId;
-      const placeId = info?.placeId || (String(s.restaurantId).startsWith('ChIJ') ? s.restaurantId : null);
+      if (!resolvedDisplayImageUrl && placeId) {
+        try {
+          const resolved = await resolveRestaurantCardImage(canonicalId, placeId, undefined);
+          if (resolved) resolvedDisplayImageUrl = toAbsoluteImageUrl(resolved) || null;
+        } catch (e) {
+          console.warn('[saved] image resolver failed', canonicalId, e?.message);
+        }
+      }
       return {
         restaurantId: canonicalId,
         place_id: placeId || canonicalId,
