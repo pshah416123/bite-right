@@ -241,10 +241,22 @@ export interface MenuSection {
   items: MenuItem[];
 }
 
+export type MenuSourceType =
+  | 'toast' | 'popmenu' | 'square' | 'chownow' | 'bentobox' | 'clover'
+  | 'wix' | 'wordpress' | 'yelp_menu' | 'pdf' | 'generic_scrape' | 'chain_curated'
+  | 'photos' | null;
+
 export interface RestaurantMenu {
   sections: MenuSection[];
   menuPhotos: MenuPhoto[];
-  source: 'scraped' | 'photos' | 'curated' | null;
+  source: MenuSourceType;
+  /** 0-100; server applies its own threshold and only returns sections when
+   *  the menu passes. Use this for telemetry/UI badges. */
+  qualityScore?: number;
+  /** True when the server believes the menu is good enough to render. When
+   *  false, render the "What people order" fallback instead. */
+  available?: boolean;
+  lastScrapedAt?: string;
 }
 
 /** Fetch restaurant detail for Reserve and detail view. Returns null on 404 or error. */

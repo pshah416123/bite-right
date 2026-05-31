@@ -3634,8 +3634,75 @@ function getChainMenu(restaurantName) {
 }
 
 // 6) Menu endpoint — returns structured menu data, photos, or empty state
+// ─── Menu cache + quality helpers ───────────────────────────────────────────
+const { extractMenuFromUrl, scoreMenu } = require('./menuExtractors');
+
+const MENU_QUALITY_THRESHOLD = 50;
+const MENU_TTL_SUCCESS_DAYS = 30;
+const MENU_TTL_LOW_QUALITY_DAYS = 7;
+const MENU_TTL_FAILED_DAYS = 14;
+
+async function readCachedMenu(restaurantId) {
+  if (!supabaseConfigured) return null;
+  const { data, error } = await supabase
+    .from('restaurant_menus')
+    .select('*')
+    .eq('restaurant_id', restaurantId)
+    .maybeSingle();
+  if (error || !data) return null;
+  if (new Date(data.next_refresh_at).getTime() < Date.now()) return null;
+  return data;
+}
+
+async function writeCachedMenu({ restaurantId, sections, sourceType, sourceUrl, rawData, qualityScore, status }) {
+  if (!supabaseConfigured) return;
+  const ttlDays = status === 'success'
+    ? MENU_TTL_SUCCESS_DAYS
+    : status === 'low_quality' ? MENU_TTL_LOW_QUALITY_DAYS
+    : MENU_TTL_FAILED_DAYS;
+  const next = new Date(Date.now() + ttlDays * 24 * 60 * 60 * 1000).toISOString();
+  await supabase.from('restaurant_menus').upsert({
+    restaurant_id: restaurantId,
+    source_type: sourceType,
+    source_url: sourceUrl ?? null,
+    raw_data: rawData ?? null,
+    structured_data: { sections: sections || [] },
+    quality_score: qualityScore,
+    scrape_status: status,
+    scrape_attempts: 1,
+    last_scraped_at: new Date().toISOString(),
+    next_refresh_at: next,
+  }, { onConflict: 'restaurant_id' }).catch((e) => {
+    console.error('[menu-cache] write error', e?.message);
+  });
+}
+
 app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
   const restaurantId = req.params.restaurantId;
+
+  // ── Cache lookup ──
+  // Return immediately if we have a non-stale cached menu with passing score.
+  // Stale or low-quality rows fall through and get re-extracted.
+  const cached = await readCachedMenu(restaurantId);
+  if (cached && cached.scrape_status === 'success' && cached.quality_score >= MENU_QUALITY_THRESHOLD) {
+    return res.json({
+      sections: cached.structured_data?.sections ?? [],
+      menuPhotos: [],
+      source: cached.source_type,
+      qualityScore: cached.quality_score,
+      available: true,
+      lastScrapedAt: cached.last_scraped_at,
+    });
+  }
+  if (cached && cached.scrape_status === 'low_quality') {
+    // Don't re-scrape on every request; honor the TTL even for low-quality.
+    return res.json({
+      sections: [], menuPhotos: [], source: null,
+      qualityScore: cached.quality_score, available: false,
+      lastScrapedAt: cached.last_scraped_at,
+    });
+  }
+
   const fromDb = findRestaurantById(restaurantId) || (restaurantId.startsWith('ChIJ') ? findRestaurantByPlaceId(restaurantId) : null);
   const info = await getRestaurantInfo(restaurantId);
   // If the restaurantId itself is a Google placeId (starts with ChIJ), use it directly
@@ -3646,6 +3713,34 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
     sections: [],
     menuPhotos: [],
     source: null, // 'scraped' | 'photos' | null
+  };
+
+  // Score + cache helper called by every exit path so even legacy code persists
+  // and quality-gates consistently. Returns the response object.
+  const finalize = async (sourceType, sourceUrl = null, rawData = null) => {
+    const sections = result.sections || [];
+    const { score } = scoreMenu(sections);
+    const status =
+      sections.length === 0 ? 'failed'
+      : score >= MENU_QUALITY_THRESHOLD ? 'success'
+      : 'low_quality';
+    await writeCachedMenu({
+      restaurantId,
+      sections: status === 'success' ? sections : [],
+      sourceType: sourceType || 'generic_scrape',
+      sourceUrl,
+      rawData,
+      qualityScore: score,
+      status,
+    });
+    return {
+      sections: status === 'success' ? sections : [],
+      menuPhotos: result.menuPhotos ?? [],
+      source: status === 'success' ? (sourceType || 'generic_scrape') : null,
+      qualityScore: score,
+      available: status === 'success',
+      lastScrapedAt: new Date().toISOString(),
+    };
   };
 
   // Resolve website URL and restaurant name from multiple sources
@@ -3675,7 +3770,7 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
   }
 
   if (!websiteUrl && !restaurantName) {
-    return res.json(result);
+    return res.json(await finalize(null));
   }
 
   // ── Priority 0: Curated chain menu ──
@@ -3684,9 +3779,30 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
   const chainMenu = getChainMenu(restaurantName);
   if (chainMenu) {
     result.sections = chainMenu.sections;
-    result.source = 'curated';
+    result.source = 'chain_curated';
     console.log('[BiteRight] menu: using curated chain menu', { restaurantId, restaurantName });
-    return res.json(result);
+    return res.json(await finalize('chain_curated', websiteUrl));
+  }
+
+  // ── Priority 0.5: Provider-aware extractors (Toast / Popmenu / JSON-LD) ──
+  // Try the new structured-data extractors before falling through to the
+  // generic scrape pipeline. Each provider parser returns the full structured
+  // menu directly from the page's embedded JSON, which is dramatically more
+  // reliable than DOM heuristics.
+  if (websiteUrl) {
+    try {
+      const extracted = await extractMenuFromUrl(websiteUrl);
+      if (extracted && extracted.sections && extracted.sections.length > 0) {
+        result.sections = extracted.sections;
+        result.source = extracted.source;
+        console.log('[BiteRight] menu: provider extractor hit', {
+          restaurantId, source: extracted.source, sections: extracted.sections.length,
+        });
+        return res.json(await finalize(extracted.source, websiteUrl, extracted.rawData));
+      }
+    } catch (e) {
+      console.log('[BiteRight] menu: provider extractor failed', e?.message);
+    }
   }
 
   try {
@@ -3771,13 +3887,13 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
         const totalItems = menuSections.reduce((n, s) => n + s.items.length, 0);
         if (totalItems >= 2) {
           result.sections = menuSections;
-          result.source = 'scraped';
+          result.source = 'generic_scrape';
           console.log('[BiteRight] menu: scraped successfully', {
             restaurantId,
             sectionCount: menuSections.length,
             totalItems,
           });
-          return res.json(result);
+          return res.json(await finalize('generic_scrape', websiteUrl));
         }
         console.log('[BiteRight] menu: scrape found too few items', { restaurantId, totalItems });
       }
@@ -3792,9 +3908,9 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
         const totalItems = spSections.reduce((n, s) => n + s.items.length, 0);
         if (totalItems >= 2) {
           result.sections = spSections;
-          result.source = 'scraped';
+          result.source = 'generic_scrape';
           console.log('[BiteRight] menu: found via SinglePlatform name lookup', { restaurantId, restaurantName, totalItems });
-          return res.json(result);
+          return res.json(await finalize('generic_scrape', websiteUrl));
         }
       }
     }
@@ -3822,9 +3938,9 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
           const totalItems = puppeteerSections.reduce((n, s) => n + s.items.length, 0);
           if (totalItems >= 2) {
             result.sections = puppeteerSections;
-            result.source = 'scraped';
+            result.source = 'generic_scrape';
             console.log('[BiteRight] menu: Puppeteer found menu', { restaurantId, url: tryUrl, totalItems });
-            return res.json(result);
+            return res.json(await finalize('generic_scrape', tryUrl));
           }
         }
       }
@@ -3851,10 +3967,16 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
             height: p.height || 600,
           }));
           if (photos.length > 0) {
+            // Photos-only result: don't run quality scoring (no items to score),
+            // but still write a row to cache so we don't refetch every request.
             result.menuPhotos = photos;
             result.source = 'photos';
             console.log('[BiteRight] menu: using Google Places photos as backup', { restaurantId, photoCount: photos.length });
-            return res.json(result);
+            return res.json({
+              sections: [], menuPhotos: photos, source: 'photos',
+              qualityScore: 0, available: false,
+              lastScrapedAt: new Date().toISOString(),
+            });
           }
         }
       } catch (err) {
@@ -3863,10 +3985,10 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
     }
 
     console.log('[BiteRight] menu: no structured menu found', { restaurantId });
-    res.json(result);
+    res.json(await finalize(null));
   } catch (err) {
     console.error('[BiteRight] menu fetch error', err.message);
-    res.json(result);
+    res.json(await finalize(null));
   }
 });
 

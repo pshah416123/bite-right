@@ -765,8 +765,11 @@ export default function RestaurantScreen() {
   // Clean junk out of scraped menus before rendering. Same logic used for
   // computing popularItems above — modifiers (mild/extra), time ranges,
   // operational text ("Order online"), and pure-number rows get stripped.
+  // Server's quality threshold has already run, but defense in depth: if
+  // the server's `available` flag is false, treat as no menu.
   const filteredMenu = useMemo(() => {
     if (!menu) return null;
+    if (menu.available === false) return null;
     const MODIFIER_RE = /^(half|no|extra|mild|medium|hot|full|less|more|light|double|triple|add|side of)\s/i;
     const MODIFIER_SUFFIX_RE = /\s(spice|spicy|heat|size|style|option|level|topping|add-on|upgrade)$/i;
     const MODIFIER_EXACT = new Set([
@@ -1204,12 +1207,18 @@ export default function RestaurantScreen() {
               </View>
             )}
 
-            {!isFromFriendPost && friendQuotesBlock}
+            {/* Section order follows the discovery -> decision flow:
+                BiteRight Picks (your own logs) -> Friends Ordered (social
+                proof) -> Quick Tips -> Full Menu (or What People Order
+                fallback when menu unavailable) -> Review keyword cloud ->
+                Utility details (hours/website) -> Next stop. Each block
+                self-hides when it has no signal. */}
             {standoutDishesBlock}
+            {!isFromFriendPost && friendQuotesBlock}
             {!isFromFriendPost && id && <QuickTipsBlock restaurantId={id} />}
-            {!isFromFriendPost && detailsBlock}
-            {!isFromFriendPost && whatPeopleAreSayingBlock}
             {!isFromFriendPost && menuBlock}
+            {!isFromFriendPost && whatPeopleAreSayingBlock}
+            {!isFromFriendPost && detailsBlock}
             {!isFromFriendPost && afterSpotsBlock}
             {isFromFriendPost && (
               <TouchableOpacity
