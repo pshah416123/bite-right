@@ -244,7 +244,7 @@ export interface MenuSection {
 export type MenuSourceType =
   | 'toast' | 'popmenu' | 'square' | 'chownow' | 'bentobox' | 'clover'
   | 'wix' | 'wordpress' | 'yelp_menu' | 'pdf' | 'generic_scrape' | 'chain_curated'
-  | 'photos' | null;
+  | 'llm' | 'photos' | null;
 
 export interface RestaurantMenu {
   sections: MenuSection[];

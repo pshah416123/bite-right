@@ -2328,11 +2328,21 @@ app.get('/api/restaurants/:restaurantId', async (req, res) => {
       }))
     : null;
 
-  // Extract popular dishes from the FULL review text (before trimming). Uses
-  // food-word anchors + noun-phrase capture; see extractPopularDishesFromReviews.
-  const popularDishesFromReviews = extractPopularDishesFromReviews(
-    Array.isArray(placeDetails?.reviews) ? placeDetails.reviews : [],
-  );
+  // Popular dishes: try Claude Haiku first for high-quality extraction
+  // (handles chef-y names, multi-word dishes, dedupes generic vs specific).
+  // Falls back to the regex extractor when no ANTHROPIC_API_KEY is set, the
+  // call fails, or the model returns nothing useful. Cached per-restaurant
+  // inside menuLlm so this only fires once per review-set change.
+  const reviewArrForLlm = Array.isArray(placeDetails?.reviews) ? placeDetails.reviews : [];
+  let popularDishesFromReviews = null;
+  try {
+    popularDishesFromReviews = await extractDishesWithLLM(reviewArrForLlm, restaurantId);
+  } catch (e) {
+    console.warn('[detail] LLM dish extract threw', e?.message);
+  }
+  if (!popularDishesFromReviews || popularDishesFromReviews.length === 0) {
+    popularDishesFromReviews = extractPopularDishesFromReviews(reviewArrForLlm);
+  }
   // Highlight phrases — same "great pizza", "cozy atmosphere" kind of signal
   // Google surfaces in its own UI. Used for the "What people are saying"
   // section on the restaurant detail page.
@@ -3636,6 +3646,7 @@ function getChainMenu(restaurantName) {
 // 6) Menu endpoint — returns structured menu data, photos, or empty state
 // ─── Menu cache + quality helpers ───────────────────────────────────────────
 const { extractMenuFromUrl, scoreMenu } = require('./menuExtractors');
+const { extractDishesWithLLM, extractMenuFromReviewsWithLLM } = require('./menuLlm');
 
 const MENU_QUALITY_THRESHOLD = 50;
 const MENU_TTL_SUCCESS_DAYS = 30;
@@ -4000,6 +4011,51 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
         }
       } catch (err) {
         console.log('[BiteRight] menu: Google photos fallback failed', err.message);
+      }
+    }
+
+    // ── Priority 5: LLM-inferred menu from review text (last resort) ──
+    // When every real-source extractor has failed, ask Claude Haiku to infer
+    // a conservative menu from Google review text. Marked source 'llm' so
+    // the cache row records its provenance. Only runs when ANTHROPIC_API_KEY
+    // is configured; otherwise we skip straight to the no-menu state.
+    if (placeId && GOOGLE_PLACES_API_KEY && process.env.ANTHROPIC_API_KEY) {
+      try {
+        // Need to fetch reviews; the earlier Google Places call asked only
+        // for name/website/url/photos. One extra call to get reviews + types.
+        const url = 'https://maps.googleapis.com/maps/api/place/details/json';
+        const { data } = await axios.get(url, {
+          params: {
+            place_id: placeId,
+            key: GOOGLE_PLACES_API_KEY,
+            fields: 'name,reviews,types',
+          },
+        });
+        if (data.status === 'OK' && Array.isArray(data.result?.reviews) && data.result.reviews.length > 0) {
+          const cuisineHint = coalesceCuisine({
+            types: data.result.types || [],
+            name: data.result.name || restaurantName || '',
+            hint: '',
+          });
+          const inferred = await extractMenuFromReviewsWithLLM(
+            data.result.reviews,
+            cuisineHint,
+            restaurantId,
+          );
+          if (inferred && inferred.length > 0) {
+            const totalItems = inferred.reduce((n, s) => n + s.items.length, 0);
+            if (totalItems >= 3) {
+              result.sections = inferred;
+              result.source = 'llm';
+              console.log('[BiteRight] menu: LLM inferred from reviews', {
+                restaurantId, sections: inferred.length, totalItems,
+              });
+              return res.json(await finalize('llm', null));
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[BiteRight] menu: LLM inference fallback failed', err.message);
       }
     }
 
