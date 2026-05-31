@@ -1508,6 +1508,41 @@ app.get('/api/feed', async (req, res) => {
   }
 });
 
+// DELETE /api/logs/:logId — author-only delete. Verifies ownership via the
+// X-User-Id header rather than trusting the request blindly.
+app.delete('/api/logs/:logId', async (req, res) => {
+  if (!supabaseConfigured) return res.status(503).json({ error: 'Supabase not configured' });
+  const myId = getCurrentUserId(req);
+  if (!myId) return res.status(401).json({ error: 'Not signed in' });
+  const { logId } = req.params;
+  if (!logId) return res.status(400).json({ error: 'logId required' });
+
+  const { data: existing, error: fetchErr } = await supabase
+    .from('logs')
+    .select('user_id')
+    .eq('id', logId)
+    .maybeSingle();
+  if (fetchErr) {
+    console.error('[logs] delete fetch error', fetchErr.message);
+    return res.status(500).json({ error: 'Could not delete log' });
+  }
+  if (!existing) return res.status(404).json({ error: 'Log not found' });
+  if (existing.user_id !== myId) {
+    return res.status(403).json({ error: 'Not your log' });
+  }
+
+  const { error: delErr } = await supabase.from('logs').delete().eq('id', logId);
+  if (delErr) {
+    console.error('[logs] delete error', delErr.message);
+    return res.status(500).json({ error: 'Could not delete log' });
+  }
+  // Drop from the in-memory shadow too so the next /api/feed call doesn't
+  // resurrect it before Supabase reads catch up.
+  const idx = logs.findIndex((l) => l.id === logId);
+  if (idx !== -1) logs.splice(idx, 1);
+  return res.json({ ok: true });
+});
+
 app.post('/api/logs', async (req, res) => {
   const {
     restaurantId,
@@ -1933,6 +1968,98 @@ app.delete('/api/blocks/:userId', async (req, res) => {
   await supabase.from('blocked_users').delete()
     .eq('blocker_id', myId).eq('blocked_id', otherId);
   return res.json({ ok: true });
+});
+
+// GET /api/users/:userId/followers + /following — symmetric friendship graph.
+// Returns the UserSummary for every user with an accepted friendship to the
+// target. Same list for both endpoints today since edges are bidirectional.
+async function getConnectedUsers(userId) {
+  if (!supabaseConfigured) return [];
+  const [asA, asB] = await Promise.all([
+    supabase.from('friendships').select('user_b').eq('user_a', userId).eq('status', 'accepted'),
+    supabase.from('friendships').select('user_a').eq('user_b', userId).eq('status', 'accepted'),
+  ]);
+  const ids = new Set();
+  asA.data?.forEach((r) => ids.add(r.user_b));
+  asB.data?.forEach((r) => ids.add(r.user_a));
+  if (ids.size === 0) return [];
+  const { data: rows } = await supabase.from('users').select('*').in('id', Array.from(ids));
+  return (rows || []).map((r) => userRowToSummary(r));
+}
+
+app.get('/api/users/:userId/followers', async (req, res) => {
+  res.json(await getConnectedUsers(req.params.userId));
+});
+app.get('/api/users/:userId/following', async (req, res) => {
+  res.json(await getConnectedUsers(req.params.userId));
+});
+
+// GET /api/users/:userId/logs — logs authored by this user, in FeedLog shape.
+// Respects the target user's visibility setting:
+//   - public:  anyone can read
+//   - friends: only accepted friends + the user themselves
+//   - private: only the user themselves
+app.get('/api/users/:userId/logs', async (req, res) => {
+  try {
+    const targetId = req.params.userId;
+    const myId = getCurrentUserId(req);
+
+    // Visibility check
+    let visibility = 'public';
+    if (supabaseConfigured) {
+      const { data: row } = await supabase
+        .from('users')
+        .select('visibility')
+        .eq('id', targetId)
+        .maybeSingle();
+      if (row?.visibility) visibility = row.visibility;
+    }
+    if (visibility === 'private' && myId !== targetId) return res.json([]);
+    if (visibility === 'friends' && myId !== targetId) {
+      if (!myId) return res.json([]);
+      const [a, b] = myId < targetId ? [myId, targetId] : [targetId, myId];
+      const { data: f } = await supabase
+        .from('friendships')
+        .select('status')
+        .eq('user_a', a)
+        .eq('user_b', b)
+        .maybeSingle();
+      if (f?.status !== 'accepted') return res.json([]);
+    }
+
+    const allLogs = await db.getAllLogs();
+    const mine = allLogs.filter((l) => l.userId === targetId);
+    const items = await Promise.all(mine.map(async (l) => {
+      const info = await getRestaurantInfo(l.restaurantId).catch(() => null);
+      return {
+        id: l.id,
+        userId: l.userId || null,
+        userName: l.userName || 'Someone',
+        restaurantId: l.restaurantId,
+        restaurantName: info?.name || 'Unknown',
+        cuisine: info?.cuisine || '',
+        neighborhood: info?.neighborhood || null,
+        city: info?.city || null,
+        state: null,
+        address: info?.address || '',
+        score: l.rating,
+        createdAt: l.createdAt,
+        note: l.notes || undefined,
+        previewPhotoUrl: l.previewPhotoUrl || undefined,
+        photo_url: Array.isArray(l.photos) && l.photos.length > 0 ? l.photos[0] : null,
+        standoutDish: l.standoutDish ? { label: 'Best dish', name: l.standoutDish } : undefined,
+        standoutDishes: l.standoutDish ? [l.standoutDish] : undefined,
+        dishes: l.dishes || undefined,
+        vibeTags: l.vibeTags || undefined,
+        quickTip: l.quickTip || null,
+        highlight: l.highlight || null,
+      };
+    }));
+    res.json(items);
+  } catch (e) {
+    console.error('[user-logs] error', e?.message);
+    res.status(500).json({ error: 'user-logs-failed' });
+  }
 });
 
 // POST /api/follows/:userId — follow another user. Symmetric for now: writes

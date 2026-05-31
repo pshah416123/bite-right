@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 import {
+  Alert,
   Animated,
   Image,
   Modal,
@@ -188,7 +189,7 @@ function AvatarBadge({ name, avatarUrl, size }: { name: string; avatarUrl?: stri
 
 export function FeedCard({ log, socialLabel, isHero }: Props) {
   const router = useRouter();
-  const { items } = useFeedContext();
+  const { items, deleteLog } = useFeedContext();
   const { saveRestaurant, removeSaved, isSaved } = useSavedRestaurants();
   const allFriendVisits = useFriendVisitsAtRestaurant(log.restaurantId);
   // Exclude the card author from "was here too" social proof
@@ -203,6 +204,33 @@ export function FeedCard({ log, socialLabel, isHero }: Props) {
   const cardType = determineCardType(log);
   const hookText = generateHookText(log, friendVisits.length);
   const supportingLine = getSupportingLine(log, friendVisits.length);
+
+  const isOwn = log.userName === CURRENT_USER_NAME;
+
+  const handleLongPress = () => {
+    if (!isOwn) return;
+    Alert.alert(
+      'Delete this post?',
+      'Removes your log from the feed for everyone. This can’t be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            deleteLog(log.id).catch(() => {});
+          },
+        },
+      ],
+    );
+  };
+
+  // Tap the author chip → open their public profile (skip self + mock data
+  // without a real userId; the friend/[id] screen needs a Supabase user id).
+  const handleAuthorPress = () => {
+    if (isOwn || !log.userId) return;
+    router.push(`/friend/${encodeURIComponent(log.userId)}` as never);
+  };
 
   // Entrance animation removed: when the feed first loads, every visible card
   // ran its own translateY+fade in parallel, then fetchFeed prepended real
@@ -291,6 +319,8 @@ export function FeedCard({ log, socialLabel, isHero }: Props) {
           <Pressable
             style={[st.card, isHero && st.cardHero]}
             onPress={goRestaurant}
+            onLongPress={handleLongPress}
+            delayLongPress={500}
             onPressIn={onPressIn}
             onPressOut={onPressOut}
           >
@@ -332,13 +362,20 @@ export function FeedCard({ log, socialLabel, isHero }: Props) {
 
                 {/* Author + note */}
                 <View style={st.authorRow}>
-                  <AvatarBadge name={log.userName} avatarUrl={log.userAvatar} size={18} />
-                  <Text style={st.authorName} numberOfLines={1}>
-                    {formatAuthorLine(
-                      log.userName === CURRENT_USER_NAME ? 'You' : log.userName,
-                      log.taggedUsers,
-                    )}
-                  </Text>
+                  <TouchableOpacity
+                    onPress={handleAuthorPress}
+                    disabled={isOwn || !log.userId}
+                    activeOpacity={0.7}
+                    style={st.authorChip}
+                  >
+                    <AvatarBadge name={log.userName} avatarUrl={log.userAvatar} size={18} />
+                    <Text style={st.authorName} numberOfLines={1}>
+                      {formatAuthorLine(
+                        log.userName === CURRENT_USER_NAME ? 'You' : log.userName,
+                        log.taggedUsers,
+                      )}
+                    </Text>
+                  </TouchableOpacity>
                   {friendVisits.length > 0 && (
                     <TouchableOpacity onPress={() => setSocialSheetOpen(true)} activeOpacity={0.75} style={st.socialDot}>
                       <Text style={st.socialDotText}>
@@ -371,6 +408,8 @@ export function FeedCard({ log, socialLabel, isHero }: Props) {
         <Pressable
           style={st.compactCard}
           onPress={goRestaurant}
+          onLongPress={handleLongPress}
+          delayLongPress={500}
           onPressIn={onPressIn}
           onPressOut={onPressOut}
         >
@@ -551,6 +590,12 @@ const st = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
+  },
+  authorChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flexShrink: 1,
   },
   authorName: {
     fontSize: 12.5,

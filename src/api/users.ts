@@ -1,4 +1,5 @@
 import { apiClient } from './client';
+import type { FeedLog } from '../components/FeedCard';
 
 export type UserVisibility = 'public' | 'friends' | 'private';
 
@@ -100,6 +101,13 @@ export async function getFollowers(userId: string): Promise<UserSummary[]> {
 export async function getFollowing(userId: string): Promise<UserSummary[]> {
   const { data } = await apiClient.get<UserSummary[]>(
     `/api/users/${encodeURIComponent(userId)}/following`,
+  );
+  return data;
+}
+
+export async function getUserLogs(userId: string): Promise<FeedLog[]> {
+  const { data } = await apiClient.get<FeedLog[]>(
+    `/api/users/${encodeURIComponent(userId)}/logs`,
   );
   return data;
 }

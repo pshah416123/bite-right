@@ -7,7 +7,7 @@ import { useTestMode } from './TestModeContext';
 import { TEST_FEED_LOGS } from '../data/testMockData';
 import { SOCIAL_PROFILES } from '../data/socialProfiles';
 import { useAuthContext } from './AuthContext';
-import { createLog as apiCreateLog, getFeed as apiGetFeed } from '../api/logs';
+import { createLog as apiCreateLog, deleteLog as apiDeleteLog, getFeed as apiGetFeed } from '../api/logs';
 
 // Derive a friendly display name from a Supabase auth user. Falls back to
 // the email prefix capitalized when no metadata is set. Skipped entirely
@@ -96,6 +96,9 @@ interface FeedContextValue {
   items: FeedLog[];
   addLog: (input: NewLogInput) => void;
   updateLog: (id: string, input: NewLogInput) => void;
+  /** Delete a log the current user authored. Optimistically removes from
+   *  state, then calls the server. */
+  deleteLog: (logId: string) => Promise<void>;
   /** Look up the canonical restaurant_log for a given restaurantId (current user only). */
   getRestaurantLog: (restaurantId: string) => RestaurantLog | undefined;
   /** Get all visits for a given restaurantId (current user only), newest first. */
@@ -486,6 +489,18 @@ export function FeedProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const deleteLog = useCallback(async (logId: string) => {
+    // Optimistic — remove from state first, then call the server. On failure
+    // we don't roll back (rare; the next fetchFeed will reconcile if the
+    // server still has it).
+    setItems((prev) => prev.filter((l) => l.id !== logId));
+    try {
+      await apiDeleteLog(logId);
+    } catch {
+      // ignore — next fetchFeed reconciles
+    }
+  }, []);
+
   const getRestaurantLog = useCallback((restaurantId: string): RestaurantLog | undefined => {
     return restaurantLogsRef.current.get(restaurantId);
   }, []);
@@ -636,10 +651,11 @@ export function FeedProvider({ children }: { children: ReactNode }) {
       items: deduplicatedItems,
       addLog,
       updateLog,
+      deleteLog,
       getRestaurantLog,
       getVisits,
     }),
-    [deduplicatedItems, addLog, updateLog, getRestaurantLog, getVisits],
+    [deduplicatedItems, addLog, updateLog, deleteLog, getRestaurantLog, getVisits],
   );
 
   return <FeedContext.Provider value={value}>{children}</FeedContext.Provider>;

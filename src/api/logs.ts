@@ -43,3 +43,8 @@ export async function getFeed(): Promise<FeedLog[]> {
   const { data } = await apiClient.get<FeedLog[]>('/api/feed', { params: { scope: 'global' } });
   return data;
 }
+
+export async function deleteLog(logId: string): Promise<{ ok: boolean }> {
+  const { data } = await apiClient.delete<{ ok: boolean }>(`/api/logs/${encodeURIComponent(logId)}`);
+  return data;
+}
