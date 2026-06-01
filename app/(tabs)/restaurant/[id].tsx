@@ -1300,17 +1300,15 @@ export default function RestaurantScreen() {
               </View>
             )}
 
-            {/* Section order follows the discovery -> decision flow:
-                BiteRight Picks (your own logs) -> Friends Ordered (social
-                proof) -> Quick Tips -> Full Menu (or What People Order
-                fallback when menu unavailable) -> Review keyword cloud ->
-                Utility details (hours/website) -> Next stop. Each block
-                self-hides when it has no signal. */}
+            {/* Section order mirrors the not-visited flow so the two states
+                read consistently: dishes → friends-said → menu → public
+                reviews → tips → details → next stop. Each block self-hides
+                when it has no signal. */}
             {standoutDishesBlock}
             {!isFromFriendPost && friendQuotesBlock}
-            {!isFromFriendPost && id && <QuickTipsBlock restaurantId={id} />}
             {!isFromFriendPost && menuBlock}
             {!isFromFriendPost && whatPeopleAreSayingBlock}
+            {!isFromFriendPost && id && <QuickTipsBlock restaurantId={id} />}
             {!isFromFriendPost && detailsBlock}
             {!isFromFriendPost && afterSpotsBlock}
             {isFromFriendPost && (
@@ -1346,12 +1344,20 @@ export default function RestaurantScreen() {
             {regularsBlock}
             {actionButtons}
 
+            {/* Section order (decision flow for a place you haven't visited):
+                  standout dishes  → what to try
+                  what friends said → trusted social proof
+                  menu             → the biggest decision input
+                  what people are saying → public review keywords
+                  quick tips       → niche / tactical
+                  details          → address / hours / website
+                  next stop        → outbound suggestion */}
             {standoutDishesBlock}
             {friendQuotesBlock}
+            {!isFromFriendPost && menuBlock}
+            {!isFromFriendPost && whatPeopleAreSayingBlock}
             {id && <QuickTipsBlock restaurantId={id} />}
             {!isFromFriendPost && detailsBlock}
-            {!isFromFriendPost && whatPeopleAreSayingBlock}
-            {!isFromFriendPost && menuBlock}
             {!isFromFriendPost && afterSpotsBlock}
             {isFromFriendPost && (
               <TouchableOpacity
