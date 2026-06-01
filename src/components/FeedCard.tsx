@@ -381,7 +381,7 @@ export function FeedCard({ log, socialLabel, isHero }: Props) {
                   )}
                 </View>
                 {supportingLine && (
-                  <Text style={st.noteText} numberOfLines={2}>{supportingLine}</Text>
+                  <Text style={st.noteText} numberOfLines={1}>{supportingLine}</Text>
                 )}
               </View>
             </View>
@@ -443,13 +443,21 @@ const st = StyleSheet.create({
   },
 
   // ── Featured (horizontal card) ──
+  // Height is fixed at thumbnail (120) + vertical padding (12×2) = 144 so
+  // the card never reflows when async data (friend hooks, feed fetch,
+  // image enrichment) changes the info column's content. With cardInfo
+  // centered, the content shifts within the fixed 144px envelope instead
+  // of pushing the card taller. Hero variant adds 20px to accommodate
+  // its larger 140-px thumbnail.
   cardHero: {
+    height: 164,
     shadowColor: 'rgba(0,0,0,0.14)',
     shadowRadius: 20,
     shadowOffset: { width: 0, height: 6 },
     elevation: 6,
   },
   card: {
+    height: 144,
     borderRadius: 20,
     backgroundColor: colors.surface,
     shadowColor: 'rgba(43,33,24,0.10)',
@@ -458,6 +466,7 @@ const st = StyleSheet.create({
     shadowOffset: { width: 0, height: 4 },
     elevation: 4,
     padding: 12,
+    overflow: 'hidden',
   },
   cardRow: {
     flexDirection: 'row',
