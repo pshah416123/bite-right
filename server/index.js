@@ -5564,26 +5564,40 @@ app.get('/api/tonight/sessions/:code/matches', async (req, res) => {
     }
   }
 
-  // Strict-all: restaurant must have LIKE from every participant and no PASS from any
-  const participantIds = new Set(session.participants.map((p) => p.participantId));
+  // Build matches by iterating the set of restaurants that were ACTUALLY
+  // SWIPED ON in this session — not the static TONIGHT_POOL seed list. The
+  // swipe deck is built dynamically from Google Places, so most of the
+  // restaurants you and your friend liked are Google-discovered (ChIJ ids)
+  // that never appear in TONIGHT_POOL. Old code iterated TONIGHT_POOL and
+  // produced "no matches" even when the group had clear agreement.
+  const swipedRestaurantIds = new Set(Object.keys(likesByRestaurant));
   const matches = [];
-  for (const rest of TONIGHT_POOL) {
-    const likeCount = likesByRestaurant[rest.restaurantId] || 0;
-    const passCount = passByRestaurant[rest.restaurantId] || 0;
+  for (const restaurantId of swipedRestaurantIds) {
+    const likeCount = likesByRestaurant[restaurantId] || 0;
+    const passCount = passByRestaurant[restaurantId] || 0;
     if (passCount > 0) continue;
-    if (likeCount >= likesRequired) {
-      const percentMatch = totalParticipants > 0 ? (likeCount / totalParticipants) * 100 : 100;
-      const placeId = findRestaurantById(rest.restaurantId)?.googlePlaceId ?? findRestaurantById(rest.restaurantId)?.placeId ?? null;
-      const resolvedUrl = await resolveRestaurantCardImage(rest.restaurantId, placeId, undefined);
-      matches.push({
-        restaurantId: rest.restaurantId,
-        name: rest.name,
-        address: rest.address,
-        percentMatch: Math.round(percentMatch),
-        displayImageUrl: resolvedUrl ? toAbsoluteImageUrl(resolvedUrl) : null,
-        previewPhotoUrl: resolvedUrl ? toAbsoluteImageUrl(resolvedUrl) : null,
-      });
-    }
+    if (likeCount < likesRequired) continue;
+    const fromDb = findRestaurantById(restaurantId);
+    // Name/address fall back to the swipe record if the in-memory restaurants
+    // array didn't capture it (shouldn't happen, but defensive).
+    const swipeRecord = tonightSwipes.find(
+      (s) => s.sessionId === session.id && s.restaurantId === restaurantId,
+    );
+    const name = fromDb?.name || swipeRecord?.restaurantName || 'Restaurant';
+    const address = fromDb?.address || '';
+    const percentMatch = totalParticipants > 0
+      ? (likeCount / totalParticipants) * 100
+      : 100;
+    const placeId = fromDb?.googlePlaceId ?? fromDb?.placeId ?? null;
+    const resolvedUrl = await resolveRestaurantCardImage(restaurantId, placeId, undefined);
+    matches.push({
+      restaurantId,
+      name,
+      address,
+      percentMatch: Math.round(percentMatch),
+      displayImageUrl: resolvedUrl ? toAbsoluteImageUrl(resolvedUrl) : null,
+      previewPhotoUrl: resolvedUrl ? toAbsoluteImageUrl(resolvedUrl) : null,
+    });
   }
 
   matches.sort((a, b) => (b.percentMatch - a.percentMatch));
