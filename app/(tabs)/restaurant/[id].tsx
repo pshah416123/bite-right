@@ -22,7 +22,7 @@ import { RESTAURANTS } from '~/src/data/restaurants';
 import { colors } from '~/src/theme/colors';
 import { useFeedContext } from '~/src/context/FeedContext';
 import type { VibeTag } from '~/src/components/FeedCard';
-import { getRestaurantDetail, getRestaurantMenu, getNearbyAfterSpots, cycleRestaurantPhoto, type RestaurantDetail, type RestaurantMenu, type NearbyAfterSpot, type ReservationLink, type ReservationProvider } from '~/src/api/restaurants';
+import { getRestaurantDetail, getRestaurantMenu, getNearbyAfterSpots, cycleRestaurantPhoto, RestaurantDetailTimeout, type RestaurantDetail, type RestaurantMenu, type NearbyAfterSpot, type ReservationLink, type ReservationProvider } from '~/src/api/restaurants';
 import { MenuTemplate } from '~/src/components/MenuSection';
 import { useSavedRestaurants } from '~/src/context/SavedRestaurantsContext';
 import { useCompare } from '~/src/context/CompareContext';
@@ -123,6 +123,53 @@ function formatPriceLevel(level?: number): string {
   return Array.from({ length: Math.min(4, level) }, () => '$').join('');
 }
 
+// Parse Google's `weekday_text` (e.g. "Monday: 11:00 AM – 10:00 PM") for
+// today's row and return which meal windows the restaurant's open ranges
+// overlap. We need ≥1 hour of overlap to call it a meal — a place open
+// 10:30 PM–2 AM technically intersects the dinner window but is really
+// late-night, not "open for dinner". Brunch replaces Lunch on weekends.
+function parseMealsServedToday(weekdayText: string[] | null | undefined): string[] {
+  if (!weekdayText || weekdayText.length === 0) return [];
+  const DAY_LABELS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const today = DAY_LABELS[new Date().getDay()];
+  const line = weekdayText.find((l) => l.startsWith(today + ':'));
+  if (!line) return [];
+  if (/closed/i.test(line)) return [];
+
+  // Match "11:00 AM – 10:00 PM" / "11 AM - 10 PM" / "9:30 AM–3:00 PM" etc.
+  // En-dash (U+2013), em-dash (U+2014), and hyphen all appear in the wild.
+  const rangeRe = /(\d{1,2})(?::(\d{2}))?\s*(AM|PM)\s*[–—\-]\s*(\d{1,2})(?::(\d{2}))?\s*(AM|PM)/gi;
+  const ranges: Array<[number, number]> = [];
+  let m: RegExpExecArray | null;
+  while ((m = rangeRe.exec(line)) !== null) {
+    const startH = (parseInt(m[1], 10) % 12) + (m[3].toUpperCase() === 'PM' ? 12 : 0);
+    const endH = (parseInt(m[4], 10) % 12) + (m[6].toUpperCase() === 'PM' ? 12 : 0);
+    const start = startH + parseInt(m[2] || '0', 10) / 60;
+    let end = endH + parseInt(m[5] || '0', 10) / 60;
+    if (end <= start) end += 24; // wraps past midnight
+    ranges.push([start, end]);
+  }
+  if (ranges.length === 0) return [];
+
+  const isWeekend = today === 'Saturday' || today === 'Sunday';
+  const MEALS: Array<[string, number, number]> = [
+    ['Breakfast', 6, 11],
+    isWeekend ? ['Brunch', 9, 15] : ['Lunch', 11, 16],
+    ['Dinner', 17, 22],
+  ];
+
+  const meals: string[] = [];
+  for (const [label, mealStart, mealEnd] of MEALS) {
+    const open = ranges.some(([s, e]) => {
+      const overlapStart = Math.max(s, mealStart);
+      const overlapEnd = Math.min(e, mealEnd);
+      return overlapEnd - overlapStart >= 1;
+    });
+    if (open) meals.push(label);
+  }
+  return meals;
+}
+
 export default function RestaurantScreen() {
   const params = useLocalSearchParams<{ id: string; logId?: string; payload?: string }>();
   const id = typeof params.id === 'string' ? params.id : Array.isArray(params.id) ? params.id[0] : undefined;
@@ -134,10 +181,15 @@ export default function RestaurantScreen() {
   const { saveRestaurant, isSaved } = useSavedRestaurants();
   const { isSelected: isCompareSelected, toggle: toggleCompare } = useCompare();
   const [detail, setDetail] = useState<RestaurantDetail | null>(null);
+  const [detailTimedOut, setDetailTimedOut] = useState(false);
   const [distanceMiles, setDistanceMiles] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [menu, setMenu] = useState<RestaurantMenu | null>(null);
   const [menuLoading, setMenuLoading] = useState(false);
+  // Bumping these keys re-runs the corresponding fetch effect. Used by the
+  // "Retry" affordances when a fetch timed out.
+  const [menuRefreshKey, setMenuRefreshKey] = useState(0);
+  const [detailRefreshKey, setDetailRefreshKey] = useState(0);
   const [hoursExpanded, setHoursExpanded] = useState(false);
   const [afterSpots, setAfterSpots] = useState<NearbyAfterSpot[]>([]);
   const [cyclingPhoto, setCyclingPhoto] = useState(false);
@@ -154,6 +206,7 @@ export default function RestaurantScreen() {
         cuisines?: string[];
         neighborhood?: string | null;
         state?: string | null;
+        address?: string | null;
         priceLevel?: number | null;
         placeId?: string | null;
         googlePlaceId?: string | null;
@@ -174,6 +227,7 @@ export default function RestaurantScreen() {
         cuisines: Array.isArray(parsed.cuisines) ? parsed.cuisines : undefined,
         neighborhood: parsed.neighborhood ?? undefined,
         state: parsed.state ?? undefined,
+        address: parsed.address ?? undefined,
         priceLevel: parsed.priceLevel ?? undefined,
         placeId: parsed.placeId ?? undefined,
         googlePlaceId: parsed.googlePlaceId ?? parsed.placeId ?? undefined,
@@ -241,8 +295,13 @@ export default function RestaurantScreen() {
 
   useEffect(() => {
     if (!id) return;
-    getRestaurantDetail(id).then((d) => setDetail(d));
-  }, [id]);
+    setDetailTimedOut(false);
+    getRestaurantDetail(id)
+      .then((d) => setDetail(d))
+      .catch((err) => {
+        if (err instanceof RestaurantDetailTimeout) setDetailTimedOut(true);
+      });
+  }, [id, detailRefreshKey]);
 
   // Skip menu + nearby fetches in social context (friend post view)
   useEffect(() => {
@@ -251,7 +310,7 @@ export default function RestaurantScreen() {
     getRestaurantMenu(id)
       .then((m) => setMenu(m))
       .finally(() => setMenuLoading(false));
-  }, [id, isFromFriendPost]);
+  }, [id, isFromFriendPost, menuRefreshKey]);
 
   useEffect(() => {
     if (!detail || isFromFriendPost) return;
@@ -678,17 +737,38 @@ export default function RestaurantScreen() {
     </View>
   );
 
+  // Parse Google's weekday_text to figure out which meals the restaurant
+  // serves TODAY. Surfaced as small chips below the info line so a user
+  // can see "Open for: Lunch \u00B7 Dinner" at a glance without expanding the
+  // full hours block. Brunch replaces Lunch on weekends (the time windows
+  // overlap and a restaurant rarely labels itself as both).
+  const mealsServedToday = useMemo(() => {
+    return parseMealsServedToday(detail?.hours ?? null);
+  }, [detail?.hours]);
+
   const infoLine = (
-    <View style={styles.infoLineRow}>
-      <Text style={styles.infoLineText} numberOfLines={1}>
-        {infoLineParts.join(' \u00B7 ')}
-      </Text>
-      {isOpenNow && (
-        <View style={styles.openBadge}>
-          <View style={styles.openDot} />
-          <Text style={styles.openText}>Open now</Text>
+    <View>
+      <View style={styles.infoLineRow}>
+        <Text style={styles.infoLineText} numberOfLines={1}>
+          {infoLineParts.join(' \u00B7 ')}
+        </Text>
+        {isOpenNow && (
+          <View style={styles.openBadge}>
+            <View style={styles.openDot} />
+            <Text style={styles.openText}>Open now</Text>
+          </View>
+        )}
+      </View>
+      {mealsServedToday.length > 0 ? (
+        <View style={styles.mealServedRow}>
+          <Text style={styles.mealServedLabel}>Open today for</Text>
+          {mealsServedToday.map((m) => (
+            <View key={m} style={styles.mealServedChip}>
+              <Text style={styles.mealServedChipText}>{m}</Text>
+            </View>
+          ))}
         </View>
-      )}
+      ) : null}
     </View>
   );
 
@@ -951,8 +1031,20 @@ export default function RestaurantScreen() {
     <View style={styles.section}>
       <Text style={styles.sectionTitle}>Menu</Text>
       <Text style={styles.sectionSubtitle}>
-        Menu unavailable — try the restaurant{'’'}s website or social.
+        {menu?.loadError === 'timeout'
+          ? 'Menu is taking longer than usual to load.'
+          : `Menu unavailable — try the restaurant${'’'}s website or social.`}
       </Text>
+      {menu?.loadError ? (
+        <TouchableOpacity
+          style={styles.retryBtn}
+          onPress={() => setMenuRefreshKey((k) => k + 1)}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="refresh" size={14} color={colors.accent} />
+          <Text style={styles.retryBtnText}>Retry</Text>
+        </TouchableOpacity>
+      ) : null}
     </View>
   );
 
@@ -1030,12 +1122,14 @@ export default function RestaurantScreen() {
 
   const detailsBlock = (
     <>
-      {(detail?.address || restaurant?.neighborhood || restaurant?.state) ? (
+      {(detail?.address || restaurantFromPayload?.address || restaurant?.neighborhood || restaurant?.state) ? (
         <View style={styles.detailsCard}>
           <View style={styles.detailRow}>
             <Ionicons name="location-outline" size={15} color={colors.textMuted} />
             <Text style={styles.detailText}>
-              {detail?.address || [restaurant?.neighborhood, restaurant?.state].filter(Boolean).join(', ')}
+              {detail?.address
+                || restaurantFromPayload?.address
+                || [restaurant?.neighborhood, restaurant?.state].filter(Boolean).join(', ')}
             </Text>
           </View>
         </View>
@@ -1185,6 +1279,23 @@ export default function RestaurantScreen() {
         </View>
 
         {heroImage}
+
+        {detailTimedOut && !detail ? (
+          <View style={styles.detailErrorBanner}>
+            <Ionicons name="cloud-offline-outline" size={16} color={colors.accent} />
+            <Text style={styles.detailErrorText}>
+              Couldn{'’'}t load full details — hours, address, and reservations may be missing.
+            </Text>
+            <TouchableOpacity
+              style={styles.retryBtn}
+              onPress={() => setDetailRefreshKey((k) => k + 1)}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="refresh" size={14} color={colors.accent} />
+              <Text style={styles.retryBtnText}>Retry</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
 
         {hasVisited ? (
           /* ═══════════════════════════════════════════════════════════════
@@ -1540,6 +1651,32 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#1B873B',
   },
+  mealServedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 8,
+  },
+  mealServedLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.textMuted,
+    marginRight: 2,
+  },
+  mealServedChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: '#FFE9D6',
+    borderWidth: 1,
+    borderColor: '#F5D2B0',
+  },
+  mealServedChipText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.text,
+  },
 
   // Friends
   friendsSection: {
@@ -1743,6 +1880,30 @@ const styles = StyleSheet.create({
     backgroundColor: colors.accentSoft,
   },
   peopleOrderText: { fontSize: 13, fontWeight: '600', color: colors.accent },
+  retryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 6,
+    marginTop: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: colors.accentSoft,
+  },
+  retryBtnText: { fontSize: 13, fontWeight: '700', color: colors.accent },
+  detailErrorBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 14,
+    backgroundColor: colors.accentSoft,
+  },
+  detailErrorText: { flex: 1, fontSize: 13, color: colors.text, lineHeight: 18 },
   ratingBreakdown: {
     paddingVertical: 12,
     paddingHorizontal: 14,

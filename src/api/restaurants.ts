@@ -266,16 +266,39 @@ export interface RestaurantMenu {
    *  false, render the "What people order" fallback instead. */
   available?: boolean;
   lastScrapedAt?: string;
+  /** Client-side only — set when the menu fetch timed out or errored so the
+   *  UI can offer a retry instead of permanently showing "unavailable". */
+  loadError?: 'timeout' | 'error';
 }
 
-/** Fetch restaurant detail for Reserve and detail view. Returns null on 404 or error. */
+// Cold restaurants force the server through a long pipeline (Puppeteer +
+// Vision OCR). The default 60s client timeout makes the spinner feel like
+// it's hung. 15s is enough to clear hot/cached menus and reservations,
+// short enough that users notice and can retry rather than wait silently.
+const DETAIL_TIMEOUT_MS = 15000;
+const MENU_TIMEOUT_MS = 15000;
+
+function isAxiosTimeout(err: unknown): boolean {
+  const e = err as { code?: string; message?: string };
+  return e?.code === 'ECONNABORTED' || /timeout/i.test(e?.message ?? '');
+}
+
+/** Fetch restaurant detail for Reserve and detail view. Returns null on 404
+ *  or error. Throws RestaurantDetailTimeout on timeout so the caller can
+ *  offer a retry rather than rendering a permanent empty state. */
+export class RestaurantDetailTimeout extends Error {
+  constructor() { super('detail fetch timed out'); this.name = 'RestaurantDetailTimeout'; }
+}
+
 export async function getRestaurantDetail(restaurantId: string): Promise<RestaurantDetail | null> {
   try {
     const { data } = await apiClient.get<RestaurantDetail>(
       `/api/restaurants/${encodeURIComponent(restaurantId)}`,
+      { timeout: DETAIL_TIMEOUT_MS },
     );
     return data;
-  } catch {
+  } catch (err) {
+    if (isAxiosTimeout(err)) throw new RestaurantDetailTimeout();
     return null;
   }
 }
@@ -300,10 +323,11 @@ export async function getRestaurantMenu(restaurantId: string): Promise<Restauran
   try {
     const { data } = await apiClient.get<RestaurantMenu>(
       `/api/restaurants/${encodeURIComponent(restaurantId)}/menu`,
+      { timeout: MENU_TIMEOUT_MS },
     );
     return data ?? EMPTY_MENU;
-  } catch {
-    return EMPTY_MENU;
+  } catch (err) {
+    return { ...EMPTY_MENU, loadError: isAxiosTimeout(err) ? 'timeout' : 'error' };
   }
 }
 

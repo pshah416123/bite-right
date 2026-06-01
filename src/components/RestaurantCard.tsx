@@ -30,6 +30,7 @@ export interface DiscoverItem {
     cuisine: string;
     neighborhood?: string;
     state?: string;
+    address?: string | null;
     priceLevel?: number;
     lat?: number | null;
     lng?: number | null;
@@ -139,6 +140,11 @@ export function RestaurantCard({ item, saved, userCoords }: Props) {
       cuisines: restaurant.cuisines ?? null,
       neighborhood: restaurant.neighborhood ?? null,
       state: restaurant.state ?? null,
+      // Pass the formatted address through so the detail page has a usable
+      // address line even if the detail fetch is slow or fails. Without this
+      // the address row falls back to just neighborhood ("Chicago"), which
+      // looks broken until detail lands.
+      address: restaurant.address ?? null,
       priceLevel: restaurant.priceLevel ?? null,
       placeId: restaurant.placeId ?? null,
       googlePlaceId: restaurant.googlePlaceId ?? null,

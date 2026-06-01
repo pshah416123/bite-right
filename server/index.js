@@ -2510,64 +2510,174 @@ app.get('/api/restaurants/:restaurantId', async (req, res) => {
   const placeId = fromDb?.googlePlaceId ?? fromDb?.placeId ?? info.googlePlaceId ?? info.placeId ?? null;
   const debug = String(req.query.debug || '') === '1';
 
-  // Fetch Google Places details + reservation links in parallel
-  let placeDetails = null;
-  let reservationLinks = [];
-  await Promise.all([
-    (async () => {
-      if (placeId && GOOGLE_PLACES_API_KEY) {
-        try {
-          placeDetails = await googlePlaceDetails(placeId);
-        } catch (err) {
-          console.error('[BiteRight] place details fetch error', err.message);
-        }
-      }
-    })(),
-    (async () => {
-      reservationLinks = await getReservationLinksForRestaurant(restaurantId);
-    })(),
-  ]);
+  // Try the detail cache before hitting Google + Claude. A fresh hit lets us
+  // skip both round-trips entirely; a stale hit serves cached data
+  // immediately and fires a background refresh. This is what makes cold
+  // restaurants (Duck Duck Goat, PLANTA, etc.) load fast on the second visit
+  // even when the upstream pipeline is slow.
+  const cachedDetail = await readCachedDetail(restaurantId);
+  const cacheFresh = isDetailCacheFresh(cachedDetail);
 
-  const hours = placeDetails?.opening_hours?.weekday_text || null;
-  const isOpenNow = placeDetails?.opening_hours?.open_now ?? null;
-  const phoneFromGoogle = placeDetails?.international_phone_number || null;
-  const websiteFromGoogle = placeDetails?.website || null;
-  const priceLevelFromGoogle = typeof placeDetails?.price_level === 'number' ? placeDetails.price_level : null;
-  const googleRating = typeof placeDetails?.rating === 'number' ? placeDetails.rating : null;
-  const googleRatingsTotal = typeof placeDetails?.user_ratings_total === 'number' ? placeDetails.user_ratings_total : null;
-  // Slim the review payload — Google returns 5 reviews; we keep the 3 most
-  // recent with just the fields we render. text is trimmed to 280 chars so
-  // the card stays compact.
-  const googleReviews = Array.isArray(placeDetails?.reviews)
-    ? placeDetails.reviews.slice(0, 3).map((r) => ({
-        authorName: r.author_name || 'Google user',
-        rating: typeof r.rating === 'number' ? r.rating : null,
-        text: typeof r.text === 'string' ? r.text.slice(0, 280) : '',
-        relativeTime: r.relative_time_description || null,
-      }))
-    : null;
-
-  // Popular dishes: try Claude Haiku first for high-quality extraction
-  // (handles chef-y names, multi-word dishes, dedupes generic vs specific).
-  // Falls back to the regex extractor when no ANTHROPIC_API_KEY is set, the
-  // call fails, or the model returns nothing useful. Cached per-restaurant
-  // inside menuLlm so this only fires once per review-set change.
-  const reviewArrForLlm = Array.isArray(placeDetails?.reviews) ? placeDetails.reviews : [];
+  // Variables populated from EITHER cache or live; keep the downstream code
+  // source-agnostic.
+  let placeDetails = null;     // raw Google response (only set on live fetch; used for image resolution)
+  let hours = null;
+  let isOpenNow = null;
+  let phoneFromGoogle = null;
+  let websiteFromGoogle = null;
+  let googleMapsUrlFromGoogle = null;
+  let priceLevelFromGoogle = null;
+  let googleRating = null;
+  let googleRatingsTotal = null;
+  let googleReviews = null;
   let popularDishesFromReviews = null;
-  try {
-    popularDishesFromReviews = await extractDishesWithLLM(reviewArrForLlm, restaurantId);
-  } catch (e) {
-    console.warn('[detail] LLM dish extract threw', e?.message);
+  let whatPeopleAreSaying = null;
+  let addressFromGoogle = null;
+  let latFromGoogle = null;
+  let lngFromGoogle = null;
+  let reservationLinks = [];
+
+  if (cachedDetail && cacheFresh) {
+    // Cache hit — derive every field from the cached row. is_open_now is
+    // recomputed against the current clock because hours are static but
+    // openness is not.
+    hours = Array.isArray(cachedDetail.hours_weekday_text) ? cachedDetail.hours_weekday_text : null;
+    isOpenNow = computeIsOpenNowFromPeriods(cachedDetail.hours_periods);
+    phoneFromGoogle = cachedDetail.phone || null;
+    websiteFromGoogle = cachedDetail.website || null;
+    googleMapsUrlFromGoogle = cachedDetail.google_maps_url || null;
+    priceLevelFromGoogle = typeof cachedDetail.price_level === 'number' ? cachedDetail.price_level : null;
+    googleRating = typeof cachedDetail.google_rating === 'number' ? cachedDetail.google_rating : null;
+    googleRatingsTotal = typeof cachedDetail.google_ratings_total === 'number' ? cachedDetail.google_ratings_total : null;
+    googleReviews = Array.isArray(cachedDetail.google_reviews) ? cachedDetail.google_reviews : null;
+    popularDishesFromReviews = Array.isArray(cachedDetail.popular_dishes) ? cachedDetail.popular_dishes : null;
+    whatPeopleAreSaying = Array.isArray(cachedDetail.what_people_are_saying) ? cachedDetail.what_people_are_saying : null;
+    addressFromGoogle = cachedDetail.formatted_address || null;
+    latFromGoogle = typeof cachedDetail.lat === 'number' ? cachedDetail.lat : null;
+    lngFromGoogle = typeof cachedDetail.lng === 'number' ? cachedDetail.lng : null;
+    reservationLinks = await getReservationLinksForRestaurant(restaurantId);
+  } else {
+    // Cache miss or stale — fetch live in parallel with reservation links.
+    await Promise.all([
+      (async () => {
+        if (placeId && GOOGLE_PLACES_API_KEY) {
+          try {
+            placeDetails = await googlePlaceDetails(placeId);
+          } catch (err) {
+            console.error('[BiteRight] place details fetch error', err.message);
+          }
+        }
+      })(),
+      (async () => {
+        reservationLinks = await getReservationLinksForRestaurant(restaurantId);
+      })(),
+    ]);
+
+    hours = placeDetails?.opening_hours?.weekday_text || null;
+    isOpenNow = placeDetails?.opening_hours?.open_now ?? null;
+    phoneFromGoogle = placeDetails?.international_phone_number || null;
+    websiteFromGoogle = placeDetails?.website || null;
+    googleMapsUrlFromGoogle = placeDetails?.url || null;
+    priceLevelFromGoogle = typeof placeDetails?.price_level === 'number' ? placeDetails.price_level : null;
+    googleRating = typeof placeDetails?.rating === 'number' ? placeDetails.rating : null;
+    googleRatingsTotal = typeof placeDetails?.user_ratings_total === 'number' ? placeDetails.user_ratings_total : null;
+    addressFromGoogle = placeDetails?.formatted_address || null;
+    latFromGoogle = placeDetails?.geometry?.location?.lat ?? null;
+    lngFromGoogle = placeDetails?.geometry?.location?.lng ?? null;
+    // Slim the review payload — Google returns 5 reviews; we keep the 3 most
+    // recent with just the fields we render. text is trimmed to 280 chars so
+    // the card stays compact.
+    googleReviews = Array.isArray(placeDetails?.reviews)
+      ? placeDetails.reviews.slice(0, 3).map((r) => ({
+          authorName: r.author_name || 'Google user',
+          rating: typeof r.rating === 'number' ? r.rating : null,
+          text: typeof r.text === 'string' ? r.text.slice(0, 280) : '',
+          relativeTime: r.relative_time_description || null,
+        }))
+      : null;
+
+    // Popular dishes: try Claude Haiku first for high-quality extraction
+    // (handles chef-y names, multi-word dishes, dedupes generic vs specific).
+    // Falls back to the regex extractor when no ANTHROPIC_API_KEY is set, the
+    // call fails, or the model returns nothing useful. Cached per-restaurant
+    // inside menuLlm so this only fires once per review-set change.
+    const reviewArrForLlm = Array.isArray(placeDetails?.reviews) ? placeDetails.reviews : [];
+    try {
+      popularDishesFromReviews = await extractDishesWithLLM(reviewArrForLlm, restaurantId);
+    } catch (e) {
+      console.warn('[detail] LLM dish extract threw', e?.message);
+    }
+    if (!popularDishesFromReviews || popularDishesFromReviews.length === 0) {
+      popularDishesFromReviews = extractPopularDishesFromReviews(reviewArrForLlm);
+    }
+    // Highlight phrases — same "great pizza", "cozy atmosphere" kind of signal
+    // Google surfaces in its own UI. Used for the "What people are saying"
+    // section on the restaurant detail page.
+    whatPeopleAreSaying = extractWhatPeopleAreSaying(reviewArrForLlm);
+
+    // Persist to cache for next time. Fire-and-forget — never block the
+    // response on a write failure.
+    if (placeDetails) {
+      writeCachedDetail(restaurantId, {
+        place_id: placeId,
+        formatted_address: addressFromGoogle,
+        website: websiteFromGoogle,
+        google_maps_url: googleMapsUrlFromGoogle,
+        phone: phoneFromGoogle,
+        lat: latFromGoogle,
+        lng: lngFromGoogle,
+        price_level: priceLevelFromGoogle,
+        google_rating: googleRating,
+        google_ratings_total: googleRatingsTotal,
+        hours_weekday_text: hours,
+        hours_periods: placeDetails?.opening_hours?.periods ?? null,
+        google_reviews: googleReviews,
+        popular_dishes: popularDishesFromReviews,
+        what_people_are_saying: whatPeopleAreSaying,
+      }).catch((e) => console.warn('[detail-cache] write failed', e?.message));
+    }
   }
-  if (!popularDishesFromReviews || popularDishesFromReviews.length === 0) {
-    popularDishesFromReviews = extractPopularDishesFromReviews(reviewArrForLlm);
+
+  // If we served a stale cache, refresh in background so the next visitor
+  // gets fresh data without waiting.
+  if (cachedDetail && !cacheFresh && placeId && GOOGLE_PLACES_API_KEY) {
+    (async () => {
+      try {
+        const fresh = await googlePlaceDetails(placeId);
+        if (!fresh) return;
+        const reviewArr = Array.isArray(fresh.reviews) ? fresh.reviews : [];
+        let dishes = null;
+        try { dishes = await extractDishesWithLLM(reviewArr, restaurantId); } catch { /* ignore */ }
+        if (!dishes || dishes.length === 0) dishes = extractPopularDishesFromReviews(reviewArr);
+        const sayings = extractWhatPeopleAreSaying(reviewArr);
+        const reviewsSlim = reviewArr.slice(0, 3).map((r) => ({
+          authorName: r.author_name || 'Google user',
+          rating: typeof r.rating === 'number' ? r.rating : null,
+          text: typeof r.text === 'string' ? r.text.slice(0, 280) : '',
+          relativeTime: r.relative_time_description || null,
+        }));
+        await writeCachedDetail(restaurantId, {
+          place_id: placeId,
+          formatted_address: fresh.formatted_address || null,
+          website: fresh.website || null,
+          google_maps_url: fresh.url || null,
+          phone: fresh.international_phone_number || null,
+          lat: fresh.geometry?.location?.lat ?? null,
+          lng: fresh.geometry?.location?.lng ?? null,
+          price_level: typeof fresh.price_level === 'number' ? fresh.price_level : null,
+          google_rating: typeof fresh.rating === 'number' ? fresh.rating : null,
+          google_ratings_total: typeof fresh.user_ratings_total === 'number' ? fresh.user_ratings_total : null,
+          hours_weekday_text: fresh.opening_hours?.weekday_text || null,
+          hours_periods: fresh.opening_hours?.periods ?? null,
+          google_reviews: reviewsSlim,
+          popular_dishes: dishes,
+          what_people_are_saying: sayings,
+        });
+      } catch (e) {
+        console.warn('[detail-cache] background refresh failed', restaurantId, e?.message);
+      }
+    })().catch(() => {});
   }
-  // Highlight phrases — same "great pizza", "cozy atmosphere" kind of signal
-  // Google surfaces in its own UI. Used for the "What people are saying"
-  // section on the restaurant detail page.
-  const whatPeopleAreSaying = extractWhatPeopleAreSaying(
-    Array.isArray(placeDetails?.reviews) ? placeDetails.reviews : [],
-  );
 
   // Heuristic fallback: when no curated links exist, see if the restaurant's
   // website URL is itself a booking-provider page (OpenTable / Resy / etc.).
@@ -2625,11 +2735,11 @@ app.get('/api/restaurants/:restaurantId', async (req, res) => {
       }
       res.json({
         name: info.name,
-        address: info.address || placeDetails?.formatted_address || '',
-        lat: info.lat ?? placeDetails?.geometry?.location?.lat ?? null,
-        lng: info.lng ?? placeDetails?.geometry?.location?.lng ?? null,
+        address: info.address || addressFromGoogle || '',
+        lat: info.lat ?? latFromGoogle ?? null,
+        lng: info.lng ?? lngFromGoogle ?? null,
         websiteUrl: info.websiteUrl || websiteFromGoogle || null,
-        googleMapsUrl: info.googleMapsUrl || placeDetails?.url || null,
+        googleMapsUrl: info.googleMapsUrl || googleMapsUrlFromGoogle || null,
         phone: info.phone || phoneFromGoogle || null,
         reservationUrl: info.reservationUrl || null,
         reservationLinks,
@@ -2656,11 +2766,11 @@ app.get('/api/restaurants/:restaurantId', async (req, res) => {
       console.error('[BiteRight] restaurant detail image resolution error', err.message);
       res.json({
         name: info.name,
-        address: info.address || '',
-        lat: info.lat ?? null,
-        lng: info.lng ?? null,
+        address: info.address || addressFromGoogle || '',
+        lat: info.lat ?? latFromGoogle ?? null,
+        lng: info.lng ?? lngFromGoogle ?? null,
         websiteUrl: info.websiteUrl || websiteFromGoogle || null,
-        googleMapsUrl: info.googleMapsUrl || null,
+        googleMapsUrl: info.googleMapsUrl || googleMapsUrlFromGoogle || null,
         phone: info.phone || phoneFromGoogle || null,
         reservationUrl: info.reservationUrl || null,
         reservationLinks,
@@ -4020,6 +4130,79 @@ async function writeCachedMenu({ restaurantId, sections, sourceType, sourceUrl, 
   } catch (e) {
     console.error('[menu-cache] write threw', e?.message);
   }
+}
+
+// ─── Restaurant Detail Cache (Google Places + LLM-extracted fields) ─────────
+// Detail loads were bottlenecked on Google Places + Claude Haiku per request.
+// This cache eliminates both for the common case. 12h fresh window; stale
+// rows are still served immediately + a background refresh is fired.
+const DETAIL_TTL_HOURS = 12;
+
+async function readCachedDetail(restaurantId) {
+  if (!supabaseConfigured) return null;
+  const { data, error } = await supabase
+    .from('restaurant_details_cache')
+    .select('*')
+    .eq('restaurant_id', restaurantId)
+    .maybeSingle();
+  if (error || !data) return null;
+  return data;
+}
+
+function isDetailCacheFresh(row) {
+  if (!row) return false;
+  return new Date(row.next_refresh_at).getTime() > Date.now();
+}
+
+async function writeCachedDetail(restaurantId, payload) {
+  if (!supabaseConfigured) return;
+  const next = new Date(Date.now() + DETAIL_TTL_HOURS * 60 * 60 * 1000).toISOString();
+  try {
+    const { error } = await supabase
+      .from('restaurant_details_cache')
+      .upsert(
+        {
+          restaurant_id: restaurantId,
+          ...payload,
+          last_fetched_at: new Date().toISOString(),
+          next_refresh_at: next,
+        },
+        { onConflict: 'restaurant_id' },
+      );
+    if (error) console.error('[detail-cache] write error', error.message);
+  } catch (e) {
+    console.error('[detail-cache] write threw', e?.message);
+  }
+}
+
+// Recompute "is open now" from cached opening_hours.periods + current time.
+// Google's period.open/close = { day: 0-6 (Sun=0), time: 'HHMM' }. A missing
+// close means 24h open from that open point. Wrapping past midnight is
+// expressed with close.day > open.day (or same-day close.time < open.time).
+function computeIsOpenNowFromPeriods(periods) {
+  if (!Array.isArray(periods) || periods.length === 0) return null;
+  const now = new Date();
+  const dow = now.getDay();
+  const hhmm = now.getHours() * 100 + now.getMinutes();
+  const stamp = (day, time) => day * 10000 + (Number.parseInt(time, 10) || 0);
+  const nowStamp = stamp(dow, String(hhmm).padStart(4, '0'));
+  for (const p of periods) {
+    if (!p?.open) continue;
+    const openStamp = stamp(p.open.day, p.open.time);
+    if (!p.close) {
+      // Always open from open.day onward; treat the day stamp alone.
+      if (p.open.day === dow) return true;
+      continue;
+    }
+    let closeStamp = stamp(p.close.day, p.close.time);
+    // Wrap: close-day numerically earlier than open-day means next week.
+    if (closeStamp <= openStamp) closeStamp += 7 * 10000;
+    // Also check the period started on the previous week-day rolled forward.
+    let cur = nowStamp;
+    if (cur < openStamp) cur += 7 * 10000;
+    if (cur >= openStamp && cur < closeStamp) return true;
+  }
+  return false;
 }
 
 app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
