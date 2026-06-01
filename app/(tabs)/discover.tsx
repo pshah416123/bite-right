@@ -146,11 +146,17 @@ const VIBE_CHIPS: { label: string; emoji: string; sort?: DiscoverSortMode; occas
 // Radius range: 1–30 mi (slider only, no presets)
 
 // ─── Rotating search placeholders ──────────────────────────────────────────
+// Mix explicit "restaurant / dish / cuisine" phrasing with craving prompts
+// so users see all three axes are searchable. The search input accepts free
+// text against restaurant names, dish names, AND cuisines \u2014 but the UI used
+// to only hint at cravings/dishes, so users didn't realize they could type a
+// restaurant name like "Au Cheval" directly.
 const SEARCH_PLACEHOLDERS = [
+  'Restaurants, dishes, or cuisines',
+  'Try a place, a dish, or a craving',
+  'Find a restaurant or what you\u2019re craving',
+  'Search by name, dish, or cuisine',
   'What are you craving tonight?',
-  'Find your next favorite spot',
-  'Hungry? Let\u2019s find something good',
-  'Tacos, ramen, or something new?',
 ];
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -562,6 +568,17 @@ export default function DiscoverScreen() {
         {/* ── Search focus panel ── */}
         {searchFocused && !searchInput.trim() && (
           <ScrollView style={styles.focusPanel} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+            {/* Search-axis hint — surfaces what's typeable. The "Trending"
+                / "Popular searches" sections below this hint at cuisines and
+                vibes only; without this row, users wouldn't know they can
+                type a restaurant name directly. */}
+            <View style={styles.focusHintRow}>
+              <Ionicons name="sparkles-outline" size={13} color={colors.accent} />
+              <Text style={styles.focusHintText}>
+                Search a restaurant, dish, or cuisine
+              </Text>
+            </View>
+
             {/* Change location */}
             <TouchableOpacity
               style={styles.focusLocationRow}
@@ -954,6 +971,22 @@ const styles = StyleSheet.create({
 
   // Focus panel (shown when search bar is active)
   focusPanel: { marginTop: 12, maxHeight: 400 },
+  focusHintRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    marginBottom: 4,
+    borderRadius: 10,
+    backgroundColor: colors.surfaceSoft,
+  },
+  focusHintText: {
+    fontSize: 12.5,
+    fontWeight: '600',
+    color: colors.textMuted,
+    letterSpacing: -0.1,
+  },
   focusLocationRow: {
     flexDirection: 'row',
     alignItems: 'center',
