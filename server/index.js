@@ -1035,6 +1035,135 @@ const CUISINE_DISHES = {
     { name: 'Crispy Chicken Sandwich', price: null, description: 'Buttermilk-fried with slaw' },
   ],
 };
+/**
+ * Recommended dishes for a Tonight swipe card.
+ *
+ * Priority (per product spec):
+ *   1. Friend-logged dishes — most-mentioned standoutDish/dishes from logs
+ *      authored by the swiping user OR their friends at this restaurant.
+ *      Uses in-memory `logs` + `friends`; no network calls.
+ *   2. Review-extracted dishes — currently SKIPPED. popularDishesFromReviews
+ *      lives in /api/restaurants/:id detail responses (line 2411-ish) but
+ *      isn't persisted server-side, and fetching it per swipe card would
+ *      violate the "no extra network calls during pool generation" rule.
+ *      A future enhancement is to cache it on the detail call (e.g. add
+ *      a review_dishes column on restaurant_menus) and slot it here.
+ *   3. Cached menu dishes — first N real entree-shaped items from the
+ *      restaurant_menus cache, skipping drink/dessert/sauce/modifier
+ *      sections. Caller passes the pre-fetched row (see batchReadCachedMenus).
+ *   4. Generic cuisine fallback — the existing getRecommendedDishes map.
+ *      Always returns something so cards never appear empty.
+ */
+function getSwipeRecommendedDishes({ restaurantId, cuisine, name, userId, logs, friends, menuRow }) {
+  // 1. Friend / self dishes
+  const friendDishes = collectFriendDishes({ logs, friends, userId, restaurantId });
+  if (friendDishes.length > 0) return friendDishes.slice(0, 3);
+
+  // 2. (review-extracted) — not cached; intentionally skipped here.
+
+  // 3. Cached menu items
+  const menuDishes = pickMenuDishesForSwipe(menuRow);
+  if (menuDishes.length > 0) return menuDishes.slice(0, 3);
+
+  // 4. Generic cuisine fallback
+  return getRecommendedDishes(cuisine, name);
+}
+
+/** Aggregate standoutDish + dishes[] entries from the user's own and their
+ *  friends' logs at this restaurant. Returned newest-mentioned-first ordered
+ *  by mention count. Dedupe is case-insensitive. */
+function collectFriendDishes({ logs, friends, userId, restaurantId }) {
+  if (!restaurantId || !Array.isArray(logs) || logs.length === 0) return [];
+
+  // Build the "people whose dishes count" set: self + bidirectional friends.
+  // Anonymous swipes (no userId) return [] so the generic fallback wins.
+  if (!userId) return [];
+  const eligible = new Set([userId]);
+  if (Array.isArray(friends)) {
+    for (const f of friends) {
+      if (!f) continue;
+      if (f.userId === userId && f.friendId) eligible.add(f.friendId);
+      if (f.friendId === userId && f.userId) eligible.add(f.userId);
+    }
+  }
+
+  const counts = new Map();
+  for (const log of logs) {
+    if (!log || log.restaurantId !== restaurantId) continue;
+    if (!eligible.has(log.userId)) continue;
+    const candidates = [];
+    if (log.standoutDish) candidates.push(log.standoutDish);
+    if (Array.isArray(log.dishes)) for (const d of log.dishes) candidates.push(d);
+    for (const raw of candidates) {
+      const trimmed = (raw || '').trim();
+      if (!trimmed) continue;
+      const key = trimmed.toLowerCase();
+      if (!counts.has(key)) counts.set(key, { count: 0, name: trimmed });
+      counts.get(key).count += 1;
+    }
+  }
+  return Array.from(counts.values())
+    .sort((a, b) => b.count - a.count)
+    .map(({ name: dishName }) => ({ name: dishName, price: null, description: null }));
+}
+
+/** Pick up to ~3 entree-shaped items from a cached menu row. Skips obvious
+ *  non-entree sections (drinks/dessert/sauce/add-ons/extras) and obvious
+ *  modifier items (half/extra/side of X). */
+const SWIPE_SKIP_SECTION_RE = /\b(drinks?|beverages?|bars?|cocktails?|wines?|beers?|cordials?|spirits?|amaros?|liqueurs?|champagnes?|sakes?|sauces?|condiments?|extras?|add[-\s]?ons?|toppings?|sides?|garnishes?|modifiers?|options?|desserts?|sweets?|happy\s*hour)\b/i;
+const SWIPE_SKIP_ITEM_RE = /^(half|extra|add|side of|small|regular|large|no |with )/i;
+
+function pickMenuDishesForSwipe(menuRow) {
+  if (!menuRow || menuRow.scrape_status !== 'success') return [];
+  const sections = menuRow.structured_data?.sections;
+  if (!Array.isArray(sections) || sections.length === 0) return [];
+
+  const seen = new Set();
+  const result = [];
+  for (const section of sections) {
+    if (!section || !Array.isArray(section.items) || section.items.length === 0) continue;
+    if (SWIPE_SKIP_SECTION_RE.test(section.title || '')) continue;
+    for (const item of section.items) {
+      const name = (item?.name || '').trim();
+      if (!name || name.length < 2 || name.length > 80) continue;
+      if (SWIPE_SKIP_ITEM_RE.test(name)) continue;
+      const key = name.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push({
+        name,
+        price: item.price || null,
+        description: item.description || null,
+      });
+      if (result.length >= 3) return result;
+    }
+    if (result.length >= 3) break;
+  }
+  return result;
+}
+
+/** Batch-read restaurant_menus rows for a list of ids in a single Supabase
+ *  query. Returns Map<restaurant_id, row>. Missing or non-success rows are
+ *  omitted so callers can treat absence as "no cached menu". */
+async function batchReadCachedMenus(restaurantIds) {
+  const map = new Map();
+  if (!supabaseConfigured) return map;
+  const ids = Array.from(new Set((restaurantIds || []).filter(Boolean)));
+  if (ids.length === 0) return map;
+  const { data, error } = await supabase
+    .from('restaurant_menus')
+    .select('restaurant_id, structured_data, scrape_status')
+    .in('restaurant_id', ids);
+  if (error) {
+    console.warn('[swipe-dishes] batchReadCachedMenus error', error.message);
+    return map;
+  }
+  for (const row of data || []) {
+    if (row.scrape_status === 'success') map.set(row.restaurant_id, row);
+  }
+  return map;
+}
+
 function getRecommendedDishes(cuisine, restaurantName) {
   const c = (cuisine || '').trim();
   // Try exact match first, then partial match on cuisine
@@ -4843,6 +4972,12 @@ app.get('/api/tonight/sessions/:code/pool', async (req, res) => {
   const start = page * pageSize;
   const slice = combined.slice(start, start + pageSize);
   const tonightCtx = { savedRestaurants, tonightSwipes, logs, friends, groupSessions, userDisplayNames };
+
+  // Batch-fetch cached menus for every restaurant in this page in a single
+  // Supabase round-trip. getSwipeRecommendedDishes uses this to fall through
+  // from friend logs → cached menu → generic cuisine fallback, without doing
+  // any per-card network work.
+  const menuRowsByRestaurant = await batchReadCachedMenus(slice.map((r) => r.restaurantId));
   const pool = await Promise.all(
     slice.map(async (r) => {
       const totalParticipants = session.participants?.length || 0;
@@ -4901,7 +5036,15 @@ app.get('/api/tonight/sessions/:code/pool', async (req, res) => {
         groupSignal,
         distanceMi: (r.lat != null && r.lng != null) ? Math.round(distanceMiles(lat, lng, r.lat, r.lng) * 10) / 10 : null,
         whyLine: generateWhyLine(r, userId, tonightCtx),
-        recommendedDishes: getRecommendedDishes(r.cuisine, r.name),
+        recommendedDishes: getSwipeRecommendedDishes({
+          restaurantId: r.restaurantId,
+          cuisine: r.cuisine,
+          name: r.name,
+          userId,
+          logs,
+          friends,
+          menuRow: menuRowsByRestaurant.get(r.restaurantId) || null,
+        }),
         isOpenNow: r.isOpenNow ?? null,
         rating: r.rating ?? null,
         fallbackNote,
