@@ -2748,7 +2748,13 @@ const DRINK_SECTION_RE = /^(cocktails?|beers?|wines?|wine list|ciders?|spirits?|
  */
 const JUNK_ITEM_RE = /\b(career|hiring|apply|employment|invest|community|support|flexible|flexibility|pathway|scholarship|leadership|closed on|our mission|our story|our team|our values|our company|wellbeing|well-being|mental health|professional development|team member|diversity|inclusion|franchise|contact us|get in touch|download|subscribe|newsletter|privacy|terms of|follow us|connect with|social media|next stop|learn more|read more|find a location|mobile app|gift card|rewards program|sign up|log in|register|create account|amenit(y|ies)|delivery partner|other location|nearest|proud to be|membership|operator|owner)\b/i;
 
-const JUNK_SECTION_RE = /\b(investing|careers?|about us|our story|community|values|leadership|team|franchise|press|media|corporate|sustainability|foundation|membership|nearest|proud to be|amenit(y|ies))\b/i;
+// Merchandise (apparel, accessories, gift sets, home goods) — restaurants
+// with online shops often surface these as "menu" items when their /menu page
+// links to the shop. Levain's bakery menu was getting polluted with
+// "Tin Gift Set", "Tote Bag", "Mornings at Levain Candle" until this filter.
+const MERCH_ITEM_RE = /\b(tin gift|gift set|gift box|gift wrap|gift bag|gift wrap|swag pack|tote bag|tote|t-?shirt|tee|hoodie|sweatshirt|sweater|crewneck|long\s?sleeve|baseball cap|trucker hat|beanie|apron|tote|mug|tumbler|water bottle|pin|sticker|magnet|patch|keychain|coaster|matchbook|candle|fragrance|perfume|cologne|body wash|soap|lotion|book|cookbook|recipe book|merchandise|merch|swag|apparel|tea towel|dish towel|napkin set|napkins set|tableware|glassware|ornament|puzzle|poster|print|art print)\b/i;
+
+const JUNK_SECTION_RE = /\b(investing|careers?|about us|our story|community|values|leadership|team|franchise|press|media|corporate|sustainability|foundation|membership|nearest|proud to be|amenit(y|ies)|shop|store|merch(andise)?|apparel|gifts?|accessor(y|ies))\b/i;
 
 /**
  * Looks like a person's name (e.g., "Josh Faretta") rather than a menu item.
@@ -2771,6 +2777,7 @@ function isJunkItem(item) {
   const name = item.name || '';
   const desc = item.description || '';
   if (JUNK_ITEM_RE.test(name) || JUNK_ITEM_RE.test(desc)) return true;
+  if (MERCH_ITEM_RE.test(name)) return true;
   if (PERSON_NAME_RE.test(name.trim())) return true;
   if (PERSON_POSSESSIVE_RE.test(name.trim())) return true;
   return false;

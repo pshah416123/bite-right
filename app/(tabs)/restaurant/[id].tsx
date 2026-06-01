@@ -309,7 +309,13 @@ export default function RestaurantScreen() {
       ? Math.round(((restaurantFromPayload as any).matchScore as number) * 100)
       : null;
 
-  // Standout dishes: from user logs (dishes array + dishHighlight), then from menu
+  // Standout dishes — priority order:
+  //   1. User + friend logs (most personal signal)
+  //   2. Google's review-extracted popular dishes (what diners actually rave
+  //      about — best signal when no user logs exist yet; for restaurants
+  //      like Levain whose website "menu" is really the gift shop, this is
+  //      the only way to surface real food)
+  //   3. Menu sections (last resort; subject to merch / modifier noise)
   const standoutDishes = useMemo(() => {
     // 1. Collect from logs: both the dishes array and the dishHighlight field
     const counts = new Map<string, number>();
@@ -331,7 +337,17 @@ export default function RestaurantScreen() {
         .slice(0, 5)
         .map(([name]) => name);
     }
-    // 2. From menu sections — pick popular/featured items, filtering out
+    // 2. From Google's review-extracted dishes — already sorted by mentionCount
+    //    on the server. Cheap pre-filter for obvious merch words so we don't
+    //    inherit junk from review noise.
+    const MERCH_HINT_RE = /\b(tin|tote|t-?shirt|tee|hoodie|hat|mug|candle|gift set|gift box|merch)\b/i;
+    const fromReviews = (detail?.popularDishesFromReviews ?? [])
+      .map((d) => d.name?.trim())
+      .filter((name): name is string => !!name && !MERCH_HINT_RE.test(name))
+      .slice(0, 5);
+    if (fromReviews.length > 0) return fromReviews;
+
+    // 3. From menu sections — pick popular/featured items, filtering out
     //    modifiers/options (spice levels, sizes, add-ons) that aren't real dishes.
     if (menu && menu.sections.length > 0) {
       const MODIFIER_RE = /^(half|no|extra|mild|medium|hot|full|less|more|light|double|triple|add|side of)\s/i;
@@ -371,7 +387,7 @@ export default function RestaurantScreen() {
       return items.slice(0, 5);
     }
     return [];
-  }, [logsForRestaurant, menu]);
+  }, [logsForRestaurant, menu, detail?.popularDishesFromReviews]);
 
   // When viewing from someone else's feed post, show their posts; otherwise show all
   const recentPosts = useMemo(() => {
