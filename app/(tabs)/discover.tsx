@@ -154,7 +154,7 @@ const VIBE_CHIPS: { label: string; emoji: string; sort?: DiscoverSortMode; occas
 // "Au Cheval" directly. The static line + the persistent helper text
 // below the bar communicate the three searchable axes at all times.
 const SEARCH_PLACEHOLDERS = [
-  'Try \u201cAu Cheval\u201d, \u201ctacos\u201d, or \u201cItalian\u201d',
+  'Try \u201cOlive Garden\u201d, \u201ctacos\u201d, or \u201cItalian\u201d',
 ];
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
