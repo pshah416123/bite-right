@@ -2150,16 +2150,26 @@ app.delete('/api/users/me', async (req, res) => {
   const myId = getCurrentUserId(req);
   if (!myId) return res.status(401).json({ error: 'Not signed in' });
 
-  const tasks = [
-    supabase.from('logs').delete().eq('user_id', myId),
-    supabase.from('saved_restaurants').delete().eq('user_id', myId),
-    supabase.from('friendships').delete().or(`user_a.eq.${myId},user_b.eq.${myId}`),
-    supabase.from('users').delete().eq('id', myId),
-  ];
-  const results = await Promise.all(tasks.map((t) => t.catch((err) => ({ error: err }))));
-  for (const r of results) {
-    if (r?.error) console.error('[users] delete error', r.error?.message ?? r.error);
+  // supabase-js query builders are thenable but NOT Promises — they don't
+  // have .catch(). The old Promise.all(tasks.map(t => t.catch(...))) was
+  // throwing synchronously inside the .map() because .catch was undefined,
+  // crashing the handler with a 502. Rewritten as try/await/{ error } —
+  // same shape the rest of the codebase uses for Supabase writes.
+  async function tryDelete(builder, label) {
+    try {
+      const { error } = await builder;
+      if (error) console.error(`[users] delete ${label} error`, error.message);
+    } catch (e) {
+      console.error(`[users] delete ${label} threw`, e?.message);
+    }
   }
+  await Promise.all([
+    tryDelete(supabase.from('logs').delete().eq('user_id', myId), 'logs'),
+    tryDelete(supabase.from('saved_restaurants').delete().eq('user_id', myId), 'saved_restaurants'),
+    tryDelete(supabase.from('friendships').delete().or(`user_a.eq.${myId},user_b.eq.${myId}`), 'friendships'),
+    tryDelete(supabase.from('blocked_users').delete().or(`blocker_id.eq.${myId},blocked_id.eq.${myId}`), 'blocked_users'),
+    tryDelete(supabase.from('users').delete().eq('id', myId), 'users'),
+  ]);
   return res.json({ ok: true });
 });
 
