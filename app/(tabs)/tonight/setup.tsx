@@ -16,6 +16,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
+import Slider from '@react-native-community/slider';
 import { LinearGradient } from 'expo-linear-gradient';
 import { apiClient } from '~/src/api/client';
 import { colors } from '~/src/theme/colors';
@@ -611,22 +612,27 @@ export default function TonightSetupScreen() {
           <Text style={s.pageTitle}>Set up your group</Text>
           <Text style={s.pageSubtitle}>Invite friends and find a spot everyone likes.</Text>
 
-          {/* Search Radius */}
-          <Text style={s.sectionLabel}>Search Radius</Text>
-          <View style={s.chipsRow}>
-            {[1, 3, 5, 10].map((mi) => {
-              const active = searchRadius === mi;
-              return (
-                <TouchableOpacity
-                  key={mi}
-                  style={[s.ruleChip, active && s.ruleChipActive]}
-                  onPress={() => selectSearchRadius(mi)}
-                  activeOpacity={0.8}
-                >
-                  <Text style={[s.ruleChipText, active && s.ruleChipTextActive]}>{mi} mi</Text>
-                </TouchableOpacity>
-              );
-            })}
+          {/* Search Radius — slider 1–30 mi. Previous chip set [1,3,5,10]
+              couldn't capture suburb-friendly distances; slider lets the
+              host dial in the right size for their group's geography. */}
+          <View style={s.sliderHeaderRow}>
+            <Text style={s.sectionLabel}>Search Radius</Text>
+            <Text style={s.sliderValueText}>{searchRadius} mi</Text>
+          </View>
+          <Slider
+            style={s.radiusSlider}
+            minimumValue={1}
+            maximumValue={30}
+            step={1}
+            value={searchRadius}
+            onValueChange={selectSearchRadius}
+            minimumTrackTintColor={colors.accent}
+            maximumTrackTintColor={colors.border}
+            thumbTintColor={colors.accent}
+          />
+          <View style={s.sliderScaleRow}>
+            <Text style={s.sliderScaleText}>1 mi</Text>
+            <Text style={s.sliderScaleText}>30 mi</Text>
           </View>
 
           {/* Price Range */}
@@ -900,6 +906,26 @@ const s = StyleSheet.create({
     marginTop: 24,
     marginBottom: 10,
   },
+  sliderHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 24,
+    marginBottom: 4,
+  },
+  sliderValueText: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: colors.accent,
+  },
+  radiusSlider: { width: '100%', height: 36 },
+  sliderScaleRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: -2,
+    marginBottom: 4,
+  },
+  sliderScaleText: { fontSize: 11, fontWeight: '600', color: colors.textMuted },
   required: {
     color: colors.accent,
     fontWeight: '700',

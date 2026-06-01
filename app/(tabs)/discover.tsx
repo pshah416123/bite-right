@@ -146,17 +146,13 @@ const VIBE_CHIPS: { label: string; emoji: string; sort?: DiscoverSortMode; occas
 // Radius range: 1–30 mi (slider only, no presets)
 
 // ─── Rotating search placeholders ──────────────────────────────────────────
-// Mix explicit "restaurant / dish / cuisine" phrasing with craving prompts
-// so users see all three axes are searchable. The search input accepts free
-// text against restaurant names, dish names, AND cuisines \u2014 but the UI used
-// to only hint at cravings/dishes, so users didn't realize they could type a
-// restaurant name like "Au Cheval" directly.
+// Single, explicit placeholder. Rotation through craving-style prompts
+// made it ambiguous whether you could search by restaurant name \u2014 users
+// were reading "What are you craving?" and not realizing they could type
+// "Au Cheval" directly. The static line + the persistent helper text
+// below the bar communicate the three searchable axes at all times.
 const SEARCH_PLACEHOLDERS = [
-  'Restaurants, dishes, or cuisines',
-  'Try a place, a dish, or a craving',
-  'Find a restaurant or what you\u2019re craving',
-  'Search by name, dish, or cuisine',
-  'What are you craving tonight?',
+  'Try \u201cAu Cheval\u201d, \u201ctacos\u201d, or \u201cItalian\u201d',
 ];
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -565,6 +561,16 @@ export default function DiscoverScreen() {
           )}
         </View>
 
+        {/* Persistent helper text — always visible below the search bar,
+            even when not focused. Rotating placeholders weren't sticky
+            enough; this stays put so the three searchable axes (restaurant
+            name / dish / cuisine) read at a glance. */}
+        {!searchFocused && !activeSearch ? (
+          <Text style={styles.searchAxisHelper}>
+            Search restaurants, dishes, or cuisines
+          </Text>
+        ) : null}
+
         {/* ── Search focus panel ── */}
         {searchFocused && !searchInput.trim() && (
           <ScrollView style={styles.focusPanel} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
@@ -968,6 +974,14 @@ const styles = StyleSheet.create({
   searchClear: { marginLeft: 6 },
   searchCancelBtn: { marginLeft: 10 },
   searchCancelText: { fontSize: 15, fontWeight: '600', color: colors.accent },
+  searchAxisHelper: {
+    marginTop: 6,
+    marginLeft: 4,
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.textMuted,
+    letterSpacing: -0.1,
+  },
 
   // Focus panel (shown when search bar is active)
   focusPanel: { marginTop: 12, maxHeight: 400 },

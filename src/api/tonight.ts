@@ -139,8 +139,11 @@ export async function createTonightSession(
 
 export async function joinTonightSession(
   code: string,
-  body: { userId?: string } = {},
+  body: { userId?: string; participantId?: string } = {},
 ): Promise<JoinSessionResponse> {
+  // Pass an existing participantId when re-joining (e.g. app reload or
+  // network retry). Server uses it to dedup, otherwise a single user
+  // who opens the link twice inflates participantCount.
   const { data } = await apiClient.post<JoinSessionResponse>(
     `/api/tonight/sessions/${encodeURIComponent(code)}/join`,
     body,

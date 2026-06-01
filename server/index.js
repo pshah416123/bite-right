@@ -4432,6 +4432,13 @@ function isSessionExpired(session) {
   return new Date(session.expiresAt) < new Date();
 }
 
+/** Clamp a radius value to [1, 30]; fall back to 3 when not a number. */
+function clampRadius(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 3;
+  return Math.max(1, Math.min(30, Math.round(n)));
+}
+
 // POST /api/tonight/sessions
 app.post('/api/tonight/sessions', (req, res) => {
   const { sessionName, locationBias, settings } = req.body || {};
@@ -4462,7 +4469,10 @@ app.post('/api/tonight/sessions', (req, res) => {
       location: settings?.location || null,
       locationLat: settings?.locationLat ?? null,
       locationLng: settings?.locationLng ?? null,
-      searchRadius: [1, 3, 5, 10].includes(settings?.searchRadius) ? settings.searchRadius : 3,
+      // Radius is a 1-30 mi slider client-side; accept any integer in that
+      // range. The old [1,3,5,10] chip whitelist silently normalized any
+      // off-list value to 3, which broke the new slider.
+      searchRadius: clampRadius(settings?.searchRadius),
       priceRange: Array.isArray(settings?.priceRange) ? settings.priceRange : [],
       cuisines: Array.isArray(settings?.cuisines) ? settings.cuisines : [],
       deckSize: [10, 15, 20].includes(settings?.deckSize) ? settings.deckSize : 15,
@@ -4496,7 +4506,7 @@ app.put('/api/tonight/sessions/:code/settings', (req, res) => {
   if (location !== undefined) session.settings.location = location;
   if (locationLat !== undefined) session.settings.locationLat = locationLat;
   if (locationLng !== undefined) session.settings.locationLng = locationLng;
-  if ([1, 3, 5, 10].includes(searchRadius)) session.settings.searchRadius = searchRadius;
+  if (searchRadius != null) session.settings.searchRadius = clampRadius(searchRadius);
   if (Array.isArray(priceRange)) session.settings.priceRange = priceRange;
   if (Array.isArray(cuisines)) session.settings.cuisines = cuisines;
   if ([10, 15, 20].includes(deckSize)) session.settings.deckSize = deckSize;
@@ -4598,9 +4608,25 @@ app.post('/api/tonight/sessions/:code/join', (req, res) => {
     return res.status(410).json({ error: 'Session expired' });
   }
 
-  const { userId } = req.body || {};
-  const participantId = 'p_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
-  session.participants.push({ participantId, userId: userId || null });
+  // Dedup join requests. Previously every POST to /join pushed a new
+  // participant, so a single user refreshing the link / app retry / etc.
+  // inflated the participant count ("3 members" when 1 friend joined).
+  //
+  // Resolution order for "is this an existing participant?":
+  //   1. participantId echoed back by the client from a prior join.
+  //   2. userId match (when the joiner is signed in).
+  //   3. (no match) → create a new participant.
+  const { userId, participantId: existingPid } = req.body || {};
+  const existing =
+    (existingPid && session.participants.find((p) => p.participantId === existingPid)) ||
+    (userId && session.participants.find((p) => p.userId && p.userId === userId)) ||
+    null;
+  const participantId = existing
+    ? existing.participantId
+    : 'p_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+  if (!existing) {
+    session.participants.push({ participantId, userId: userId || null });
+  }
 
   res.json({
     sessionId: session.id,

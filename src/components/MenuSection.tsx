@@ -17,8 +17,13 @@ import type { RestaurantMenu, MenuItem, MenuPhoto, MenuGroup, MenuSection as Men
 // Order is "what someone scanning the menu wants to see first": food, then
 // brunch (when present), then drinks, then dessert. Tabs only appear when a
 // restaurant has 2+ groups — single-group menus render flat as before.
+// "Main" instead of "Food" — when a restaurant has explicit meal tabs
+// (Brunch, Breakfast, Lunch, Dinner), the leftover sections that didn't
+// match a meal-keyword are the all-day / catch-all menu. Calling that
+// "Food" reads oddly next to "Brunch" (the brunch sections are food too).
+// "Main" is what diners actually call this — the main menu.
 const GROUP_LABEL: Record<MenuGroup, string> = {
-  food: 'Food',
+  food: 'Main',
   breakfast: 'Breakfast',
   brunch: 'Brunch',
   lunch: 'Lunch',
