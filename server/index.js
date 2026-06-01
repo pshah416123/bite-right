@@ -2786,55 +2786,46 @@ function looksLikeFood(item) {
 function validateMenuQuality(sections) {
   if (!sections || sections.length === 0) return null;
 
-  let totalItems = 0;
-  let junkItems = 0;
-  let foodItems = 0;
+  const rawTotal = sections.reduce((n, s) => n + (s.items?.length || 0), 0);
 
-  for (const section of sections) {
-    if (JUNK_SECTION_RE.test(section.title)) {
-      junkItems += section.items.length;
-      totalItems += section.items.length;
-      continue;
-    }
-    for (const item of section.items) {
-      totalItems++;
-      if (isJunkItem(item)) junkItems++;
-      else if (looksLikeFood(item)) foodItems++;
-    }
-  }
-
-  if (totalItems === 0) return null;
-
-  const junkRatio = junkItems / totalItems;
-  const foodRatio = foodItems / totalItems;
-
-  // Reject if too much junk
-  if (junkRatio > 0.3) {
-    console.log('[BiteRight] menu: rejected — too many non-food items', {
-      totalItems, junkItems, junkRatio: junkRatio.toFixed(2),
-    });
-    return null;
-  }
-
-  // Reject if too few items actually look like food
-  // (catches scrapes of generic about/contact pages)
-  if (foodRatio < 0.3 && totalItems >= 3) {
-    console.log('[BiteRight] menu: rejected — not enough food-looking items', {
-      totalItems, foodItems, foodRatio: foodRatio.toFixed(2),
-    });
-    return null;
-  }
-
-  // Filter out individual junk sections + items
+  // Step 1: always clean first. The old order rejected the whole menu when
+  // junk ratio crossed 0.3 — which dumped Big Star's 15 real tacos because
+  // its BentoBox scrape also surfaced "Gift Cards" / "Careers" / footer
+  // chrome. Strip the junk sections + junk items, then evaluate what's
+  // left rather than what we started with.
   const cleaned = sections
-    .filter((s) => !JUNK_SECTION_RE.test(s.title))
+    .filter((s) => !JUNK_SECTION_RE.test(s.title || ''))
     .map((s) => ({
       ...s,
-      items: s.items.filter((item) => !isJunkItem(item)),
+      items: (s.items || []).filter((item) => !isJunkItem(item)),
     }))
     .filter((s) => s.items.length > 0);
 
-  return cleaned.length > 0 ? cleaned : null;
+  if (cleaned.length === 0) {
+    console.log('[BiteRight] menu: rejected — every item filtered as junk', { rawTotal });
+    return null;
+  }
+
+  const totalRemaining = cleaned.reduce((n, s) => n + s.items.length, 0);
+  const foodLooking = cleaned.flatMap((s) => s.items).filter(looksLikeFood).length;
+  const foodRatio = totalRemaining > 0 ? foodLooking / totalRemaining : 0;
+
+  // Step 2: cleaned-state thresholds. Catches corporate / about pages that
+  // would otherwise sneak through with a handful of food-shaped strings.
+  if (totalRemaining < 3) {
+    console.log('[BiteRight] menu: rejected — too few items after cleaning', {
+      rawTotal, totalRemaining,
+    });
+    return null;
+  }
+  if (foodRatio < 0.3 && totalRemaining < 8) {
+    console.log('[BiteRight] menu: rejected — cleaned items still not food-looking', {
+      rawTotal, totalRemaining, foodLooking, foodRatio: foodRatio.toFixed(2),
+    });
+    return null;
+  }
+
+  return cleaned;
 }
 
 function capMenuSections(sections) {
