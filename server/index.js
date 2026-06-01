@@ -1868,6 +1868,33 @@ async function ensureUserRecord(req) {
   return created;
 }
 
+/**
+ * Best-effort phone normalization to E.164. Used both when storing the
+ * caller's own phone and when matching a contact list. We don't pull in
+ * libphonenumber for a one-helper need — the heuristic below covers the
+ * formats we actually encounter (US numbers in any presentation, plus
+ * already-E.164 international numbers).
+ *
+ * Returns null for input that can't be sensibly normalized.
+ */
+function normalizePhone(input) {
+  if (typeof input !== 'string') return null;
+  const cleaned = input.replace(/[^\d+]/g, '');
+  if (!cleaned) return null;
+  // Already E.164-ish (8-16 chars, starts with +).
+  if (cleaned.startsWith('+') && cleaned.length >= 8 && cleaned.length <= 16) {
+    return cleaned;
+  }
+  const digits = cleaned.replace(/^\+/, '');
+  // US 10-digit → +1XXXXXXXXXX.
+  if (/^\d{10}$/.test(digits)) return `+1${digits}`;
+  // US 11-digit starting with 1 → +1XXXXXXXXXX.
+  if (/^1\d{10}$/.test(digits)) return `+${digits}`;
+  // International 5-15 digits → prepend +.
+  if (/^\d{5,15}$/.test(digits)) return `+${digits}`;
+  return null;
+}
+
 function userRowToSummary(row, counts = null) {
   if (!row) return null;
   return {
@@ -1877,6 +1904,8 @@ function userRowToSummary(row, counts = null) {
     avatarUrl: row.avatar_url ?? null,
     phone: row.phone ?? null,
     visibility: row.visibility ?? 'public',
+    bio: row.bio ?? null,
+    createdAt: row.created_at ?? null,
     followingCount: counts?.followingCount ?? 0,
     followerCount: counts?.followerCount ?? 0,
   };
@@ -1943,13 +1972,14 @@ app.patch('/api/users/me', async (req, res) => {
   if (phone === null || (typeof phone === 'string' && phone.trim() === '')) {
     patch.phone = null;
   } else if (typeof phone === 'string') {
-    // Light validation: keep digits + + - ( ) space. Server doesn't verify it's
-    // a real number — that would require Twilio. Stored as a contact field.
-    const cleaned = phone.trim().replace(/[^+\d\-()\s]/g, '');
-    if (cleaned.length < 6 || cleaned.length > 20) {
-      return res.status(400).json({ error: 'Phone must be 6–20 characters.' });
+    // Normalize to E.164 so contact-matching can do exact lookups without
+    // worrying about formatting variance ("(312) 555-1212" vs "312-555-1212"
+    // vs "+13125551212"). Reject anything we can't normalize.
+    const normalized = normalizePhone(phone);
+    if (!normalized) {
+      return res.status(400).json({ error: 'That phone number doesn’t look valid.' });
     }
-    patch.phone = cleaned;
+    patch.phone = normalized;
   }
   if (typeof visibility === 'string') {
     if (!['public', 'friends', 'private'].includes(visibility)) {
@@ -2034,6 +2064,56 @@ app.get('/api/users', async (req, res) => {
     return res.json([]);
   }
   return res.json((data || []).map((r) => userRowToSummary(r)));
+});
+
+// POST /api/users/match-contacts — given a list of raw phone strings from
+// the caller's address book, return matching users so the client can offer
+// a "follow people you already know" flow. Excludes the caller themselves
+// and anyone involved in a block edge (either direction). Caps at 500 input
+// phones per call to keep the IN-clause sane.
+app.post('/api/users/match-contacts', async (req, res) => {
+  if (!supabaseConfigured) return res.json({ matches: [] });
+  const myId = getCurrentUserId(req);
+  if (!myId) return res.status(401).json({ error: 'Not signed in' });
+  await ensureUserRecord(req);
+
+  const phonesIn = Array.isArray(req.body?.phones) ? req.body.phones : [];
+  const normalized = [
+    ...new Set(phonesIn.map((p) => normalizePhone(p)).filter(Boolean)),
+  ].slice(0, 500);
+  if (normalized.length === 0) return res.json({ matches: [] });
+
+  // Pull both block directions in parallel so a blocked user (or someone
+  // who blocked us) never appears in the matched-contacts list.
+  const [{ data: blocksOut }, { data: blocksIn }] = await Promise.all([
+    supabase.from('blocked_users').select('blocked_id').eq('blocker_id', myId),
+    supabase.from('blocked_users').select('blocker_id').eq('blocked_id', myId),
+  ]);
+  const blocked = new Set([
+    ...(blocksOut?.map((b) => b.blocked_id) ?? []),
+    ...(blocksIn?.map((b) => b.blocker_id) ?? []),
+  ]);
+
+  const { data, error } = await supabase
+    .from('users')
+    .select('*')
+    .in('phone', normalized);
+  if (error) {
+    console.error('[users] match-contacts error', error.message);
+    return res.status(500).json({ matches: [] });
+  }
+
+  // Build the visible match list. We don't return phones in the response —
+  // the caller already has them locally; sending them back would be wasted
+  // bytes and a small privacy footgun.
+  const matches = (data || [])
+    .filter((u) => u.id !== myId && !blocked.has(u.id))
+    .map((u) => {
+      const summary = userRowToSummary(u);
+      return summary;
+    });
+
+  return res.json({ matches });
 });
 
 // GET /api/users/:id — look up a single user.

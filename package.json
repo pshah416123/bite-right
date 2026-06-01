@@ -20,6 +20,7 @@
     "expo": "~55.0.11",
     "expo-clipboard": "~55.0.11",
     "expo-constants": "~55.0.7",
+    "expo-contacts": "~15.0.4",
     "expo-dev-client": "^55.0.27",
     "expo-font": "~55.0.4",
     "expo-haptics": "~55.0.11",

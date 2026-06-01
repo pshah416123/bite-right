@@ -31,6 +31,14 @@ import { colors } from '~/src/theme/colors';
 import { blockUser, followUser, getUser, getUserLogs, type UserSummary } from '~/src/api/users';
 import { FeedCard, type FeedLog } from '~/src/components/FeedCard';
 
+/** Format an ISO timestamp as "Mon YYYY" (e.g. "Mar 2026"). Returns empty
+ *  string on parse failure so the row collapses cleanly. */
+function formatJoinedDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleString('en-US', { month: 'short', year: 'numeric' });
+}
+
 export default function FriendProfileScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id?: string }>();
@@ -191,6 +199,11 @@ export default function FriendProfileScreen() {
         <Text style={s.displayName}>{user.displayName}</Text>
         <Text style={s.handle}>@{user.username}</Text>
 
+        {user.bio ? <Text style={s.bio}>{user.bio}</Text> : null}
+        {user.createdAt ? (
+          <Text style={s.joined}>Joined {formatJoinedDate(user.createdAt)}</Text>
+        ) : null}
+
         <View style={s.stats}>
           <View style={s.stat}>
             <Text style={s.statValue}>{user.followerCount ?? 0}</Text>
@@ -343,6 +356,21 @@ const s = StyleSheet.create({
   avatarInitial: { fontSize: 40, fontWeight: '800', color: '#fff' },
   displayName: { fontSize: 22, fontWeight: '800', color: colors.text },
   handle: { fontSize: 14, color: colors.textMuted, marginTop: 2 },
+  bio: {
+    marginTop: 10,
+    fontSize: 14,
+    lineHeight: 19,
+    color: colors.text,
+    textAlign: 'center',
+    paddingHorizontal: 8,
+  },
+  joined: {
+    marginTop: 6,
+    fontSize: 11.5,
+    fontWeight: '600',
+    color: colors.textMuted,
+    letterSpacing: 0.2,
+  },
   stats: {
     flexDirection: 'row',
     alignItems: 'center',

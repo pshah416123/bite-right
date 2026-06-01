@@ -22,6 +22,7 @@
       "infoPlist": {
         "NSPhotoLibraryUsageDescription": "Allow BiteRight to access your photos to attach images of your meals.",
         "NSCameraUsageDescription": "Allow BiteRight to use the camera to capture photos of your meals.",
+        "NSContactsUsageDescription": "Allow BiteRight to scan your contacts to find friends already on the app. Your contacts stay on your device — we only match phone numbers to existing BiteRight accounts.",
         "ITSAppUsesNonExemptEncryption": false
       }
     },
