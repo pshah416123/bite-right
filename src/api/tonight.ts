@@ -2,6 +2,8 @@ import { apiClient } from './client';
 
 // ── Session settings ─────────────────────────────────────────────────────────
 
+export type MealTime = 'breakfast' | 'brunch' | 'lunch' | 'dinner';
+
 export interface SessionSettings {
   location: string | null;
   locationLat?: number | null;
@@ -12,6 +14,10 @@ export interface SessionSettings {
   deckSize: 10 | 15 | 20;
   deadline: string | null;
   nominatedRestaurants: NominatedRestaurant[];
+  /** When the group plans to eat. Server uses it (a) to reuse the Discover
+   *  occasion-ranker so meal-shaped places bubble up, and (b) to hard-filter
+   *  by isOpenNow when the chosen meal aligns with current local time. */
+  mealTime?: MealTime | null;
 }
 
 export interface NominatedRestaurant {

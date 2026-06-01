@@ -82,6 +82,15 @@ export default function TonightSetupScreen() {
   const [priceRange, setPriceRange] = useState<number[]>([2]);
   const [deckSize, setDeckSize] = useState<10 | 15 | 20>(10);
   const [deadline, setDeadline] = useState<string | null>('2h');
+  const [mealTime, setMealTime] = useState<'breakfast' | 'brunch' | 'lunch' | 'dinner' | null>(() => {
+    // Default to whatever the current local time suggests so first-time
+    // hosts don't have to think. They can always change it.
+    const h = new Date().getHours();
+    if (h >= 5 && h < 11) return 'breakfast';
+    if (h >= 11 && h < 16) return 'lunch';
+    if (h >= 16) return 'dinner';
+    return null;
+  });
   const [nominated, setNominated] = useState<NominatedRestaurant[]>([]);
 
   // Participants
@@ -168,6 +177,9 @@ export default function TonightSetupScreen() {
         }
         if (firstLoad || !dirty.has('deadline')) {
           setDeadline(state.settings.deadline ?? '2h');
+        }
+        if (firstLoad || !dirty.has('mealTime')) {
+          setMealTime((state.settings as { mealTime?: typeof mealTime }).mealTime ?? mealTime);
         }
         initialLoadDone.current = true;
       }
@@ -278,6 +290,14 @@ export default function TonightSetupScreen() {
   const selectSearchRadius = (val: number) => {
     setSearchRadius(val);
     pushSetting('searchRadius', { searchRadius: val });
+  };
+
+  const selectMealTime = (val: 'breakfast' | 'brunch' | 'lunch' | 'dinner' | null) => {
+    // Toggle off when tapping the active chip — lets the host opt out of
+    // strict open-now filtering when planning ahead for an unknown time.
+    const next = mealTime === val ? null : val;
+    setMealTime(next);
+    pushSetting('mealTime', { mealTime: next });
   };
 
   const togglePrice = (val: number) => {
@@ -611,6 +631,33 @@ export default function TonightSetupScreen() {
           {/* Title */}
           <Text style={s.pageTitle}>Set up your group</Text>
           <Text style={s.pageSubtitle}>Invite friends and find a spot everyone likes.</Text>
+
+          {/* Going for — meal-time picker. Defaults to whatever the current
+              hour suggests. Server uses it to: (a) bias ranking toward
+              meal-shaped places via the existing occasion ranker, (b) when
+              the chosen meal overlaps with the current local time, hard-
+              filter the pool by isOpenNow so closed places are dropped. */}
+          <Text style={s.sectionLabel}>Going for</Text>
+          <View style={s.chipsRow}>
+            {([
+              { key: 'breakfast', label: 'Breakfast' },
+              { key: 'brunch', label: 'Brunch' },
+              { key: 'lunch', label: 'Lunch' },
+              { key: 'dinner', label: 'Dinner' },
+            ] as const).map(({ key, label }) => {
+              const active = mealTime === key;
+              return (
+                <TouchableOpacity
+                  key={key}
+                  style={[s.ruleChip, active && s.ruleChipActive]}
+                  onPress={() => selectMealTime(key)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[s.ruleChipText, active && s.ruleChipTextActive]}>{label}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
 
           {/* Search Radius — slider 1–30 mi. Previous chip set [1,3,5,10]
               couldn't capture suburb-friendly distances; slider lets the

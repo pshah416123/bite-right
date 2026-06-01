@@ -1,7 +1,9 @@
 import { Ionicons } from '@expo/vector-icons';
 import {
   Animated,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -792,6 +794,14 @@ export default function DiscoverScreen() {
       >
         <View style={styles.sheetBackdrop}>
           <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={closeLocationSheet} />
+          {/* KeyboardAvoidingView lifts the sheet when the keyboard opens
+              so the location TextInput + suggestions stay visible above
+              the keyboard instead of being covered by it. */}
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            style={styles.sheetKavWrap}
+            pointerEvents="box-none"
+          >
           <Animated.View
             style={[styles.sheet, { transform: [{ translateY: radiusSheetTranslate }], paddingBottom: Math.max(insets.bottom, 20) }]}
           >
@@ -899,6 +909,7 @@ export default function DiscoverScreen() {
               <Text style={styles.applyBtnText}>Let's eat</Text>
             </TouchableOpacity>
           </Animated.View>
+          </KeyboardAvoidingView>
         </View>
       </Modal>
     </SafeAreaView>
@@ -1133,6 +1144,9 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.3)',
     justifyContent: 'flex-end',
+  },
+  sheetKavWrap: {
+    width: '100%',
   },
   sheet: {
     backgroundColor: colors.surface,

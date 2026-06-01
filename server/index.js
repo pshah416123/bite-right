@@ -4568,6 +4568,40 @@ function clampRadius(value) {
   return Math.max(1, Math.min(30, Math.round(n)));
 }
 
+const VALID_MEAL_TIMES = new Set(['breakfast', 'brunch', 'lunch', 'dinner']);
+function normalizeMealTime(value) {
+  if (typeof value !== 'string') return null;
+  const v = value.trim().toLowerCase();
+  return VALID_MEAL_TIMES.has(v) ? v : null;
+}
+
+/** Time-window per meal (24h local). Slightly generous so a "dinner"-picker
+ *  whose group sits down at 5pm still gets dinner spots open at 5pm. */
+const MEAL_WINDOWS = {
+  breakfast: { startHour: 6,  endHour: 11 },
+  brunch:    { startHour: 9,  endHour: 15 },
+  lunch:     { startHour: 11, endHour: 16 },
+  dinner:    { startHour: 16, endHour: 22 },
+};
+
+/**
+ * Decide whether to HARD-filter the swipe pool by `isOpenNow`. Nearby Search
+ * only returns `open_now` (a boolean for right now), not per-day weekday_text.
+ * That means we can only enforce "open at the chosen meal time" when the
+ * chosen meal overlaps with the current local hour — otherwise `isOpenNow`
+ * is the wrong signal and a strict filter would drop legitimate candidates.
+ *
+ * If we ever cache `weekday_text` per restaurant, the filter can become
+ * mealTime-precise regardless of clock time. Until then: strict when the
+ * user is planning for "now", relaxed when planning ahead.
+ */
+function shouldFilterByOpenNow(mealTime, now = new Date()) {
+  if (!mealTime || !MEAL_WINDOWS[mealTime]) return false;
+  const { startHour, endHour } = MEAL_WINDOWS[mealTime];
+  const hour = now.getHours();
+  return hour >= startHour && hour < endHour;
+}
+
 // POST /api/tonight/sessions
 app.post('/api/tonight/sessions', (req, res) => {
   const { sessionName, locationBias, settings } = req.body || {};
@@ -4606,6 +4640,7 @@ app.post('/api/tonight/sessions', (req, res) => {
       cuisines: Array.isArray(settings?.cuisines) ? settings.cuisines : [],
       deckSize: [10, 15, 20].includes(settings?.deckSize) ? settings.deckSize : 15,
       deadline: settings?.deadline || null,
+      mealTime: normalizeMealTime(settings?.mealTime),
       nominatedRestaurants: [],
     },
   };
@@ -4631,7 +4666,7 @@ app.put('/api/tonight/sessions/:code/settings', (req, res) => {
   if (isSessionExpired(session)) return res.status(410).json({ error: 'Session expired' });
   if (session.started) return res.status(409).json({ error: 'Session already started' });
 
-  const { location, locationLat, locationLng, searchRadius, priceRange, cuisines, deckSize, deadline } = req.body || {};
+  const { location, locationLat, locationLng, searchRadius, priceRange, cuisines, deckSize, deadline, mealTime } = req.body || {};
   if (location !== undefined) session.settings.location = location;
   if (locationLat !== undefined) session.settings.locationLat = locationLat;
   if (locationLng !== undefined) session.settings.locationLng = locationLng;
@@ -4640,6 +4675,7 @@ app.put('/api/tonight/sessions/:code/settings', (req, res) => {
   if (Array.isArray(cuisines)) session.settings.cuisines = cuisines;
   if ([10, 15, 20].includes(deckSize)) session.settings.deckSize = deckSize;
   if (deadline !== undefined) session.settings.deadline = deadline;
+  if (mealTime !== undefined) session.settings.mealTime = normalizeMealTime(mealTime);
 
   res.json({ ok: true, settings: session.settings });
 });
@@ -4967,7 +5003,24 @@ app.get('/api/tonight/sessions/:code/pool', async (req, res) => {
     nominated: true,
   }));
   const nominatedIds = new Set(nominatedItems.map((n) => n.restaurantId));
-  const combined = [...nominatedItems, ...ranked.filter((r) => !nominatedIds.has(r.restaurantId))];
+  let combined = [...nominatedItems, ...ranked.filter((r) => !nominatedIds.has(r.restaurantId))];
+
+  // Meal-time hard filter. Only applies when the chosen meal overlaps with
+  // the current local hour — otherwise `isOpenNow` is the wrong signal
+  // (Nearby Search doesn't return per-day hours; see shouldFilterByOpenNow
+  // for the longer rationale). When applied, drop only isOpenNow===false.
+  // Items with isOpenNow=null (unknown) stay in the pool. Nominated picks
+  // are always exempt — the host added them on purpose.
+  const mealTime = session.settings.mealTime || null;
+  if (mealTime && shouldFilterByOpenNow(mealTime)) {
+    const before = combined.length;
+    combined = combined.filter((r) => r.nominated || r.isOpenNow !== false);
+    if (combined.length !== before) {
+      console.log('[BiteRight][Tonight pool] meal-time filter', {
+        mealTime, dropped: before - combined.length, kept: combined.length,
+      });
+    }
+  }
 
   const start = page * pageSize;
   const slice = combined.slice(start, start + pageSize);
