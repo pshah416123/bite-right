@@ -4002,10 +4002,16 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
     // through to the "show photos as visual backup" stage or the review-LLM
     // last resort. menuPlacePhotos caps photos per request internally to
     // keep vision-API spend bounded.
-    if (placeId && require('./menuPlacePhotos').isConfigured()) {
+    const placePhotosModule = require('./menuPlacePhotos');
+    const ocrConfigured = placePhotosModule.isConfigured();
+    console.log('[BiteRight] menu: OCR stage check', {
+      restaurantId,
+      hasPlaceId: !!placeId,
+      ocrConfigured,
+    });
+    if (placeId && ocrConfigured) {
       try {
-        const { extractMenuFromPlacePhotos } = require('./menuPlacePhotos');
-        const ocrResult = await extractMenuFromPlacePhotos(placeId);
+        const ocrResult = await placePhotosModule.extractMenuFromPlacePhotos(placeId);
         if (ocrResult && ocrResult.sections.length > 0) {
           result.sections = ocrResult.sections;
           result.source = 'google_photo_ocr';
@@ -4016,6 +4022,7 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
           });
           return res.json(await finalize('google_photo_ocr'));
         }
+        console.log('[BiteRight] menu: OCR ran but returned no menu', { restaurantId });
       } catch (err) {
         console.log('[BiteRight] menu: google_photo_ocr failed', err.message);
       }
