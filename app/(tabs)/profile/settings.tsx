@@ -19,7 +19,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { colors } from '~/src/theme/colors';
 import { useTestMode } from '~/src/context/TestModeContext';
-import { useAuthContext } from '~/src/context/AuthContext';
+import { useAuthContext, useTutorialControls } from '~/src/context/AuthContext';
 import { getMe, deleteMe, type UserSummary } from '~/src/api/users';
 
 const SUPPORT_EMAIL = 'support@biteright.app';
@@ -93,6 +93,7 @@ export default function SettingsScreen() {
   const router = useRouter();
   const { isTestMode, toggleTestMode } = useTestMode();
   const { user, signOut } = useAuthContext();
+  const { resetTutorial } = useTutorialControls();
   const email = user?.email ?? null;
 
   // Pull the user row from the server so Name/Username display the truth,
@@ -154,6 +155,12 @@ export default function SettingsScreen() {
           onPress: async () => {
             try {
               await deleteMe();
+              // Reset the tutorial flag in AsyncStorage so the next sign-in
+              // (whether the user creates a new account or re-uses an
+              // existing email) routes through onboarding. Without this,
+              // device-local state still says "tutorial done" and the
+              // freshly-created account skips straight to the home feed.
+              await resetTutorial();
               await signOut();
             } catch (e: any) {
               Alert.alert(

@@ -6,7 +6,10 @@ import { useAuth, type AuthState } from '../hooks/useAuth';
 import { supabaseConfigured } from '../lib/supabase';
 
 const AuthContext = createContext<AuthState | undefined>(undefined);
-const TutorialContext = createContext<{ markTutorialComplete: () => Promise<void> } | undefined>(undefined);
+const TutorialContext = createContext<{
+  markTutorialComplete: () => Promise<void>;
+  resetTutorial: () => Promise<void>;
+} | undefined>(undefined);
 const TUTORIAL_FLAG = 'byterite_tutorialCompleted';
 
 function useProtectedRoute(
@@ -55,6 +58,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setTutorialDone(true);
   }, []);
 
+  // Clear the tutorial flag so the next sign-in routes through onboarding.
+  // Called from the delete-account flow — without this, AsyncStorage on
+  // the device still says "tutorial done" from the deleted user's session
+  // and a newly-created account skips straight to the home feed.
+  const resetTutorial = useCallback(async () => {
+    await AsyncStorage.removeItem(TUTORIAL_FLAG);
+    setTutorialDone(false);
+  }, []);
+
   useProtectedRoute(auth.session, auth.loading, tutorialDone);
 
   if (auth.loading || tutorialDone === null) {
@@ -67,7 +79,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider value={auth}>
-      <TutorialContext.Provider value={{ markTutorialComplete }}>{children}</TutorialContext.Provider>
+      <TutorialContext.Provider value={{ markTutorialComplete, resetTutorial }}>{children}</TutorialContext.Provider>
     </AuthContext.Provider>
   );
 }
