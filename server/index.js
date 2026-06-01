@@ -3879,6 +3879,48 @@ function isCacheFresh(row) {
   return new Date(row.next_refresh_at).getTime() > Date.now();
 }
 
+/**
+ * Make sure a `restaurants` row exists for this restaurant_id so
+ * restaurant_menus inserts don't FK-violate. Discover surfaces ChIJ /
+ * g_ChIJ restaurants from Google that have never been written to the
+ * restaurants table; before this guard, every menu cache write for one
+ * of those silently failed with
+ *   "violates foreign key constraint restaurant_menus_restaurant_id_fkey"
+ * which meant the pipeline ran end-to-end every detail-page load (slow
+ * cold path; on bad networks looked like "details aren't loading").
+ *
+ * Uses in-memory info when available (free), otherwise inserts a minimal
+ * row. Idempotent via on-conflict do-nothing.
+ */
+async function ensureRestaurantRowInDb(restaurantId) {
+  if (!supabaseConfigured || !restaurantId) return;
+  const info = getRestaurantInfoSync(restaurantId);
+  const placeId = info?.googlePlaceId || info?.placeId ||
+    (String(restaurantId).startsWith('g_') ? String(restaurantId).slice(2) :
+     String(restaurantId).startsWith('ChIJ') ? String(restaurantId) : null);
+  const row = {
+    id: restaurantId,
+    place_id: placeId,
+    name: info?.name || 'Restaurant',
+    address: info?.address || null,
+    city: info?.city || null,
+    neighborhood: info?.neighborhood || null,
+    lat: info?.lat ?? null,
+    lng: info?.lng ?? null,
+  };
+  try {
+    const { error } = await supabase
+      .from('restaurants')
+      .upsert(row, { onConflict: 'id', ignoreDuplicates: true });
+    if (error && error.code !== '23505') {
+      // 23505 = unique violation on place_id race; safe to ignore.
+      console.warn('[menu-cache] ensureRestaurant failed', restaurantId, error.message);
+    }
+  } catch (e) {
+    console.warn('[menu-cache] ensureRestaurant threw', restaurantId, e?.message);
+  }
+}
+
 async function writeCachedMenu({ restaurantId, sections, sourceType, sourceUrl, pdfUrl, rawData, qualityScore, status }) {
   if (!supabaseConfigured) return;
   const ttlDays = status === 'success'
@@ -3886,10 +3928,13 @@ async function writeCachedMenu({ restaurantId, sections, sourceType, sourceUrl, 
     : status === 'low_quality' ? MENU_TTL_LOW_QUALITY_DAYS
     : MENU_TTL_FAILED_DAYS;
   const next = new Date(Date.now() + ttlDays * 24 * 60 * 60 * 1000).toISOString();
+  // Ensure the parent restaurants row exists first — otherwise the FK
+  // constraint on restaurant_menus rejects the insert (see helper above).
+  await ensureRestaurantRowInDb(restaurantId);
   // supabase-js's query builder is thenable but NOT a Promise — it has no
   // .catch(). Use try/await + result.error so a write failure (e.g. FK
-  // violation for ChIJ-prefixed ids not yet in the restaurants table)
-  // logs and is swallowed instead of crashing the process.
+  // violation that slipped past ensureRestaurantRowInDb) logs and is
+  // swallowed instead of crashing the process.
   try {
     const { error } = await supabase
       .from('restaurant_menus')
