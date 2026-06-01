@@ -40,6 +40,11 @@ function detectProvider(url, html) {
   // (Indian, Thai, neighborhood spots). Server-rendered menu with stable
   // class names (food-item-holder / food-item-title / food-price).
   if (u.includes('spotapps.co') || /spotapps\.co|spot_id|food-item-holder/i.test(h)) return 'spotapps';
+  // Lettuce Entertain You WordPress theme — used across their restaurant
+  // portfolio (Sushi-san, RPM, Beatrix, Stella Barra, etc.) and templated
+  // copies on other sites. Server-rendered with item-wrap / item-name /
+  // item-price / item-desc / section-name classes.
+  if (/lettuce\/css\/menu|class="menu-section\s|class="item-wrap[\s"]/i.test(h)) return 'lettuce';
   if (u.includes('clover.com')) return 'clover';
   if (u.includes('wixsite.com') || u.includes('editorx.io')) return 'wix';
   if (/<meta[^>]+generator[^>]+wordpress/i.test(h)) return 'wordpress';
@@ -315,6 +320,81 @@ function parseSpotAppsMenu(html) {
     });
     if (sections.length === 0) return null;
     return { sections, rawData: null, source: 'spotapps' };
+  } catch {
+    return null;
+  }
+}
+
+// ─── Lettuce theme (Lettuce Entertain You + similar WP themes) ─────────────
+
+/**
+ * Restaurant pages built on the Lettuce Entertain You WordPress theme
+ * (Sushi-san, RPM Italian, RPM Steak, Beatrix, Stella Barra, etc.) and
+ * templated copies on other restaurants. Common markup:
+ *
+ *   <article class="menu-wrap" aria-label="All Day">
+ *     <h2>All Day</h2>
+ *     <div class="menu-section Specials">
+ *       <h3 class="section-name">Specials</h3>
+ *       <p class="item-wrap">
+ *         <span class="item-name">
+ *           King Crab Gunkan Nigiri
+ *           <span class="item-desc"> motoyaki sauce</span>  ← nested inside name
+ *         </span>
+ *         <span class="item-price"><span>2pcs 22</span></span>
+ *       </p>
+ *     </div>
+ *   </article>
+ *
+ * Quirks:
+ *   - item-desc is nested INSIDE item-name, so we have to strip it before
+ *     using item-name as the dish name.
+ *   - item-price can have multiple <span> children for size variants
+ *     ("13 glass" / "32 carafe") — we join them with " / ".
+ *   - Prices often omit the "$" prefix (just "22" or "2pcs 22"); the
+ *     normalizePrice helper handles the spelling.
+ */
+function parseLettuceMenu(html) {
+  try {
+    if (!/class="item-wrap[\s"]|class="menu-section\s/i.test(html)) return null;
+    const $ = cheerio.load(html);
+    const sections = [];
+    $('.menu-section').each((_, el) => {
+      const $sec = $(el);
+      const title =
+        $sec.find('.section-name').first().text().trim() ||
+        $sec.find('h3, h2').first().text().trim() ||
+        'Menu';
+      const items = [];
+      $sec.find('.item-wrap').each((_, item) => {
+        const $it = $(item);
+        // item-desc lives inside item-name; clone, strip children, get text.
+        const $name = $it.find('.item-name').first();
+        if ($name.length === 0) return;
+        const nameOnly = $name.clone().children().remove().end().text().trim();
+        if (!nameOnly || nameOnly.length < 2 || nameOnly.length > 100) return;
+        const desc = $it.find('.item-desc').first().text().trim();
+        // Price spans (could be multiple for size variants).
+        const priceParts = [];
+        $it.find('.item-price span').each((_, p) => {
+          const t = $(p).text().trim();
+          if (t) priceParts.push(t);
+        });
+        const rawPrice = priceParts.length
+          ? priceParts.join(' / ')
+          : $it.find('.item-price').first().text().trim();
+        items.push({
+          name: nameOnly,
+          description: desc || null,
+          price: rawPrice ? normalizePrice(rawPrice) : null,
+          tags: null,
+          photoUrl: null,
+        });
+      });
+      if (items.length > 0) sections.push({ title, items });
+    });
+    if (sections.length === 0) return null;
+    return { sections, rawData: null, source: 'lettuce' };
   } catch {
     return null;
   }
@@ -824,6 +904,10 @@ async function extractMenuFromHtml(html, url) {
     const r = parseSpotAppsMenu(html);
     if (r) return r;
   }
+  if (provider === 'lettuce') {
+    const r = parseLettuceMenu(html);
+    if (r) return r;
+  }
   if (provider === 'wix') {
     const r = parseWixMenu(html);
     if (r) return r;
@@ -837,6 +921,8 @@ async function extractMenuFromHtml(html, url) {
   if (crossBB) return crossBB;
   const crossSA = parseSpotAppsMenu(html);
   if (crossSA) return crossSA;
+  const crossLE = parseLettuceMenu(html);
+  if (crossLE) return crossLE;
   const jsonLd = parseJsonLdMenu(html);
   if (jsonLd) return { ...jsonLd, source: jsonLd.source || provider };
 
@@ -904,6 +990,7 @@ module.exports = {
   parseChowNowMenu,
   parseBentoBoxMenu,
   parseSpotAppsMenu,
+  parseLettuceMenu,
   parseWixMenu,
   scoreMenu,
   extractMenuFromUrl,
