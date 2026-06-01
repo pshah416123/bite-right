@@ -3833,11 +3833,63 @@ const CHAIN_MENUS = {
       },
     ],
   },
+  'jimmy-johns': {
+    // Jimmy John's menu is fully JS-rendered (the main /menu page returns
+    // a 9KB SPA shell with no static content). They're a national chain
+    // with an iconic stable menu — curated here instead.
+    sections: [
+      {
+        title: 'The Originals (8" sub)',
+        items: [
+          { name: '#1 Pepe', description: 'Hot ham, capicola, provolone, lettuce, tomato, onion, mayo, oregano-basil', price: null, tags: null, photoUrl: null },
+          { name: '#2 Big John', description: 'Roast beef, lettuce, tomato, mayo', price: null, tags: null, photoUrl: null },
+          { name: '#3 Totally Tuna', description: 'Tuna salad, lettuce, tomato, cucumber', price: null, tags: null, photoUrl: null },
+          { name: '#4 Turkey Tom', description: 'Turkey, lettuce, tomato, mayo', price: null, tags: null, photoUrl: null },
+          { name: '#5 Vito', description: 'Genoa salami, capicola, provolone, lettuce, tomato, onion, oil & vinegar, oregano-basil', price: null, tags: null, photoUrl: null },
+          { name: '#6 Vegetarian', description: 'Provolone, avocado, cucumber, lettuce, tomato, mayo', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: '#7 Spicy East Coast Italian', description: 'Capicola, salami, pepperoni, provolone, lettuce, tomato, onion, oil & vinegar', price: null, tags: ['spicy'], photoUrl: null },
+          { name: '#8 Billy Club', description: 'Roast beef, ham, provolone, dijon mustard, lettuce, tomato, mayo', price: null, tags: null, photoUrl: null },
+          { name: '#9 Italian Night Club', description: 'Salami, capicola, ham, provolone, lettuce, tomato, onion, oil & vinegar', price: null, tags: null, photoUrl: null },
+        ],
+      },
+      {
+        title: 'Favorites',
+        items: [
+          { name: 'J.J. Gargantuan', description: 'Towering stack of capicola, salami, turkey, roast beef, ham, provolone, onion, lettuce, tomato, oil & vinegar', price: null, tags: null, photoUrl: null },
+          { name: 'Hunter’s Club', description: 'Roast beef, provolone, lettuce, tomato, mayo', price: null, tags: null, photoUrl: null },
+          { name: 'Country Club', description: 'Turkey, ham, provolone, lettuce, tomato, mayo', price: null, tags: null, photoUrl: null },
+          { name: 'Beach Club', description: 'Turkey, avocado, provolone, cucumber, lettuce, tomato, mayo, sprouts', price: null, tags: null, photoUrl: null },
+          { name: 'Club Lulu', description: 'Turkey, bacon, lettuce, tomato, mayo', price: null, tags: null, photoUrl: null },
+          { name: 'Ultimate Porker', description: 'Ham, bacon, lettuce, tomato, mayo', price: null, tags: null, photoUrl: null },
+        ],
+      },
+      {
+        title: 'Slims (meat + cheese only)',
+        items: [
+          { name: 'Slim 1 — Ham & Provolone', description: null, price: null, tags: null, photoUrl: null },
+          { name: 'Slim 2 — Roast Beef', description: null, price: null, tags: null, photoUrl: null },
+          { name: 'Slim 4 — Turkey', description: null, price: null, tags: null, photoUrl: null },
+          { name: 'Slim 5 — Salami, Capicola & Cheese', description: null, price: null, tags: null, photoUrl: null },
+        ],
+      },
+      {
+        title: 'Sides',
+        items: [
+          { name: 'Real Potato Chips', description: 'Kettle-cooked, classic flavors', price: null, tags: null, photoUrl: null },
+          { name: 'Thinny Chips', description: 'Thin-sliced potato chips', price: null, tags: null, photoUrl: null },
+          { name: 'Jumbo Kosher Dill Pickle', description: 'A whole crunchy pickle', price: null, tags: ['vegan'], photoUrl: null },
+          { name: 'Jumbo Chocolate Chunk Cookie', description: 'Big, soft, baked daily', price: null, tags: null, photoUrl: null },
+          { name: 'Double Chocolate Chunk Brownie', description: null, price: null, tags: null, photoUrl: null },
+        ],
+      },
+    ],
+  },
   // Add more chains here as needed: mcdonalds, taco-bell, panera, etc.
 };
 
 const CHAIN_PATTERNS = [
   { re: /chick[\s-]?fil[\s-]?a/i, key: 'chick-fil-a' },
+  { re: /jimmy\s*john'?s?/i, key: 'jimmy-johns' },
 ];
 
 function getChainMenu(restaurantName) {
