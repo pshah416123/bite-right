@@ -10,6 +10,7 @@
  */
 
 const axios = require('axios');
+const cheerio = require('cheerio');
 const { detectMenuPdfUrls, extractMenuFromPdfUrl } = require('./menuPdf');
 
 const SCRAPE_HEADERS = {
@@ -35,6 +36,10 @@ function detectProvider(url, html) {
   if (u.includes('square.site') || /<meta[^>]+generator[^>]+square/i.test(h)) return 'square';
   if (u.includes('chownow.com') || /chownow_widget|chownow_iframe/i.test(h)) return 'chownow';
   if (u.includes('getbento.com') || /bentobox|bento-cms/i.test(h)) return 'bentobox';
+  // SpotApps (spotapps.co) — small CMS popular with independent restaurants
+  // (Indian, Thai, neighborhood spots). Server-rendered menu with stable
+  // class names (food-item-holder / food-item-title / food-price).
+  if (u.includes('spotapps.co') || /spotapps\.co|spot_id|food-item-holder/i.test(h)) return 'spotapps';
   if (u.includes('clover.com')) return 'clover';
   if (u.includes('wixsite.com') || u.includes('editorx.io')) return 'wix';
   if (/<meta[^>]+generator[^>]+wordpress/i.test(h)) return 'wordpress';
@@ -257,6 +262,62 @@ function chowNowItemToMenuItem(it) {
     tags: null,
     photoUrl: it.imageUrl || it.image_url || null,
   };
+}
+
+// ─── SpotApps ───────────────────────────────────────────────────────────────
+
+/**
+ * SpotApps (spotapps.co) renders restaurant menus server-side with a stable
+ * class structure used across the many independent restaurants on the platform:
+ *
+ *   <section>
+ *     <div class="food-menu-grid-item-content">
+ *       <h2>Section Name</h2>
+ *       <div class="food-menu-content">
+ *         <div class="food-item-holder">
+ *           <div class="food-item-title"><h3>Dish</h3></div>
+ *           <div class="food-price">$12.00</div>
+ *           <div class="food-item-description">…</div>
+ *         </div>
+ *         …
+ *       </div>
+ *     </div>
+ *   </section>
+ *
+ * We use cheerio here (vs. the regex approach in parseBentoBoxMenu) because
+ * the nested structure with multiple food-menu-content blocks per section
+ * makes regex-with-backreferences hairy. cheerio is already a dep.
+ */
+function parseSpotAppsMenu(html) {
+  try {
+    if (!/spotapps|spot_id|food-item-holder/i.test(html)) return null;
+    const $ = cheerio.load(html);
+    const sections = [];
+    $('.food-menu-grid-item-content').each((_, el) => {
+      const $el = $(el);
+      const title = $el.find('h2').first().text().trim() || 'Menu';
+      const items = [];
+      $el.find('.food-item-holder').each((_, item) => {
+        const $it = $(item);
+        const name = $it.find('.food-item-title').first().text().trim();
+        if (!name || name.length < 2 || name.length > 80) return;
+        const rawPrice = $it.find('.food-price').first().text().trim();
+        const desc = $it.find('.food-item-description').first().text().trim();
+        items.push({
+          name,
+          description: desc || null,
+          price: rawPrice ? normalizePrice(rawPrice) : null,
+          tags: null,
+          photoUrl: null,
+        });
+      });
+      if (items.length > 0) sections.push({ title, items });
+    });
+    if (sections.length === 0) return null;
+    return { sections, rawData: null, source: 'spotapps' };
+  } catch {
+    return null;
+  }
 }
 
 // ─── BentoBox ───────────────────────────────────────────────────────────────
@@ -759,6 +820,10 @@ async function extractMenuFromHtml(html, url) {
     const r = parseBentoBoxMenu(html);
     if (r) return r;
   }
+  if (provider === 'spotapps') {
+    const r = parseSpotAppsMenu(html);
+    if (r) return r;
+  }
   if (provider === 'wix') {
     const r = parseWixMenu(html);
     if (r) return r;
@@ -770,6 +835,8 @@ async function extractMenuFromHtml(html, url) {
   if (crossCN) return crossCN;
   const crossBB = parseBentoBoxMenu(html);
   if (crossBB) return crossBB;
+  const crossSA = parseSpotAppsMenu(html);
+  if (crossSA) return crossSA;
   const jsonLd = parseJsonLdMenu(html);
   if (jsonLd) return { ...jsonLd, source: jsonLd.source || provider };
 
@@ -836,6 +903,7 @@ module.exports = {
   parseJsonLdMenu,
   parseChowNowMenu,
   parseBentoBoxMenu,
+  parseSpotAppsMenu,
   parseWixMenu,
   scoreMenu,
   extractMenuFromUrl,
