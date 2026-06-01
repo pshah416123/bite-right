@@ -19,7 +19,10 @@ import type { RestaurantMenu, MenuItem, MenuPhoto, MenuGroup, MenuSection as Men
 // restaurant has 2+ groups — single-group menus render flat as before.
 const GROUP_LABEL: Record<MenuGroup, string> = {
   food: 'Food',
+  breakfast: 'Breakfast',
   brunch: 'Brunch',
+  lunch: 'Lunch',
+  dinner: 'Dinner',
   cocktails: 'Cocktails',
   wine: 'Wine',
   beer: 'Beer',
@@ -27,20 +30,42 @@ const GROUP_LABEL: Record<MenuGroup, string> = {
   dessert: 'Dessert',
   coffee: 'Coffee & Tea',
 };
+// Meal-time groups first (in chronological order), then category groups.
+// When a restaurant has both meal-split and the generic 'food' bucket
+// (e.g. some sections like "Specials" had no meal context), 'food' goes
+// after the meals so the tabs read Breakfast | Brunch | Lunch | Dinner | Food.
 const GROUP_DISPLAY_ORDER: MenuGroup[] = [
-  'food', 'brunch', 'cocktails', 'wine', 'beer', 'na', 'dessert', 'coffee',
+  'breakfast', 'brunch', 'lunch', 'dinner', 'food',
+  'cocktails', 'wine', 'beer', 'na', 'dessert', 'coffee',
 ];
 
-/** Pick the tab that best matches the current local time. Brunch wins on
- *  weekend mornings; otherwise default to food. Drinks/dessert never default —
- *  they're explicit picks, not "what should be open first." */
+/** Pick the tab that best matches the current local time. Prefers an
+ *  explicit meal split when present; falls back to brunch on weekend
+ *  mornings, then generic food. Drinks/dessert never default — they're
+ *  explicit picks, not "what should be open first." */
 function pickDefaultGroup(present: Set<MenuGroup>): MenuGroup {
   const now = new Date();
   const dow = now.getDay();              // 0 = Sun, 6 = Sat
   const hour = now.getHours();
-  const isWeekendMorning = (dow === 0 || dow === 6) && hour >= 8 && hour < 15;
+  const isWeekend = dow === 0 || dow === 6;
+  const isWeekendMorning = isWeekend && hour >= 8 && hour < 15;
 
+  // Weekend brunch window
   if (isWeekendMorning && present.has('brunch')) return 'brunch';
+
+  // Time-of-day → meal tab, when restaurant has the explicit meal split.
+  if (hour >= 5 && hour < 11) {
+    if (present.has('breakfast')) return 'breakfast';
+    if (present.has('brunch')) return 'brunch';
+  }
+  if (hour >= 11 && hour < 16) {
+    if (present.has('lunch')) return 'lunch';
+    if (present.has('brunch')) return 'brunch';
+  }
+  if (hour >= 16 || hour < 5) {
+    if (present.has('dinner')) return 'dinner';
+  }
+
   if (present.has('food')) return 'food';
   // Drinks-only / dessert-only restaurant — fall back to display order.
   for (const g of GROUP_DISPLAY_ORDER) if (present.has(g)) return g;

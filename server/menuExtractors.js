@@ -568,8 +568,13 @@ function scoreMenu(sections) {
 const GROUP_PATTERNS = [
   // Order matters: more specific patterns first. Wine is intentionally above
   // dessert so "Dessert Wines" routes to wine (the more useful classification
-  // for someone browsing wine).
+  // for someone browsing wine). Meal-time keywords (brunch/breakfast/lunch/
+  // dinner) are intentionally above drinks so "Brunch Cocktails" routes to
+  // brunch.
   ['brunch', /\bbrunch\b/i],
+  ['breakfast', /\bbreakfast\b/i],
+  ['lunch', /\blunch\b/i],
+  ['dinner', /\bdinner\b|\bsupper\b/i],
   ['wine', /\b(wine|champagne|sparkling|prosecco|ros[eé]|chardonnay|sauvignon|pinot|cabernet|merlot|riesling|gamay|sangiovese|nebbiolo|tempranillo|chianti|port|barbera|syrah|chenin|gew[uü]rztraminer|burgund(?:y|ian)|bordeaux|barolo|rioja)\b/i],
   ['beer', /\b(beer|draft|ipa|ale|lager|stout|pilsner|porter|cider|brews?|on\s+tap)\b/i],
   ['cocktails', /\b(cocktail|spirit|liquor|amaro|amaretto|whisk(?:e)?y|gin|vodka|tequila|mezcal|rum|martini|negroni|bourbon|scotch|digestif|aperitif|cordial|old\s+fashioned|manhattan|highball|sour|spritz|punch)\b/i],
@@ -597,6 +602,8 @@ function classifyMenuGroup(title) {
  * unknowns to 'food'. Idempotent — sections that already have a group are
  * preserved.
  */
+const MEAL_GROUPS = new Set(['breakfast', 'lunch', 'dinner', 'brunch']);
+
 function assignMenuGroups(sections) {
   if (!Array.isArray(sections) || sections.length === 0) return sections || [];
 
@@ -606,7 +613,23 @@ function assignMenuGroups(sections) {
     return classifyMenuGroup(s?.title);
   });
 
-  // Pass 2: smooth. An unknown section sandwiched between two same-category
+  // Pass 2: meal-time forward propagation. SinglePlatform / Toast / many
+  // BentoBox menus structure meals as headers followed by sub-sections that
+  // don't include the meal name in their title ("Breakfast" → "Omelets" →
+  // "Toast" → "Lunch" → "Sandwiches"). Once a meal header appears, propagate
+  // it forward to unclassified sections until the next meal header. Drinks
+  // (wine/beer/cocktails) and dessert keep their own classification —
+  // propagation only fills in null/unmatched slots.
+  let currentMeal = null;
+  for (let i = 0; i < groups.length; i++) {
+    if (groups[i] && MEAL_GROUPS.has(groups[i])) {
+      currentMeal = groups[i];
+    } else if (!groups[i] && currentMeal) {
+      groups[i] = currentMeal;
+    }
+  }
+
+  // Pass 3: smooth. An unknown section sandwiched between two same-category
   // neighbors inherits that category. Handles e.g. "Celebrating Women's
   // History Month" appearing between two cocktail sections — it's almost
   // certainly cocktails too.
@@ -619,7 +642,7 @@ function assignMenuGroups(sections) {
     if (prev && prev === next) groups[i] = prev;
   }
 
-  // Pass 3: default unknowns to 'food'.
+  // Pass 4: default unknowns to 'food'.
   return sections.map((s, i) => ({ ...s, group: groups[i] || 'food' }));
 }
 

@@ -236,7 +236,9 @@ export interface MenuItem {
   photoUrl: string | null;
 }
 
-export type MenuGroup = 'food' | 'brunch' | 'cocktails' | 'wine' | 'beer' | 'dessert' | 'coffee' | 'na';
+export type MenuGroup =
+  | 'food' | 'breakfast' | 'brunch' | 'lunch' | 'dinner'
+  | 'cocktails' | 'wine' | 'beer' | 'na' | 'dessert' | 'coffee';
 
 export interface MenuSection {
   title: string;
