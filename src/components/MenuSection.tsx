@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   Dimensions,
   Image,
@@ -11,7 +11,41 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import type { RestaurantMenu, MenuItem, MenuPhoto } from '~/src/api/restaurants';
+import type { RestaurantMenu, MenuItem, MenuPhoto, MenuGroup, MenuSection as MenuSectionType } from '~/src/api/restaurants';
+
+// ─── Menu groups: display labels + ordering ────────────────────────────────
+// Order is "what someone scanning the menu wants to see first": food, then
+// brunch (when present), then drinks, then dessert. Tabs only appear when a
+// restaurant has 2+ groups — single-group menus render flat as before.
+const GROUP_LABEL: Record<MenuGroup, string> = {
+  food: 'Food',
+  brunch: 'Brunch',
+  cocktails: 'Cocktails',
+  wine: 'Wine',
+  beer: 'Beer',
+  na: 'Non-Alcoholic',
+  dessert: 'Dessert',
+  coffee: 'Coffee & Tea',
+};
+const GROUP_DISPLAY_ORDER: MenuGroup[] = [
+  'food', 'brunch', 'cocktails', 'wine', 'beer', 'na', 'dessert', 'coffee',
+];
+
+/** Pick the tab that best matches the current local time. Brunch wins on
+ *  weekend mornings; otherwise default to food. Drinks/dessert never default —
+ *  they're explicit picks, not "what should be open first." */
+function pickDefaultGroup(present: Set<MenuGroup>): MenuGroup {
+  const now = new Date();
+  const dow = now.getDay();              // 0 = Sun, 6 = Sat
+  const hour = now.getHours();
+  const isWeekendMorning = (dow === 0 || dow === 6) && hour >= 8 && hour < 15;
+
+  if (isWeekendMorning && present.has('brunch')) return 'brunch';
+  if (present.has('food')) return 'food';
+  // Drinks-only / dessert-only restaurant — fall back to display order.
+  for (const g of GROUP_DISPLAY_ORDER) if (present.has(g)) return g;
+  return 'food';
+}
 
 const { width: SW } = Dimensions.get('window');
 
@@ -31,13 +65,42 @@ export function MenuTemplate({ menu, restaurantName }: Props) {
   const [zoomPhoto, setZoomPhoto] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
 
+  // Bucket sections by group, preserving the server-provided order within
+  // each bucket. Tabs are derived from which buckets are non-empty, in
+  // GROUP_DISPLAY_ORDER. The default-selected tab is time-of-day driven.
+  const { tabs, sectionsByGroup, allItemCount } = useMemo(() => {
+    const byGroup = new Map<MenuGroup, MenuSectionType[]>();
+    let total = 0;
+    for (const s of menu.sections) {
+      const g: MenuGroup = (s.group as MenuGroup) || 'food';
+      if (!byGroup.has(g)) byGroup.set(g, []);
+      byGroup.get(g)!.push(s);
+      total += s.items.length;
+    }
+    const orderedTabs = GROUP_DISPLAY_ORDER.filter((g) => byGroup.has(g));
+    return { tabs: orderedTabs, sectionsByGroup: byGroup, allItemCount: total };
+  }, [menu.sections]);
+
+  const presentGroups = useMemo(() => new Set(tabs), [tabs]);
+  const [activeGroup, setActiveGroup] = useState<MenuGroup>(() => pickDefaultGroup(presentGroups));
+
+  // If the menu reloads with a different set of groups (e.g. cache refresh
+  // adds a wine list), re-pick a sensible default rather than keep a stale
+  // tab that no longer exists.
+  React.useEffect(() => {
+    if (!presentGroups.has(activeGroup)) {
+      setActiveGroup(pickDefaultGroup(presentGroups));
+    }
+  }, [presentGroups, activeGroup]);
+
   const hasSections = menu.sections.length > 0;
   const hasContent = hasSections;
+  const showTabs = tabs.length > 1;
+  const visibleSections = showTabs ? (sectionsByGroup.get(activeGroup) ?? []) : menu.sections;
 
-  const itemCount = hasSections
-    ? menu.sections.reduce((sum, s) => sum + s.items.length, 0)
-    : 0;
-  const subtitle = `${menu.sections.length} section${menu.sections.length !== 1 ? 's' : ''} · ${itemCount} item${itemCount !== 1 ? 's' : ''}`;
+  const subtitle = showTabs
+    ? `${tabs.length} menus · ${allItemCount} items`
+    : `${menu.sections.length} section${menu.sections.length !== 1 ? 's' : ''} · ${allItemCount} item${allItemCount !== 1 ? 's' : ''}`;
 
   return (
     <View style={styles.container}>
@@ -61,10 +124,44 @@ export function MenuTemplate({ menu, restaurantName }: Props) {
 
           {expanded ? (
             <>
+              {/* Group tabs — only shown when the restaurant has 2+ groups
+                  (e.g. food + drinks). Single-group menus render flat. */}
+              {showTabs ? (
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.tabsRow}
+                  style={styles.tabsScroll}
+                >
+                  {tabs.map((g) => {
+                    const active = g === activeGroup;
+                    const count = (sectionsByGroup.get(g) ?? []).reduce(
+                      (n, s) => n + s.items.length,
+                      0,
+                    );
+                    return (
+                      <TouchableOpacity
+                        key={g}
+                        onPress={() => setActiveGroup(g)}
+                        activeOpacity={0.7}
+                        style={[styles.tab, active && styles.tabActive]}
+                      >
+                        <Text style={[styles.tabLabel, active && styles.tabLabelActive]}>
+                          {GROUP_LABEL[g]}
+                        </Text>
+                        <Text style={[styles.tabCount, active && styles.tabCountActive]}>
+                          {count}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+              ) : null}
+
               {/* Scraped structured menu */}
               {hasSections ? (
                 <View style={styles.sectionsWrap}>
-                  {menu.sections.map((section, si) => (
+                  {visibleSections.map((section, si) => (
                     <View key={si} style={styles.sectionCard}>
                       <View style={styles.sectionHeaderRow}>
                         <Text style={styles.sectionTitle}>{section.title}</Text>
@@ -168,6 +265,46 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#8A7060',
     marginTop: 2,
+  },
+
+  // Group tabs
+  tabsScroll: {
+    marginBottom: 14,
+  },
+  tabsRow: {
+    gap: 8,
+    paddingRight: 4,
+  },
+  tab: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: '#F3F0EB',
+  },
+  tabActive: {
+    backgroundColor: '#1A1207',
+  },
+  tabLabel: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: '#1A1207',
+    letterSpacing: -0.1,
+  },
+  tabLabelActive: {
+    color: '#FFFFFF',
+  },
+  tabCount: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#8A7060',
+    opacity: 0.85,
+  },
+  tabCountActive: {
+    color: '#FFFFFF',
+    opacity: 0.7,
   },
 
   // Section cards

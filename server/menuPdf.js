@@ -10,7 +10,12 @@
  */
 
 const axios = require('axios');
-const pdfParse = require('pdf-parse');
+// pdf-parse@2 is a complete API rewrite — it exports a `PDFParse` class
+// instead of a default function. Calling the old `pdfParse(buf)` shape
+// throws TypeError, which our try/catch silently swallowed, so PDF menus
+// looked like "discovery works but extraction returns empty" for every
+// restaurant. New shape: `new PDFParse({ data: buf }).getText()`.
+const { PDFParse } = require('pdf-parse');
 
 const PDF_MAX_BYTES = 5 * 1024 * 1024;     // 5MB cap to avoid abuse
 const PDF_FETCH_TIMEOUT_MS = 8000;
@@ -204,16 +209,23 @@ function titleCase(s) {
 async function extractMenuFromPdfUrl(pdfUrl) {
   const buf = await downloadPdf(pdfUrl);
   if (!buf) return null;
-  let parsed;
+  let text = '';
+  let pageCount = null;
+  let parser;
   try {
-    parsed = await pdfParse(buf);
-  } catch {
+    parser = new PDFParse({ data: buf });
+    const result = await parser.getText();
+    text = result?.text || '';
+    pageCount = result?.total ?? (Array.isArray(result?.pages) ? result.pages.length : null);
+  } catch (e) {
+    console.warn('[menuPdf] parse failed', pdfUrl, e?.message);
     return null;
+  } finally {
+    try { await parser?.destroy?.(); } catch { /* noop */ }
   }
-  const text = parsed?.text || '';
   const sections = parsePdfTextToSections(text);
   if (!sections) return null;
-  return { sections, rawData: { textLength: text.length, pages: parsed?.numpages ?? null }, source: 'pdf' };
+  return { sections, rawData: { textLength: text.length, pages: pageCount }, source: 'pdf' };
 }
 
 module.exports = {

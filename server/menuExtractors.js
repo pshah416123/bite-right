@@ -276,8 +276,18 @@ function parseBentoBoxMenu(html) {
 
     // BentoBox menus are server-rendered. Use regex over HTML rather than
     // pulling in cheerio for one parser — selectors are simple.
+    //
+    // Class matching is whole-token (negative lookahead `(?![-_a-z0-9])`) so
+    // `menu-section` doesn't also catch BEM children like `menu-section__header`
+    // (which would create phantom sections), and `menu-item` doesn't catch
+    // `menu-item__heading` (which fragmented each dish into a "name-only" half
+    // and lost the description + price paragraphs).
+    //
+    // Item lookahead intentionally does NOT include `</div>`: BentoBox wraps
+    // the dish name in an inner `<div class="menu-item__heading">`, and stopping
+    // at its `</div>` would cut the capture short of the desc/price paragraphs.
     const sectionBlocks = [...html.matchAll(
-      /<(?:div|section)[^>]+class="[^"]*menu-section[^"]*"[^>]*>([\s\S]*?)(?=<(?:div|section)[^>]+class="[^"]*menu-section|<\/main|<\/body|$)/gi,
+      /<(?:div|section)[^>]+class="[^"]*\bmenu-section(?![-_a-z0-9])[^"]*"[^>]*>([\s\S]*?)(?=<(?:div|section)[^>]+class="[^"]*\bmenu-section(?![-_a-z0-9])|<\/main|<\/body|$)/gi,
     )];
     if (sectionBlocks.length === 0) return null;
 
@@ -288,21 +298,30 @@ function parseBentoBoxMenu(html) {
       const title = (titleMatch ? stripHtml(titleMatch[1]) : 'Menu').trim() || 'Menu';
 
       const itemBlocks = [...inner.matchAll(
-        /<(?:div|li)[^>]+class="[^"]*menu-item[^"]*"[^>]*>([\s\S]*?)(?=<(?:div|li)[^>]+class="[^"]*menu-item|<\/(?:ul|ol|section|div)\s*>)/gi,
+        /<(?:div|li)[^>]+class="[^"]*\bmenu-item(?![-_a-z0-9])[^"]*"[^>]*>([\s\S]*?)(?=<(?:div|li)[^>]+class="[^"]*\bmenu-item(?![-_a-z0-9])|<\/(?:ul|ol|section|main|body)\s*>)/gi,
       )];
       const items = [];
       for (const ib of itemBlocks) {
         const itemInner = ib[1];
-        const nameMatch = itemInner.match(/<(?:h[3-6]|span|div)[^>]*class="[^"]*(?:menu-item-name|item-title|name)[^"]*"[^>]*>([\s\S]*?)<\/\w+>/i);
+        // Each regex captures the opening tag name (group 1) and uses a
+        // backreference to close on the matching tag. Previously we used
+        // /<\/\w+>/ which stopped at the FIRST close tag — so a price like
+        // `<p><strong>$12</strong></p>` matched up to `</strong>` and the
+        // captured group was empty. BentoBox themes (and other CMS themes)
+        // routinely wrap prices in <strong> / <span> / etc.
+        //
+        // The name regex also accepts <p>, which the Sensei theme uses for
+        // the menu-item__heading--name element.
+        const nameMatch = itemInner.match(/<(h[1-6]|p|span|div|a)\b[^>]*class="[^"]*(?:menu-item-name|menu-item__heading--name|item-title|name)[^"]*"[^>]*>([\s\S]*?)<\/\1>/i);
         if (!nameMatch) continue;
-        const name = stripHtml(nameMatch[1]).trim();
+        const name = stripHtml(nameMatch[2]).trim();
         if (!name || name.length < 2 || name.length > 80) continue;
-        const priceMatch = itemInner.match(/<[^>]+class="[^"]*(?:menu-item-price|price)[^"]*"[^>]*>([\s\S]*?)<\/\w+>/i);
-        const descMatch = itemInner.match(/<[^>]+class="[^"]*(?:menu-item-description|description|item-description)[^"]*"[^>]*>([\s\S]*?)<\/\w+>/i);
+        const priceMatch = itemInner.match(/<([a-z][a-z0-9]*)\b[^>]*class="[^"]*(?:menu-item-price|menu-item__details--price|price)[^"]*"[^>]*>([\s\S]*?)<\/\1>/i);
+        const descMatch = itemInner.match(/<([a-z][a-z0-9]*)\b[^>]*class="[^"]*(?:menu-item-description|menu-item__details--description|description|item-description)[^"]*"[^>]*>([\s\S]*?)<\/\1>/i);
         items.push({
           name,
-          description: descMatch ? stripHtml(descMatch[1]).trim() || null : null,
-          price: priceMatch ? normalizePrice(stripHtml(priceMatch[1])) : null,
+          description: descMatch ? stripHtml(descMatch[2]).trim() || null : null,
+          price: priceMatch ? normalizePrice(stripHtml(priceMatch[2])) : null,
           tags: null,
           photoUrl: null,
         });
@@ -535,27 +554,168 @@ function scoreMenu(sections) {
   return { score: Math.min(100, Math.max(0, Math.round(score))), reasons };
 }
 
+// ─── Menu-group classification ──────────────────────────────────────────────
+// Multi-menu restaurants (lunch + dinner + brunch + drinks on one page) tend
+// to dump every section into one flat list. Tagging each section with its
+// category lets the client render tabs (Food / Cocktails / Wine / Beer / ...)
+// instead of forcing the user to scroll past 50 wine entries to find a burger.
+//
+// Phase 1: keyword classification on the section title only. We intentionally
+// don't try to split food into lunch vs. dinner here — that requires either
+// explicit page structure or strong duplicate-section heuristics, and most
+// of the UX win is just separating drinks/dessert from food anyway.
+
+const GROUP_PATTERNS = [
+  // Order matters: more specific patterns first. Wine is intentionally above
+  // dessert so "Dessert Wines" routes to wine (the more useful classification
+  // for someone browsing wine).
+  ['brunch', /\bbrunch\b/i],
+  ['wine', /\b(wine|champagne|sparkling|prosecco|ros[eé]|chardonnay|sauvignon|pinot|cabernet|merlot|riesling|gamay|sangiovese|nebbiolo|tempranillo|chianti|port|barbera|syrah|chenin|gew[uü]rztraminer|burgund(?:y|ian)|bordeaux|barolo|rioja)\b/i],
+  ['beer', /\b(beer|draft|ipa|ale|lager|stout|pilsner|porter|cider|brews?|on\s+tap)\b/i],
+  ['cocktails', /\b(cocktail|spirit|liquor|amaro|amaretto|whisk(?:e)?y|gin|vodka|tequila|mezcal|rum|martini|negroni|bourbon|scotch|digestif|aperitif|cordial|old\s+fashioned|manhattan|highball|sour|spritz|punch)\b/i],
+  ['na', /\b(non[- ]alcoholic|mocktail|no\s+booze|soft\s+drink|juice|soda|lemonade|kombucha)\b/i],
+  ['coffee', /\b(coffee|espresso|cappuccino|latte|americano|macchiato|chai|tea(?:s)?)\b/i],
+  ['dessert', /\b(dessert|sweet(?:s)?|gelato|sorbet|ice\s?cream|pastr(?:y|ies)|cake|tart|pavlova|cheesecake|french\s+toast|monkey\s+bread|beignet|donut|doughnut|cookies?|crepe(?:s)?)\b/i],
+];
+
+/**
+ * Classify a section title into a menu group. Returns null when the title
+ * gives no clear signal — caller should default to 'food' or apply smoothing.
+ */
+function classifyMenuGroup(title) {
+  const t = String(title || '').trim();
+  if (!t) return null;
+  for (const [group, re] of GROUP_PATTERNS) {
+    if (re.test(t)) return group;
+  }
+  return null;
+}
+
+/**
+ * Tag each section with a `group` field, smoothing isolated unknowns into
+ * their neighbors' group when both neighbors agree. Defaults remaining
+ * unknowns to 'food'. Idempotent — sections that already have a group are
+ * preserved.
+ */
+function assignMenuGroups(sections) {
+  if (!Array.isArray(sections) || sections.length === 0) return sections || [];
+
+  // Pass 1: classify (preserve any pre-assigned group).
+  const groups = sections.map((s) => {
+    if (s && typeof s.group === 'string' && s.group.trim()) return s.group;
+    return classifyMenuGroup(s?.title);
+  });
+
+  // Pass 2: smooth. An unknown section sandwiched between two same-category
+  // neighbors inherits that category. Handles e.g. "Celebrating Women's
+  // History Month" appearing between two cocktail sections — it's almost
+  // certainly cocktails too.
+  for (let i = 0; i < groups.length; i++) {
+    if (groups[i]) continue;
+    let prev = null;
+    for (let j = i - 1; j >= 0; j--) if (groups[j]) { prev = groups[j]; break; }
+    let next = null;
+    for (let j = i + 1; j < groups.length; j++) if (groups[j]) { next = groups[j]; break; }
+    if (prev && prev === next) groups[i] = prev;
+  }
+
+  // Pass 3: default unknowns to 'food'.
+  return sections.map((s, i) => ({ ...s, group: groups[i] || 'food' }));
+}
+
 // ─── Top-level extractor ────────────────────────────────────────────────────
 // Fetches the URL, runs provider detection, and returns whatever the
 // best-matched parser produces. Returns null if nothing parsed. Caller is
 // responsible for falling back to the legacy generic scraper / Puppeteer.
-async function extractMenuFromUrl(url) {
-  if (!url) return null;
-  let html = '';
-  try {
-    const { data } = await axios.get(url, {
-      timeout: 10000,
-      headers: SCRAPE_HEADERS,
-      maxRedirects: 5,
-      responseType: 'text',
-    });
-    if (typeof data !== 'string' || data.length < 100) return null;
-    html = data;
-  } catch {
-    return null;
+
+/**
+ * Find menu-like anchors on a page so we can follow them when direct
+ * extraction returns nothing. We were blindly probing `/menu` and `/menus`
+ * before, which missed sites that put menus at `/chicago/menus`,
+ * `/menus-1`, `/menu/south-loop`, or any other non-default path. Scoring
+ * prefers same-host links with strong "menu" signal in either anchor text
+ * or href; deprioritizes catering / nutrition / careers PDFs and external
+ * social/order/booking sites that aren't worth scraping.
+ *
+ * Returns up to 5 absolute URLs, highest-score first.
+ */
+function discoverMenuLinks(html, baseUrl) {
+  if (typeof html !== 'string' || !html) return [];
+  let baseHost = '';
+  try { baseHost = new URL(baseUrl).host.toLowerCase(); } catch { return []; }
+
+  const candidates = new Map(); // absUrl -> {score, anchorText}
+  const anchorRe = /<a\s+[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let m;
+  while ((m = anchorRe.exec(html)) !== null) {
+    const href = m[1].trim();
+    if (!href || href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('tel:') || href.startsWith('javascript:')) continue;
+
+    let abs;
+    try { abs = new URL(href, baseUrl).href; } catch { continue; }
+    if (abs === baseUrl) continue;                          // don't loop on self
+    if (/\.(pdf|png|jpe?g|gif|webp|svg|mp4|mov|webm)(\?|$)/i.test(abs)) continue; // PDFs go through the PDF pipeline
+    let host;
+    try { host = new URL(abs).host.toLowerCase(); } catch { continue; }
+
+    const anchorText = m[2].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const path = (new URL(abs).pathname + new URL(abs).search).toLowerCase();
+    const sameHost = host === baseHost;
+    const score = scoreMenuLink(path, anchorText, sameHost, host);
+    if (score <= 0) continue;
+    const prev = candidates.get(abs);
+    if (!prev || score > prev.score) candidates.set(abs, { score, anchorText });
+  }
+  return [...candidates.entries()]
+    .sort((a, b) => b[1].score - a[1].score)
+    .slice(0, 5)
+    .map(([url]) => url);
+}
+
+function scoreMenuLink(path, text, sameHost, host) {
+  let score = 0;
+
+  // Path signals — match menu words as path segments, not substrings, to
+  // avoid /elements/elementary or /document-management hits.
+  if (/(?:^|\/)menus?(?:\/|$)/.test(path)) score += 50;
+  if (/(?:^|\/)food(?:\/|$)/.test(path)) score += 30;
+  if (/(?:^|\/)(dinner|lunch|brunch|breakfast)(?:\/|$|-menu)/.test(path)) score += 35;
+  if (/(?:^|\/)(drinks|cocktails|wine|beer|bar)(?:\/|$|-menu|-list)/.test(path)) score += 15;
+  if (/(?:^|\/)(eat|dine|dining)(?:\/|$)/.test(path)) score += 15;
+
+  // Anchor-text signals
+  if (/\bmenus?\b/.test(text)) score += 25;
+  if (/\bview menu\b|\bsee menu\b|\bfull menu\b|\border menu\b/.test(text)) score += 20;
+  if (/\b(dinner|lunch|brunch)\s+menu\b/.test(text)) score += 25;
+
+  // Negative signals — paths we don't want to follow
+  if (/(?:^|\/)(careers|jobs|press|events|gift-?cards?|catering|merchandise|merch|shop|store|gallery|about|contact|location|hours|reservation|reserve|book|order-online|delivery|takeout|privacy|terms|legal|sitemap)(?:\/|$)/.test(path)) score -= 50;
+  if (/(?:facebook|instagram|twitter|tiktok|youtube|yelp|opentable|resy|tock|grubhub|doordash|ubereats|seamless|toasttab|chownow|popmenu|squareup)\.(com|app|net|io)/.test(host)) score -= 50;
+
+  // External (different-host) links are less trusted unless they look like
+  // dedicated order/menu platforms hosted by the restaurant's vendor (e.g.
+  // oneoffhospitality.orderexperience.net). Cap their boost.
+  if (!sameHost) {
+    score -= 15;
+    if (/orderexperience|menustar|singleplatform|tripleseat|tableneeds/.test(host)) score += 25;
   }
 
-  const provider = detectProvider(url, html);
+  return score;
+}
+
+/**
+ * Run all provider parsers + fallbacks against already-fetched HTML.
+ * Exposed so callers (e.g. the test harness or a Puppeteer-based renderer)
+ * can reuse the same chain on pre-rendered markup without re-fetching.
+ *
+ * Does NOT follow links — that's the caller's responsibility. The
+ * link-following loop in extractMenuFromUrl is what owns recursion + the
+ * shared `visited` set.
+ */
+async function extractMenuFromHtml(html, url) {
+  if (typeof html !== 'string' || html.length < 100) return null;
+
+  const provider = detectProvider(url || '', html);
   if (provider === 'toast') {
     const r = parseToastMenu(html);
     if (r) return r;
@@ -581,27 +741,66 @@ async function extractMenuFromUrl(url) {
     if (r) return r;
   }
 
-  // Cross-platform: even when the primary provider missed, try BentoBox
-  // selectors and ChowNow iframe-detect — many sites embed third-party
-  // ordering on top of their own template.
+  // Cross-platform fallbacks — many sites embed third-party patterns on
+  // top of their own template (e.g. WordPress with embedded BentoBox).
   const crossCN = await parseChowNowMenu(html, url);
   if (crossCN) return crossCN;
   const crossBB = parseBentoBoxMenu(html);
   if (crossBB) return crossBB;
-  // JSON-LD parser is a useful general fallback for many other sites that
-  // happen to publish schema.org markup (BentoBox, some WordPress sites).
   const jsonLd = parseJsonLdMenu(html);
   if (jsonLd) return { ...jsonLd, source: jsonLd.source || provider };
 
-  // PDF pipeline: ~30-40% of independent restaurants link to a PDF menu
-  // (especially fine dining + bars). Scan the HTML for ranked PDF
-  // candidates and try them in order until one yields a structured menu.
+  // PDF pipeline: scan for ranked PDF candidates linked from the page.
   const pdfCandidates = detectMenuPdfUrls(html, url);
   for (const pdfUrl of pdfCandidates) {
     try {
       const r = await extractMenuFromPdfUrl(pdfUrl);
       if (r) return { ...r, pdfUrl };
     } catch { /* try next */ }
+  }
+
+  return null;
+}
+
+async function extractMenuFromUrl(url, opts = {}) {
+  // Recursion guard. We follow at most 2 levels deep (homepage → menu
+  // index → individual menu page) and never revisit a URL we've already
+  // tried in this resolve.
+  const depth = typeof opts.depth === 'number' ? opts.depth : 0;
+  const visited = opts.visited instanceof Set ? opts.visited : new Set();
+  const MAX_DEPTH = 2;
+
+  if (!url || visited.has(url)) return null;
+  visited.add(url);
+
+  let html = '';
+  try {
+    const { data } = await axios.get(url, {
+      timeout: 10000,
+      headers: SCRAPE_HEADERS,
+      maxRedirects: 5,
+      responseType: 'text',
+    });
+    if (typeof data !== 'string' || data.length < 100) return null;
+    html = data;
+  } catch {
+    return null;
+  }
+
+  const direct = await extractMenuFromHtml(html, url);
+  if (direct) return direct;
+
+  // Link discovery + recursion. The page we landed on may not be the menu
+  // itself — it might be a homepage or a hub page. Look for menu-like
+  // anchors and try the best candidates. Bounded by MAX_DEPTH and the
+  // shared `visited` set so we never revisit the same URL.
+  if (depth < MAX_DEPTH) {
+    const linkCandidates = discoverMenuLinks(html, url);
+    for (const candidateUrl of linkCandidates) {
+      if (visited.has(candidateUrl)) continue;
+      const r = await extractMenuFromUrl(candidateUrl, { depth: depth + 1, visited });
+      if (r) return r;
+    }
   }
 
   return null;
@@ -617,4 +816,8 @@ module.exports = {
   parseWixMenu,
   scoreMenu,
   extractMenuFromUrl,
+  classifyMenuGroup,
+  assignMenuGroups,
+  discoverMenuLinks,
+  extractMenuFromHtml,
 };

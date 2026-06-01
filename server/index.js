@@ -3645,7 +3645,7 @@ function getChainMenu(restaurantName) {
 
 // 6) Menu endpoint — returns structured menu data, photos, or empty state
 // ─── Menu cache + quality helpers ───────────────────────────────────────────
-const { extractMenuFromUrl, scoreMenu } = require('./menuExtractors');
+const { extractMenuFromUrl, scoreMenu, assignMenuGroups } = require('./menuExtractors');
 const { extractDishesWithLLM, extractMenuFromReviewsWithLLM } = require('./menuLlm');
 
 const MENU_QUALITY_THRESHOLD = 50;
@@ -3725,8 +3725,12 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
         console.error('[menu-cache] background refresh failed', restaurantId, e?.message),
       );
     }
+    // Tag cached sections with menu groups on read. Legacy rows were
+    // written before assignMenuGroups existed; classifying here means we
+    // don't need a backfill migration — the next write picks up the group
+    // field naturally.
     return res.json({
-      sections: cached.structured_data?.sections ?? [],
+      sections: assignMenuGroups(cached.structured_data?.sections ?? []),
       menuPhotos: [],
       source: cached.source_type,
       qualityScore: cached.quality_score,
@@ -3757,7 +3761,10 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
   // Score + cache helper called by every exit path so even legacy code persists
   // and quality-gates consistently. Returns the response object.
   const finalize = async (sourceType, sourceUrl = null, rawData = null, pdfUrl = null) => {
-    const sections = result.sections || [];
+    // Tag sections with menu groups before scoring + caching so every source
+    // path (curated, providers, scrape, PDF, photo OCR, review LLM) produces
+    // the same shape and the client can render group tabs uniformly.
+    const sections = assignMenuGroups(result.sections || []);
     const { score } = scoreMenu(sections);
     const status =
       sections.length === 0 ? 'failed'
@@ -5632,9 +5639,11 @@ async function buildGooglePlaceDiscover(lat, lng, radiusMiles, userId, cuisineFi
     }
   }
 
-  // ── Sort mode: override ranking order if "nearest" requested ──────
+  // ── Sort mode: override ranking order ─────────────────────────────
   if (meta?.sortMode === 'nearest') {
     recs.sort((a, b) => (a.distance ?? Infinity) - (b.distance ?? Infinity));
+  } else if (meta?.sortMode === 'rating') {
+    recs.sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0));
   }
 
   recs = recs.slice(0, 50);

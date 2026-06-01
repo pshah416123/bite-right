@@ -28,6 +28,7 @@ import { useSavedRestaurants } from '~/src/context/SavedRestaurantsContext';
 import { useCompare } from '~/src/context/CompareContext';
 import { postNegativeFeedback } from '~/src/api/discover';
 import { RestaurantImage } from '~/src/components/RestaurantImage';
+import { normalizeRestaurantImageUrl } from '~/src/utils/restaurantImage';
 import { QuickTipsBlock } from '~/src/components/QuickTipsBlock';
 import { SendToFriendSheet } from '~/src/components/SendToFriendSheet';
 import { useFriendVisitsAtRestaurant } from '~/src/hooks/useFriendVisitsAtRestaurant';
@@ -548,6 +549,22 @@ export default function RestaurantScreen() {
   const hasFriendQuotes = quotesWithNotes.length > 0;
   const [quotesExpanded, setQuotesExpanded] = useState(false);
 
+  // ── Regulars + averages ─────────────────────────────────────────────
+  // Friends who've been 3+ times get a milestone callout ("Riley has been 5x").
+  // Also surface the average friend rating so users see at-a-glance signal.
+  const regulars = useMemo(
+    () =>
+      friendVisits
+        .filter((fv) => (fv.visitCount ?? 1) >= 3)
+        .sort((a, b) => (b.visitCount ?? 1) - (a.visitCount ?? 1)),
+    [friendVisits],
+  );
+  const friendAvgScore = useMemo(() => {
+    if (friendVisits.length === 0) return null;
+    const total = friendVisits.reduce((sum, fv) => sum + (fv.score ?? 0), 0);
+    return total / friendVisits.length;
+  }, [friendVisits]);
+
   // ── Shared UI fragments ──────────────────────────────────────────────
 
   const logVisitPayload = {
@@ -582,31 +599,36 @@ export default function RestaurantScreen() {
           cuisine: cuisineText,
           googlePlaceId:
             detail?.googlePlaceId ?? detail?.placeId ?? restaurantFromPayload?.googlePlaceId ?? restaurantFromPayload?.placeId ?? null,
+          // Wrap every candidate in normalizeRestaurantImageUrl so placehold.co
+          // and empty strings don't stop the ?? fall-through. Without this,
+          // a Next Stop click that lands on a ChIJ id the server doesn't have
+          // detail for can flip the hero image to a placeholder mid-render
+          // even though the payload carried a real URL.
           displayImageUrl:
-            detail?.displayImageUrl ??
-            restaurantFromPayload?.displayImageUrl ??
-            detail?.imageUrl ??
-            restaurantFromPayload?.imageUrl ??
-            restaurantFromPayload?.previewPhotoUrl ??
-            logsForRestaurant.find((item) => item.photo_url || item.previewPhotoUrl)?.photo_url ??
-            logsForRestaurant.find((item) => item.previewPhotoUrl)?.previewPhotoUrl ??
+            normalizeRestaurantImageUrl(detail?.displayImageUrl) ??
+            normalizeRestaurantImageUrl(restaurantFromPayload?.displayImageUrl) ??
+            normalizeRestaurantImageUrl(detail?.imageUrl) ??
+            normalizeRestaurantImageUrl(restaurantFromPayload?.imageUrl) ??
+            normalizeRestaurantImageUrl(restaurantFromPayload?.previewPhotoUrl) ??
+            normalizeRestaurantImageUrl(logsForRestaurant.find((item) => item.photo_url || item.previewPhotoUrl)?.photo_url) ??
+            normalizeRestaurantImageUrl(logsForRestaurant.find((item) => item.previewPhotoUrl)?.previewPhotoUrl) ??
             null,
           displayImageSourceType:
             detail?.displayImageSourceType ?? restaurantFromPayload?.displayImageSourceType ?? null,
           displayImageLastResolvedAt:
             detail?.displayImageLastResolvedAt ?? restaurantFromPayload?.displayImageLastResolvedAt ?? null,
           previewPhotoUrl:
-            detail?.displayImageUrl ??
-            detail?.imageUrl ??
-            restaurantFromPayload?.previewPhotoUrl ??
-            logsForRestaurant.find((item) => item.photo_url || item.previewPhotoUrl)?.photo_url ??
-            logsForRestaurant.find((item) => item.previewPhotoUrl)?.previewPhotoUrl ??
+            normalizeRestaurantImageUrl(detail?.displayImageUrl) ??
+            normalizeRestaurantImageUrl(detail?.imageUrl) ??
+            normalizeRestaurantImageUrl(restaurantFromPayload?.previewPhotoUrl) ??
+            normalizeRestaurantImageUrl(logsForRestaurant.find((item) => item.photo_url || item.previewPhotoUrl)?.photo_url) ??
+            normalizeRestaurantImageUrl(logsForRestaurant.find((item) => item.previewPhotoUrl)?.previewPhotoUrl) ??
             null,
           imageUrl:
-            restaurantFromPayload?.displayImageUrl ??
-            restaurantFromPayload?.imageUrl ??
-            detail?.displayImageUrl ??
-            detail?.imageUrl ??
+            normalizeRestaurantImageUrl(restaurantFromPayload?.displayImageUrl) ??
+            normalizeRestaurantImageUrl(restaurantFromPayload?.imageUrl) ??
+            normalizeRestaurantImageUrl(detail?.displayImageUrl) ??
+            normalizeRestaurantImageUrl(detail?.imageUrl) ??
             null,
         }}
         aspectRatio={1}
@@ -667,13 +689,44 @@ export default function RestaurantScreen() {
           </View>
         ))}
       </View>
-      <Text style={styles.friendsText}>
-        {friendVisits.length === 1
-          ? `${friendVisits[0].userName} has been here`
-          : friendVisits.length === 2
-            ? `${friendVisits[0].userName} + ${friendVisits[1].userName} have been here`
-            : `${friendVisits[0].userName} + ${friendVisits.length - 1} friends have been here`}
-      </Text>
+      <View style={styles.friendsTextWrap}>
+        <Text style={styles.friendsText}>
+          {friendVisits.length === 1
+            ? `${friendVisits[0].userName} has been here`
+            : friendVisits.length === 2
+              ? `${friendVisits[0].userName} + ${friendVisits[1].userName} have been here`
+              : `${friendVisits[0].userName} + ${friendVisits.length - 1} friends have been here`}
+        </Text>
+        {friendAvgScore != null && (
+          <Text style={styles.friendsAvgText}>
+            Avg from your circle: {friendAvgScore.toFixed(1)}
+          </Text>
+        )}
+      </View>
+    </View>
+  ) : null;
+
+  // Regulars callout — surfaces friends who've been 3+ times. Shown right
+  // above the comments section so the "5x" milestone reads alongside notes.
+  const regularsBlock = regulars.length > 0 ? (
+    <View style={styles.regularsSection}>
+      {regulars.slice(0, 3).map((fv) => (
+        <View key={`reg-${fv.id}`} style={styles.regularRow}>
+          <View style={styles.regularAvatar}>
+            {fv.userAvatar ? (
+              <Image source={{ uri: fv.userAvatar }} style={styles.regularAvatarImg} />
+            ) : (
+              <Text style={styles.regularAvatarInitial}>{fv.userName[0]}</Text>
+            )}
+          </View>
+          <Text style={styles.regularText}>
+            <Text style={styles.regularName}>{fv.userName}</Text>
+            {(fv.visitCount ?? 1) >= 5
+              ? ` has been here ${fv.visitCount}× \u{1F525}`
+              : ` keeps coming back — ${fv.visitCount} visits`}
+          </Text>
+        </View>
+      ))}
     </View>
   ) : null;
 
@@ -735,7 +788,7 @@ export default function RestaurantScreen() {
 
   const friendQuotesBlock = hasFriendQuotes ? (
     <View style={styles.socialProofSection}>
-      <Text style={styles.socialProofTitle}>What others said</Text>
+      <Text style={styles.socialProofTitle}>What your friends said</Text>
       {visibleQuotes.map((fv) => (
           <View key={fv.id} style={styles.quoteRow}>
             <View style={styles.quoteAvatarSmall}>
@@ -747,7 +800,17 @@ export default function RestaurantScreen() {
             </View>
             <View style={styles.quoteBubble}>
               <Text style={styles.quoteText} numberOfLines={3}>"{fv.note}"</Text>
-              <Text style={styles.quoteAuthor}>{fv.userName}</Text>
+              <View style={styles.quoteFooter}>
+                <Text style={styles.quoteAuthor}>
+                  {fv.userName}
+                  {(fv.visitCount ?? 1) > 1 ? ` · ${fv.visitCount}x` : ''}
+                </Text>
+                <View style={[styles.quoteScorePill, fv.score >= 8.0 && styles.quoteScorePillHigh]}>
+                  <Text style={[styles.quoteScoreText, fv.score >= 8.0 && styles.quoteScoreTextHigh]}>
+                    {fv.score.toFixed(1)}
+                  </Text>
+                </View>
+              </View>
             </View>
           </View>
         ))}
@@ -1154,6 +1217,7 @@ export default function RestaurantScreen() {
             ) : null}
 
             {friendsBar}
+            {regularsBlock}
             {actionButtons}
 
             {/* Tagged friends — "You went with Casey, Riley" */}
@@ -1279,6 +1343,7 @@ export default function RestaurantScreen() {
             </View>
 
             {friendsBar}
+            {regularsBlock}
             {actionButtons}
 
             {standoutDishesBlock}
@@ -1479,7 +1544,35 @@ const styles = StyleSheet.create({
   },
   friendAvatarImg: { width: '100%', height: '100%' },
   friendAvatarInitial: { fontSize: 14, fontWeight: '700', color: colors.text },
-  friendsText: { flex: 1, fontSize: 14, fontWeight: '600', color: '#6B4226' },
+  friendsTextWrap: { flex: 1 },
+  friendsText: { fontSize: 14, fontWeight: '600', color: '#6B4226' },
+  friendsAvgText: { marginTop: 2, fontSize: 11.5, fontWeight: '600', color: colors.textMuted },
+
+  // Regulars (friends who've been 3+ times)
+  regularsSection: {
+    marginTop: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 16,
+    backgroundColor: '#FFF1E2',
+    borderWidth: 1,
+    borderColor: '#F1DABA',
+    gap: 8,
+  },
+  regularRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  regularAvatar: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: colors.surfaceSoft,
+    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  regularAvatarImg: { width: '100%', height: '100%' },
+  regularAvatarInitial: { fontSize: 12, fontWeight: '700', color: colors.text },
+  regularText: { flex: 1, fontSize: 13, color: '#6B4226' },
+  regularName: { fontWeight: '800', color: colors.text },
 
   // Actions
   actionsStrip: {
@@ -1563,7 +1656,23 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
   },
   quoteText: { fontSize: 13, fontStyle: 'italic', color: colors.text, lineHeight: 18 },
-  quoteAuthor: { marginTop: 4, fontSize: 12, fontWeight: '600', color: colors.textMuted },
+  quoteFooter: {
+    marginTop: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  quoteAuthor: { fontSize: 12, fontWeight: '600', color: colors.textMuted, flexShrink: 1 },
+  quoteScorePill: {
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: colors.surfaceSoft,
+  },
+  quoteScorePillHigh: { backgroundColor: colors.accent },
+  quoteScoreText: { fontSize: 11.5, fontWeight: '800', color: colors.text, letterSpacing: -0.2 },
+  quoteScoreTextHigh: { color: '#fff' },
   seeAllBtn: {
     flexDirection: 'row',
     alignItems: 'center',

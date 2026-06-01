@@ -55,7 +55,7 @@ export interface DiscoverResponse {
 }
 
 export type DiscoverMode = 'nearby' | 'location';
-export type DiscoverSortMode = 'best' | 'nearest' | 'popular' | 'new';
+export type DiscoverSortMode = 'best' | 'nearest' | 'rating' | 'popular' | 'new';
 export type DiscoverOccasion = 'brunch' | 'lunch' | 'dinner' | 'bars' | 'dessert' | 'coffee' | 'late_night';
 
 export async function getDiscover(opts: {

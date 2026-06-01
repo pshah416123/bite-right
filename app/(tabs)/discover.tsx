@@ -135,6 +135,8 @@ const TRENDING_CATEGORIES = [
 
 const VIBE_CHIPS: { label: string; emoji: string; sort?: DiscoverSortMode; occasion?: DiscoverOccasion; prices?: number[] }[] = [
   { label: 'Popular', emoji: '\u{1F525}', sort: 'popular' },
+  { label: 'Nearest', emoji: '\u{1F4CD}', sort: 'nearest' },
+  { label: 'Top rated', emoji: '\u{2B50}', sort: 'rating' },
   { label: 'Budget', emoji: '\u{1F4B8}', prices: [1, 2] },
   { label: 'Date night', emoji: '\u{1F377}', occasion: 'dinner' },
   { label: 'New spots', emoji: '\u{1F195}', sort: 'new' },

@@ -236,9 +236,16 @@ export interface MenuItem {
   photoUrl: string | null;
 }
 
+export type MenuGroup = 'food' | 'brunch' | 'cocktails' | 'wine' | 'beer' | 'dessert' | 'coffee' | 'na';
+
 export interface MenuSection {
   title: string;
   items: MenuItem[];
+  /** Category bucket the section belongs to (food / cocktails / wine / etc.).
+   *  Set server-side via classifyMenuGroup. When 2+ groups exist on a single
+   *  restaurant, the client renders a tab strip to separate them. Optional
+   *  so older cached responses (pre-grouping) still parse. */
+  group?: MenuGroup;
 }
 
 export type MenuSourceType =

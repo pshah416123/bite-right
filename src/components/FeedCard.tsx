@@ -156,14 +156,11 @@ function getSupportingLine(log: FeedLog, friendCount: number): string | null {
 }
 
 // ─── Card type ──────────────────────────────────────────────────────────────
-
-type CardType = 'featured' | 'compact';
-
-function determineCardType(log: FeedLog): CardType {
-  const hasPhoto = !!(log.photo_url || log.previewPhotoUrl);
-  if (hasPhoto) return 'featured';
-  return 'compact';
-}
+// Always render the featured layout. We used to switch to a compact card when
+// a log had no photo, but image enrichment lands ~2s after first render and
+// flipped photoless cards from compact (56px thumb) to featured (120px thumb),
+// causing the home feed's "card size changes" glitch on cold start. The
+// placeholder inside RestaurantImage handles photoless cards cleanly.
 
 // ─── Avatar ─────────────────────────────────────────────────────────────────
 
@@ -201,7 +198,6 @@ export function FeedCard({ log, socialLabel, isHero }: Props) {
   const { toggle: toggleCompare, compareMode } = useCompare();
   const saved = isSaved(log.restaurantId);
 
-  const cardType = determineCardType(log);
   const hookText = generateHookText(log, friendVisits.length);
   const supportingLine = getSupportingLine(log, friendVisits.length);
 
@@ -307,8 +303,6 @@ export function FeedCard({ log, socialLabel, isHero }: Props) {
 
   const thumbSize = isHero ? 140 : 120;
 
-  // ── Featured card ─────────────────────────────────────────────────────
-  if (cardType === 'featured') {
     return (
       <>
         <Animated.View style={[st.outer, { opacity: fadeAnim, transform: [{ translateY: slideAnim }, { scale: scaleAnim }] }]}>
@@ -396,48 +390,6 @@ export function FeedCard({ log, socialLabel, isHero }: Props) {
         {renderSocialSheet()}
       </>
     );
-  }
-
-  // ── Compact card (no photo) ───────────────────────────────────────────
-  return (
-    <>
-      <Animated.View style={[st.outer, { opacity: fadeAnim, transform: [{ translateY: slideAnim }, { scale: scaleAnim }] }]}>
-        {socialLabel && (
-          <Text style={st.socialLabel}>{socialLabel}</Text>
-        )}
-        <Pressable
-          style={st.compactCard}
-          onPress={goRestaurant}
-          onLongPress={handleLongPress}
-          delayLongPress={500}
-          onPressIn={onPressIn}
-          onPressOut={onPressOut}
-        >
-          <View style={st.compactRow}>
-            <View style={st.compactThumb}>
-              <RestaurantImage restaurant={imgProps} aspectRatio={1} fallbackType="icon" borderRadius={14} style={st.compactThumbImg} />
-            </View>
-            <View style={st.compactBody}>
-              <Text style={st.compactName} numberOfLines={1}>{log.restaurantName}</Text>
-              <Text style={st.compactMeta} numberOfLines={1}>
-                {log.cuisine}{log.neighborhood ? ` \u00B7 ${log.neighborhood}` : ''}
-              </Text>
-              {hookText && <Text style={st.compactHook} numberOfLines={1}>{hookText}</Text>}
-            </View>
-            <View style={st.compactRight}>
-              <View style={st.ratingSmall}>
-                <Text style={st.ratingSmallText}>{log.score.toFixed(1)}</Text>
-              </View>
-              <TouchableOpacity onPress={toggleSave} hitSlop={6}>
-                <Ionicons name={saved ? 'bookmark' : 'bookmark-outline'} size={17} color={saved ? colors.accent : colors.textFaint} />
-              </TouchableOpacity>
-            </View>
-          </View>
-        </Pressable>
-      </Animated.View>
-      {renderSocialSheet()}
-    </>
-  );
 
   // ── Social sheet ──────────────────────────────────────────────────────
   function renderSocialSheet() {

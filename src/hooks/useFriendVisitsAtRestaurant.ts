@@ -11,6 +11,11 @@ export type FriendVisitAtRestaurant = {
   score: number;
   note?: string;
   createdAt?: string;
+  /** How many separate logs this friend has at the restaurant — drives
+   *  "Riley has been 5x" style milestone callouts on the detail page.
+   *  Optional so legacy callers (FeedCard's row construction, mock test
+   *  fixtures) don't need to be updated when they don't care. */
+  visitCount?: number;
 };
 
 /**
@@ -34,6 +39,7 @@ export function useFriendVisitsAtRestaurant(restaurantId: string): FriendVisitAt
       const existing = byUser.get(key);
       const logTime = new Date(log.createdAt ?? 0).getTime();
       const prevTime = existing ? new Date(existing.createdAt ?? 0).getTime() : 0;
+      const nextCount = (existing?.visitCount ?? 0) + 1;
       if (!existing || logTime >= prevTime) {
         byUser.set(key, {
           id: log.id,
@@ -42,7 +48,11 @@ export function useFriendVisitsAtRestaurant(restaurantId: string): FriendVisitAt
           score: log.score,
           note: log.note,
           createdAt: log.createdAt,
+          visitCount: nextCount,
         });
+      } else {
+        // Older log — keep the latest visit row but bump the count.
+        byUser.set(key, { ...existing, visitCount: nextCount });
       }
     }
 
