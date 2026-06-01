@@ -45,6 +45,13 @@ function detectProvider(url, html) {
   // copies on other sites. Server-rendered with item-wrap / item-name /
   // item-price / item-desc / section-name classes.
   if (/lettuce\/css\/menu|class="menu-section\s|class="item-wrap[\s"]/i.test(h)) return 'lettuce';
+  // Squarespace Menu Block (data-block-type="18"). Built-in Squarespace
+  // feature with stable classes (sqs-block-menu, menu-item, menu-item-title,
+  // menu-item-price-top/bottom, menu-section-title). Used by Joto Chicago
+  // and many other independent restaurants on Squarespace. Detection
+  // checks for the block class + menu-item-title (must have both so we
+  // don't false-positive on Squarespace nav menus).
+  if (/sqs-block-menu|sqs-block\s+menu-block/i.test(h) && /menu-item-title/i.test(h)) return 'squarespace';
   if (u.includes('clover.com')) return 'clover';
   if (u.includes('wixsite.com') || u.includes('editorx.io')) return 'wix';
   if (/<meta[^>]+generator[^>]+wordpress/i.test(h)) return 'wordpress';
@@ -395,6 +402,104 @@ function parseLettuceMenu(html) {
     });
     if (sections.length === 0) return null;
     return { sections, rawData: null, source: 'lettuce' };
+  } catch {
+    return null;
+  }
+}
+
+// ─── Squarespace Menu Block (data-block-type="18") ─────────────────────────
+
+/**
+ * Squarespace's first-party Menu Block. Used by a huge slice of independent
+ * restaurants on Squarespace because it's drag-and-drop and the rendered
+ * markup is consistent across every theme:
+ *
+ *   <div class="sqs-block menu-block sqs-block-menu" data-block-type="18">
+ *     <div class="menu-section">
+ *       <div class="menu-section-title">SMALL BITES</div>
+ *       <div class="menu-items">
+ *         <div class="menu-item">
+ *           <span class="menu-item-price-top">$8</span>
+ *           <div class="menu-item-title">Edamame</div>
+ *           <div class="menu-item-description">umami dust</div>
+ *           <div class="menu-item-price-bottom">$8</div>   ← duplicate of top
+ *         </div>
+ *       </div>
+ *     </div>
+ *   </div>
+ *
+ * Quirks:
+ *   - menu-item-price-top and menu-item-price-bottom are duplicates (Squarespace
+ *     shows one or the other based on the layout); we take whichever exists,
+ *     deduping the value.
+ *   - Sections can be split across multiple .menu-section blocks OR rolled
+ *     into a single block — handle both.
+ *   - When tabbed menus are used (one block, multiple .menu-section children
+ *     each in its own tabpanel), the section title also appears as the
+ *     tabpanel's aria-label. We use .menu-section-title since it's universal.
+ */
+function parseSquarespaceMenu(html) {
+  try {
+    if (!/sqs-block-menu|menu-block\s+sqs-block|menu-item-title/i.test(html)) return null;
+    const $ = cheerio.load(html);
+    const sections = [];
+    $('.menu-section').each((_, sec) => {
+      const $sec = $(sec);
+      const title = $sec.find('.menu-section-title').first().text().trim() || 'Menu';
+      const items = [];
+      $sec.find('.menu-item').each((_, item) => {
+        const $it = $(item);
+        const name = $it.find('.menu-item-title').first().text().trim();
+        if (!name || name.length < 2 || name.length > 100) return;
+        const desc = $it.find('.menu-item-description').first().text().trim();
+        // Squarespace renders price twice (top + bottom variants based on
+        // layout style). Collect both, dedup, then join — produces clean
+        // output for size-variant menus and a single price string otherwise.
+        const priceSeen = new Set();
+        const priceParts = [];
+        $it.find('.menu-item-price-top, .menu-item-price-bottom').each((_, p) => {
+          const t = $(p).text().trim().replace(/\s+/g, ' ');
+          if (!t) return;
+          const key = t.toLowerCase();
+          if (priceSeen.has(key)) return;
+          priceSeen.add(key);
+          priceParts.push(t);
+        });
+        const rawPrice = priceParts.join(' / ');
+        items.push({
+          name,
+          description: desc || null,
+          price: rawPrice ? normalizePrice(rawPrice) : null,
+          tags: null,
+          photoUrl: null,
+        });
+      });
+      if (items.length > 0) sections.push({ title, items });
+    });
+    // Fallback: site uses .menu-item without wrapping .menu-section divs.
+    // Group everything under a single "Menu" section so the items aren't
+    // lost.
+    if (sections.length === 0) {
+      const items = [];
+      $('.menu-item').each((_, item) => {
+        const $it = $(item);
+        const name = $it.find('.menu-item-title').first().text().trim();
+        if (!name || name.length < 2 || name.length > 100) return;
+        const desc = $it.find('.menu-item-description').first().text().trim();
+        const priceText = $it.find('.menu-item-price-top').first().text().trim()
+          || $it.find('.menu-item-price-bottom').first().text().trim();
+        items.push({
+          name,
+          description: desc || null,
+          price: priceText ? normalizePrice(priceText) : null,
+          tags: null,
+          photoUrl: null,
+        });
+      });
+      if (items.length > 0) sections.push({ title: 'Menu', items });
+    }
+    if (sections.length === 0) return null;
+    return { sections, rawData: null, source: 'squarespace' };
   } catch {
     return null;
   }
@@ -908,6 +1013,10 @@ async function extractMenuFromHtml(html, url) {
     const r = parseLettuceMenu(html);
     if (r) return r;
   }
+  if (provider === 'squarespace') {
+    const r = parseSquarespaceMenu(html);
+    if (r) return r;
+  }
   if (provider === 'wix') {
     const r = parseWixMenu(html);
     if (r) return r;
@@ -923,6 +1032,8 @@ async function extractMenuFromHtml(html, url) {
   if (crossSA) return crossSA;
   const crossLE = parseLettuceMenu(html);
   if (crossLE) return crossLE;
+  const crossSQ = parseSquarespaceMenu(html);
+  if (crossSQ) return crossSQ;
   const jsonLd = parseJsonLdMenu(html);
   if (jsonLd) return { ...jsonLd, source: jsonLd.source || provider };
 
@@ -991,6 +1102,7 @@ module.exports = {
   parseBentoBoxMenu,
   parseSpotAppsMenu,
   parseLettuceMenu,
+  parseSquarespaceMenu,
   parseWixMenu,
   scoreMenu,
   extractMenuFromUrl,
