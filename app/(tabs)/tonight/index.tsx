@@ -560,8 +560,11 @@ export default function TonightScreen() {
     <SafeAreaView style={s.safe} edges={['top']}>
       {/* ── Header ──────────────────────────────────────────────────── */}
       <View style={s.header}>
-        <View>
+        <View style={{ flexShrink: 1 }}>
           <Text style={s.title}>Tonight</Text>
+          <Text style={s.subtitle}>
+            {session ? 'Swipe — your group is matching with you' : 'Pick a place to eat — together or solo'}
+          </Text>
         </View>
 
         <View style={s.headerRight}>
@@ -659,6 +662,29 @@ export default function TonightScreen() {
       </View>
 
       {createError ? <Text style={s.errorText}>{createError}</Text> : null}
+
+      {/* Group-swipe primary CTA — shown only when there's no active session
+          so first-time users immediately see that the main point of Tonight
+          is matching on a place with friends. Solo swipe deck stays below
+          as the fallback / "I'll just look on my own" mode. */}
+      {!session && !creating ? (
+        <TouchableOpacity
+          style={s.groupHeroBanner}
+          onPress={handleCreateGroup}
+          activeOpacity={0.88}
+          accessibilityLabel="Start a group swipe session"
+          accessibilityRole={"button" as AccessibilityRole}
+        >
+          <View style={s.groupHeroIcon}>
+            <Ionicons name="people" size={20} color="#fff" />
+          </View>
+          <View style={s.groupHeroBody}>
+            <Text style={s.groupHeroTitle}>Eating with friends?</Text>
+            <Text style={s.groupHeroSub}>Start a group swipe — match on a spot together</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={20} color="#fff" />
+        </TouchableOpacity>
+      ) : null}
 
       {/* ── Deck ────────────────────────────────────────────────────── */}
       <View style={s.body}>
@@ -944,6 +970,51 @@ const s = StyleSheet.create({
     fontWeight: '800',
     color: colors.text,
     letterSpacing: -0.4,
+  },
+  subtitle: {
+    marginTop: 2,
+    fontSize: 12.5,
+    fontWeight: '500',
+    color: colors.textMuted,
+    letterSpacing: -0.1,
+  },
+  groupHeroBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginHorizontal: 16,
+    marginTop: 4,
+    marginBottom: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    borderRadius: 16,
+    backgroundColor: colors.accent,
+    shadowColor: 'rgba(0,0,0,0.12)',
+    shadowOpacity: 1,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
+  },
+  groupHeroIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  groupHeroBody: { flex: 1, gap: 1 },
+  groupHeroTitle: {
+    fontSize: 14.5,
+    fontWeight: '800',
+    color: '#fff',
+    letterSpacing: -0.2,
+  },
+  groupHeroSub: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: 'rgba(255,255,255,0.85)',
+    letterSpacing: -0.1,
   },
   headerRight: {
     flexDirection: 'row',
