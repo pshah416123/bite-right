@@ -221,10 +221,22 @@ export function FeedCard({ log, socialLabel, isHero }: Props) {
     );
   };
 
-  // Tap the author chip → open their public profile (skip self + mock data
-  // without a real userId; the friend/[id] screen needs a Supabase user id).
+  // Tap the author chip → open their public profile.
+  // For real users (have a Supabase userId), navigate to /friend/[id].
+  // For mock seed posts (no userId — Maya, Alex, etc.), show a friendly
+  // explainer instead of doing nothing. Previously the tap was silently
+  // disabled, which made the feature feel broken until you happened to
+  // tap a real friend.
   const handleAuthorPress = () => {
-    if (isOwn || !log.userId) return;
+    if (isOwn) return;
+    if (!log.userId) {
+      Alert.alert(
+        `${log.userName} is a demo profile`,
+        'These posts seed your feed so it isn’t empty on day one. Invite real friends to see and tap into their actual profiles.',
+        [{ text: 'Got it' }],
+      );
+      return;
+    }
     router.push(`/friend/${encodeURIComponent(log.userId)}` as never);
   };
 
@@ -358,7 +370,7 @@ export function FeedCard({ log, socialLabel, isHero }: Props) {
                 <View style={st.authorRow}>
                   <TouchableOpacity
                     onPress={handleAuthorPress}
-                    disabled={isOwn || !log.userId}
+                    disabled={isOwn}
                     activeOpacity={0.7}
                     style={st.authorChip}
                   >
