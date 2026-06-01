@@ -1316,16 +1316,15 @@ export default function RestaurantScreen() {
               </View>
             )}
 
-            {/* Section order mirrors the not-visited flow so the two states
-                read consistently: dishes → friends-said → menu → public
-                reviews → tips → details → next stop. Each block self-hides
-                when it has no signal. */}
+            {/* Section order mirrors the not-visited flow so both states
+                read consistently: details → dishes → friends-said →
+                public reviews → tips → menu → next stop. */}
+            {!isFromFriendPost && detailsBlock}
             {standoutDishesBlock}
             {!isFromFriendPost && friendQuotesBlock}
-            {!isFromFriendPost && menuBlock}
             {!isFromFriendPost && whatPeopleAreSayingBlock}
             {!isFromFriendPost && id && <QuickTipsBlock restaurantId={id} />}
-            {!isFromFriendPost && detailsBlock}
+            {!isFromFriendPost && menuBlock}
             {!isFromFriendPost && afterSpotsBlock}
             {isFromFriendPost && (
               <TouchableOpacity
@@ -1360,20 +1359,23 @@ export default function RestaurantScreen() {
             {regularsBlock}
             {actionButtons}
 
-            {/* Section order (decision flow for a place you haven't visited):
+            {/* Section order (info-first variant, for places you haven't
+                visited): logistics surface first (hours / website / phone),
+                then the discovery flow (dishes / social), and menu sits
+                near the bottom for users who want to dig in.
+                  details          → hours / website / address
                   standout dishes  → what to try
                   what friends said → trusted social proof
-                  menu             → the biggest decision input
                   what people are saying → public review keywords
                   quick tips       → niche / tactical
-                  details          → address / hours / website
+                  menu             → deep-browse content
                   next stop        → outbound suggestion */}
+            {!isFromFriendPost && detailsBlock}
             {standoutDishesBlock}
             {friendQuotesBlock}
-            {!isFromFriendPost && menuBlock}
             {!isFromFriendPost && whatPeopleAreSayingBlock}
             {id && <QuickTipsBlock restaurantId={id} />}
-            {!isFromFriendPost && detailsBlock}
+            {!isFromFriendPost && menuBlock}
             {!isFromFriendPost && afterSpotsBlock}
             {isFromFriendPost && (
               <TouchableOpacity
