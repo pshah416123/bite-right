@@ -5866,11 +5866,14 @@ async function buildGooglePlaceDiscover(lat, lng, radiusMiles, userId, cuisineFi
   // When a free-text search term is active, drop results that clearly
   // don't match the search intent.
   if (searchTerm) {
-    // Expand search term to related cuisine/type aliases so "ramen" matches
-    // restaurants tagged as "japanese" by Google, etc.
+    // Expand search term to related cuisine/type aliases. For narrow, dish-
+    // specific keywords (ramen, sushi, pho) we KEEP the alias list tight —
+    // ramen-the-search must not bleed into sushi-the-results just because
+    // both are Japanese. For broad cuisine keywords (mexican, italian)
+    // expansion can be wider since the user is asking for a whole cuisine.
     const SEARCH_ALIASES = {
-      ramen: ['ramen', 'japanese', 'noodle', 'udon', 'soba'],
-      sushi: ['sushi', 'japanese', 'omakase', 'sashimi', 'nigiri'],
+      ramen: ['ramen', 'noodle', 'udon', 'soba', 'ramen-ya', 'ramenya'],
+      sushi: ['sushi', 'omakase', 'sashimi', 'nigiri', 'maki'],
       tacos: ['taco', 'mexican', 'taqueria', 'burrito'],
       pizza: ['pizza', 'pizzeria', 'neapolitan', 'deep dish'],
       pho: ['pho', 'vietnamese', 'noodle'],
@@ -5893,16 +5896,27 @@ async function buildGooglePlaceDiscover(lat, lng, radiusMiles, userId, cuisineFi
       desserts: ['dessert', 'dessert_shop', 'ice cream', 'bakery', 'gelato', 'cobbler', 'cupcake', 'donut', 'sweets', 'frozen yogurt', 'cake', 'pie', 'pastry', 'cookie', 'milkshake', 'fudge', 'brownie', 'macaron'],
       'ice cream': ['ice cream', 'ice_cream_shop', 'gelato', 'frozen yogurt', 'dessert', 'dessert_shop'],
     };
+    // Strict-mode cuisines: narrow dish-or-style keywords where we WANT to
+    // drop Google text-search false positives (e.g. searching "ramen"
+    // returns Sushi-san because the menu mentions noodles, but Sushi-san
+    // is not a ramen place). For these searches, the haystack filter runs
+    // unconditionally — _fromSearchQuery is not a free pass.
+    const STRICT_CUISINE_SEARCH = new Set([
+      'ramen', 'sushi', 'pho', 'omakase', 'dim sum', 'tacos',
+    ]);
     const searchLower = searchTerm.toLowerCase();
     const expanded = SEARCH_ALIASES[searchLower] || [searchLower];
+    const strictMode = STRICT_CUISINE_SEARCH.has(searchLower);
 
     const beforeCount = recs.length;
     recs = recs.filter((rec) => {
-      // If Google returned this result specifically for our search query
-      // (text search or best-of search), trust Google's relevance ranking.
-      // This catches places like Au Cheval (famous burger spot) whose name
-      // and types don't contain "burger" but Google knows it's relevant.
-      if (rec._fromSearchQuery) return true;
+      // Loose mode (most queries): if Google returned this result for our
+      // search, trust Google's relevance ranking. Catches places like Au
+      // Cheval (famous burger spot) whose name/types don't include "burger"
+      // but Google knows it's relevant.
+      // Strict mode (narrow cuisines): always run the haystack filter so
+      // sushi places don't bleed into ramen searches.
+      if (!strictMode && rec._fromSearchQuery) return true;
 
       const haystack = [
         rec.name,
