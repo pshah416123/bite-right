@@ -3995,6 +3995,32 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
       }
     }
 
+    // ── Priority 3.5: OCR menu photos from Google Places via Claude Vision ──
+    // Many restaurants whose websites resist scraping (Squarespace + Webflow
+    // sites, image-only menus à la Au Cheval) still have clear photos of
+    // their printed menu on Google Maps. Try to OCR those before falling
+    // through to the "show photos as visual backup" stage or the review-LLM
+    // last resort. menuPlacePhotos caps photos per request internally to
+    // keep vision-API spend bounded.
+    if (placeId && require('./menuPlacePhotos').isConfigured()) {
+      try {
+        const { extractMenuFromPlacePhotos } = require('./menuPlacePhotos');
+        const ocrResult = await extractMenuFromPlacePhotos(placeId);
+        if (ocrResult && ocrResult.sections.length > 0) {
+          result.sections = ocrResult.sections;
+          result.source = 'google_photo_ocr';
+          console.log('[BiteRight] menu: extracted via Google photo OCR', {
+            restaurantId,
+            sections: ocrResult.sections.length,
+            items: ocrResult.sections.reduce((n, s) => n + s.items.length, 0),
+          });
+          return res.json(await finalize('google_photo_ocr'));
+        }
+      } catch (err) {
+        console.log('[BiteRight] menu: google_photo_ocr failed', err.message);
+      }
+    }
+
     // ── Priority 4: Google Places menu photos as visual backup ──
     // When no structured menu is found, try to get menu-type photos from Google.
     if (placeId && GOOGLE_PLACES_API_KEY) {
