@@ -135,6 +135,217 @@ function toastItemToMenuItem(it) {
   };
 }
 
+// ─── Generic Next.js __NEXT_DATA__ menu walker ──────────────────────────────
+//
+// Many Next.js corporate restaurant sites ship the entire menu hierarchy in
+// the __NEXT_DATA__ script tag (no XHR, no location selection). The exact
+// keys vary by site (`menuProductCategories`, `categories`, `menuGroups`,
+// `productCategories`, `menus[].sections`, etc.) so we don't hardcode names.
+//
+// Heuristic: walk the parsed JSON looking for any array whose entries are
+// objects that BOTH (a) carry a name/title/label and (b) contain a nested
+// array of objects that themselves have a name/title. That structural
+// signature is what "section[] → item[]" looks like in JSON regardless of
+// the property names. Scores candidate arrays by total item count + name
+// density and keeps the densest match.
+//
+// Live-tested on tacobell.com: 17 categories × ~100 products extracted
+// directly from the static HTML, no API calls.
+function parseNextDataMenu(html) {
+  try {
+    const m = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i);
+    if (!m) return null;
+    const data = JSON.parse(m[1]);
+
+    const namingKeys = ['name', 'title', 'label', 'displayName', 'productName'];
+    const descKeys = ['description', 'shortDescription', 'subtitle', 'summary', 'desc'];
+    const priceKeys = ['price', 'priceCents', 'unitPrice', 'displayPrice', 'amount'];
+
+    const nameOf = (o) => {
+      if (!o || typeof o !== 'object') return null;
+      for (const k of namingKeys) {
+        if (typeof o[k] === 'string' && o[k].trim()) return o[k].trim();
+      }
+      return null;
+    };
+    const descOf = (o) => {
+      if (!o || typeof o !== 'object') return null;
+      for (const k of descKeys) {
+        if (typeof o[k] === 'string' && o[k].trim()) return o[k].trim();
+      }
+      return null;
+    };
+    const priceOf = (o) => {
+      if (!o || typeof o !== 'object') return null;
+      for (const k of priceKeys) {
+        const v = o[k];
+        if (typeof v === 'number' && Number.isFinite(v)) {
+          // Heuristic: integers > 100 are likely cents.
+          const dollars = v > 100 && Number.isInteger(v) ? v / 100 : v;
+          if (dollars >= 1 && dollars <= 999) return `$${dollars.toFixed(2)}`;
+        }
+        if (typeof v === 'string' && /^\$?\d+(?:\.\d{1,2})?$/.test(v.trim())) {
+          const num = parseFloat(v.replace('$', ''));
+          if (num >= 1 && num <= 999) return `$${num.toFixed(2)}`;
+        }
+      }
+      return null;
+    };
+
+    // Find candidate "section arrays" — arrays whose items are objects with
+    // a name + a nested item array containing further name-bearing objects.
+    const candidates = [];
+    const walk = (node, depth = 0) => {
+      if (depth > 10 || !node) return;
+      if (Array.isArray(node)) {
+        // Is this array a list of menu sections?
+        if (node.length >= 1 && node.length <= 200 && node.every((x) => x && typeof x === 'object')) {
+          const sectionsHere = [];
+          for (const entry of node) {
+            const sectionName = nameOf(entry);
+            if (!sectionName) continue;
+            // Look for a nested array of items.
+            for (const k of Object.keys(entry)) {
+              const v = entry[k];
+              if (!Array.isArray(v) || v.length === 0 || v.length > 500) continue;
+              const items = [];
+              for (const it of v) {
+                const itName = nameOf(it);
+                if (!itName) continue;
+                if (itName.length < 2 || itName.length > 120) continue;
+                items.push({
+                  name: itName,
+                  description: descOf(it),
+                  price: priceOf(it),
+                  tags: null,
+                  photoUrl: null,
+                });
+              }
+              if (items.length >= 2) {
+                sectionsHere.push({ title: sectionName, items });
+              }
+            }
+          }
+          if (sectionsHere.length >= 2) {
+            const totalItems = sectionsHere.reduce((n, s) => n + s.items.length, 0);
+            candidates.push({ sections: sectionsHere, totalItems });
+          }
+        }
+        for (const child of node) walk(child, depth + 1);
+        return;
+      }
+      if (typeof node === 'object') {
+        for (const k of Object.keys(node)) walk(node[k], depth + 1);
+      }
+    };
+    walk(data);
+
+    if (candidates.length === 0) return null;
+    // Pick the densest candidate. Tiebreak by section count.
+    candidates.sort((a, b) => b.totalItems - a.totalItems || b.sections.length - a.sections.length);
+    const winner = candidates[0];
+    if (winner.totalItems < 5) return null;
+    return { sections: winner.sections, rawData: null, source: 'next_data' };
+  } catch {
+    return null;
+  }
+}
+
+// ─── Generic DOM .item-name / .product-name walker ──────────────────────────
+//
+// Catches restaurant sites that render the menu server-side but use
+// class-keyed elements our specific parsers don't know about. McDonald's
+// /us/en-us/full-menu.html for example uses `class="item-name"` with the
+// item text as the element's body. Same convention shows up on AEM and
+// generic CMS-built restaurant sites.
+//
+// Algorithm:
+//   1. Find every element matching .item-name / .product-name /
+//      .menu-item-name / .dish-name (and similar).
+//   2. Group items by nearest preceding section heading.
+//   3. For each item, look in nearby siblings for a description / price
+//      element (class contains "description" / "price").
+//   4. Reject if total items < 8 — guards against the parser firing on
+//      generic "item" classes used for sidebar widgets, etc.
+function parseGenericItemNameMenu(html) {
+  try {
+    const $ = cheerio.load(html);
+    const itemSel = [
+      '.item-name', '.product-name', '.menu-item-name', '.dish-name',
+      '.item__name', '.product__name', '.menu-item__name',
+      '[class*=" item-name"]', '[class$="item-name"]',
+      '[class*=" product-name"]', '[class$="product-name"]',
+    ].join(', ');
+    const $items = $(itemSel);
+    if ($items.length < 8) return null;
+
+    const sectionsByTitle = new Map();
+    const orderedTitles = [];
+    const pushItem = (sectionTitle, item) => {
+      const key = sectionTitle || 'Menu';
+      if (!sectionsByTitle.has(key)) {
+        sectionsByTitle.set(key, []);
+        orderedTitles.push(key);
+      }
+      sectionsByTitle.get(key).push(item);
+    };
+
+    const seenNames = new Set();
+    $items.each((_, el) => {
+      const $el = $(el);
+      const name = $el.text().replace(/\s+/g, ' ').trim();
+      if (!name || name.length < 2 || name.length > 120) return;
+      const nameKey = name.toLowerCase();
+      if (seenNames.has(nameKey)) return;
+      seenNames.add(nameKey);
+
+      // Look around for description / price siblings — same parent first,
+      // then grandparent if needed.
+      let description = null;
+      let price = null;
+      const $card = $el.closest('[class*=card], [class*=tile], [class*=item], [class*=product]');
+      const $scope = $card.length ? $card : $el.parent();
+      const descCandidate = $scope.find('[class*=description], [class*=desc]').first().text().replace(/\s+/g, ' ').trim();
+      if (descCandidate && descCandidate.length >= 4 && descCandidate.length <= 400) {
+        description = descCandidate;
+      }
+      const priceText = $scope.find('[class*=price]').first().text().replace(/\s+/g, ' ').trim();
+      if (priceText) {
+        const num = parseFloat(priceText.replace(/[^0-9.]/g, ''));
+        if (Number.isFinite(num) && num >= 1 && num <= 999) {
+          price = `$${num.toFixed(2)}`;
+        }
+      }
+
+      // Find section title — nearest preceding heading by DOM walk.
+      let title = 'Menu';
+      const $heading = $el.closest('section, article, div')
+        .prevAll('h1, h2, h3, h4').first();
+      if ($heading.length) {
+        const t = $heading.text().replace(/\s+/g, ' ').trim();
+        if (t && t.length <= 60) title = t;
+      } else {
+        // Try section heading inside the scope
+        const $localHead = $scope.find('h1, h2, h3, h4').first();
+        if ($localHead.length) {
+          const t = $localHead.text().replace(/\s+/g, ' ').trim();
+          if (t && t.length <= 60 && t !== name) title = t;
+        }
+      }
+      pushItem(title, { name, description, price, tags: null, photoUrl: null });
+    });
+
+    const sections = orderedTitles
+      .map((title) => ({ title, items: sectionsByTitle.get(title) || [] }))
+      .filter((s) => s.items.length > 0);
+    const totalItems = sections.reduce((n, s) => n + s.items.length, 0);
+    if (totalItems < 8) return null;
+    return { sections, rawData: null, source: 'dom_item_name' };
+  } catch {
+    return null;
+  }
+}
+
 // ─── Popmenu (window.PopmenuApi JSON) ───────────────────────────────────────
 
 function parsePopmenuMenu(html) {
@@ -1260,9 +1471,16 @@ async function extractMenuFromHtml(html, url) {
   if (typeof html !== 'string' || html.length < 100) return null;
 
   const provider = detectProvider(url || '', html);
+  // Classification trace — single log line per request showing which
+  // extraction strategy fired. Useful for coverage analysis (`grep
+  // "[BiteRight] menu: strategy="` in Render logs).
+  const trace = (strategy, items) => {
+    console.log('[BiteRight] menu: strategy=' + strategy + ' items=' + items + ' url=' + (url || '?'));
+  };
+
   if (provider === 'toast') {
     const r = parseToastMenu(html);
-    if (r) return r;
+    if (r) { trace('toast', r.sections?.reduce((n, s) => n + s.items.length, 0) || 0); return r; }
   }
   if (provider === 'popmenu') {
     const r = parsePopmenuMenu(html);
@@ -1308,22 +1526,42 @@ async function extractMenuFromHtml(html, url) {
 
   // Cross-platform fallbacks — many sites embed third-party patterns on
   // top of their own template (e.g. WordPress with embedded BentoBox).
-  const crossCN = await parseChowNowMenu(html, url);
-  if (crossCN) return crossCN;
-  const crossBB = parseBentoBoxMenu(html);
-  if (crossBB) return crossBB;
-  const crossSA = parseSpotAppsMenu(html);
-  if (crossSA) return crossSA;
-  const crossLE = parseLettuceMenu(html);
-  if (crossLE) return crossLE;
-  const crossSQ = parseSquarespaceMenu(html);
-  if (crossSQ) return crossSQ;
-  const crossSQT = parseSquarespaceTextMenu(html);
-  if (crossSQT) return crossSQT;
-  const crossDW = parseDineWpMenu(html);
-  if (crossDW) return crossDW;
+  // Try GENERIC SPA strategies (Next.js __NEXT_DATA__, JSON-LD, class-keyed
+  // DOM) FIRST — they're cheap and catch a whole class of corporate sites
+  // (Taco Bell-style Next.js, McDonald's-style AEM, Square-style JSON-LD)
+  // without needing per-restaurant logic.
+  const nextData = parseNextDataMenu(html);
+  if (nextData) {
+    const n = nextData.sections.reduce((acc, s) => acc + s.items.length, 0);
+    trace('next_data', n);
+    return nextData;
+  }
   const jsonLd = parseJsonLdMenu(html);
-  if (jsonLd) return { ...jsonLd, source: jsonLd.source || provider };
+  if (jsonLd) {
+    const n = (jsonLd.sections || []).reduce((acc, s) => acc + s.items.length, 0);
+    trace('json_ld', n);
+    return { ...jsonLd, source: jsonLd.source || 'json_ld' };
+  }
+  const domItems = parseGenericItemNameMenu(html);
+  if (domItems) {
+    const n = domItems.sections.reduce((acc, s) => acc + s.items.length, 0);
+    trace('dom_item_name', n);
+    return domItems;
+  }
+  const crossCN = await parseChowNowMenu(html, url);
+  if (crossCN) { trace('chownow', crossCN.sections?.reduce((n, s) => n + s.items.length, 0) || 0); return crossCN; }
+  const crossBB = parseBentoBoxMenu(html);
+  if (crossBB) { trace('bentobox', crossBB.sections?.reduce((n, s) => n + s.items.length, 0) || 0); return crossBB; }
+  const crossSA = parseSpotAppsMenu(html);
+  if (crossSA) { trace('spotapps', crossSA.sections?.reduce((n, s) => n + s.items.length, 0) || 0); return crossSA; }
+  const crossLE = parseLettuceMenu(html);
+  if (crossLE) { trace('lettuce', crossLE.sections?.reduce((n, s) => n + s.items.length, 0) || 0); return crossLE; }
+  const crossSQ = parseSquarespaceMenu(html);
+  if (crossSQ) { trace('squarespace', crossSQ.sections?.reduce((n, s) => n + s.items.length, 0) || 0); return crossSQ; }
+  const crossSQT = parseSquarespaceTextMenu(html);
+  if (crossSQT) { trace('squarespace_text', crossSQT.sections?.reduce((n, s) => n + s.items.length, 0) || 0); return crossSQT; }
+  const crossDW = parseDineWpMenu(html);
+  if (crossDW) { trace('dine_wp', crossDW.sections?.reduce((n, s) => n + s.items.length, 0) || 0); return crossDW; }
 
   // PDF pipeline: scan for ranked PDF candidates linked from the page.
   const pdfCandidates = detectMenuPdfUrls(html, url);
