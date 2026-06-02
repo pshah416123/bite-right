@@ -68,19 +68,30 @@ export default function SwipeDeck({
   const prevCardLenRef = useRef(cards.length);
   const swipingRef = useRef(false);
 
-  // Reset the low-notification flag when new cards are appended
-  useEffect(() => {
-    if (cards.length > prevCardLenRef.current) {
-      lowNotifiedRef.current = false;
-    }
-    prevCardLenRef.current = cards.length;
-  }, [cards.length]);
-
   // ── Animated values ─────────────────────────────────────────────────────────
   const pan = useRef(new Animated.ValueXY()).current;
   const topOpacity = useRef(new Animated.Value(1)).current;
   // dragProgress: 0 → 1 as card is dragged
   const dragProgress = useRef(new Animated.Value(0)).current;
+
+  // Reset the low-notification flag when new cards are appended.
+  // Reset animation values when cards SHRINK — that's the signal that
+  // the parent has filtered the just-swiped card out of its state and
+  // we should snap back to the new top card.
+  useEffect(() => {
+    if (cards.length > prevCardLenRef.current) {
+      lowNotifiedRef.current = false;
+    }
+    if (cards.length < prevCardLenRef.current) {
+      // The parent removed the swiped card. cards[0] is now the next
+      // card to render — snap the animation state back to "fresh".
+      pan.setValue({ x: 0, y: 0 });
+      dragProgress.setValue(0);
+      topOpacity.setValue(1);
+      swipingRef.current = false;
+    }
+    prevCardLenRef.current = cards.length;
+  }, [cards.length, pan, dragProgress, topOpacity]);
 
   // Reset on index change
   const isFirstRender = useRef(true);
@@ -96,23 +107,28 @@ export default function SwipeDeck({
   }, [currentIndex, pan, dragProgress, topOpacity]);
 
   // ── Swipe completion ────────────────────────────────────────────────────────
+  // The parent removes the swiped card from its state, so the next card to
+  // render is always cards[0]. We never advance currentIndex — doing so
+  // alongside the parent's filter caused every other card to be skipped
+  // (the array shrunk while the index walked forward independently).
   const handleSwipeComplete = useCallback((direction: 'left' | 'right' | 'up') => {
-    const idx = currentIndexRef.current;
-    const card = cardsRef.current[idx];
-    const next = idx + 1;
-    setCurrentIndex(next);
+    const card = cardsRef.current[0];
+    if (!card) return;
 
     if (direction === 'left') cbRef.current.onSwipedLeft?.(card);
     if (direction === 'right') cbRef.current.onSwipedRight?.(card);
     if (direction === 'up') cbRef.current.onSwipedTop?.(card);
 
-    const remaining = cardsRef.current.length - next;
-    if (remaining <= runningLowThreshold && !lowNotifiedRef.current) {
+    // Running-low: deck about to drop to (current length − 1). Threshold is
+    // checked against the post-filter length so we fire when there's one
+    // card too few left to keep swiping smoothly.
+    if (cardsRef.current.length - 1 <= runningLowThreshold && !lowNotifiedRef.current) {
       lowNotifiedRef.current = true;
       cbRef.current.onRunningLow?.();
     }
 
-    if (next >= cardsRef.current.length) cbRef.current.onAllSwiped?.();
+    // All-swiped: the card we just swiped was the last one.
+    if (cardsRef.current.length <= 1) cbRef.current.onAllSwiped?.();
   }, [runningLowThreshold]);
 
   // ── Fly off helper ──────────────────────────────────────────────────────────
@@ -269,10 +285,15 @@ export default function SwipeDeck({
   });
 
   // ── Render ──────────────────────────────────────────────────────────────────
-  const isDone = currentIndex >= cards.length;
-  const card1 = cards[currentIndex];
-  const card2 = cards[currentIndex + 1];
-  const card3 = cards[currentIndex + 2];
+  // currentIndex never advances anymore — the parent removes swiped cards
+  // from its state, so cards[0] is always the next card. We keep the state
+  // around only so the existing "reset animation on index change" effect
+  // still has a dependency to listen to (some flows still trigger it
+  // explicitly e.g. when the deck is rebuilt).
+  const isDone = cards.length === 0;
+  const card1 = cards[0];
+  const card2 = cards[1];
+  const card3 = cards[2];
 
   return (
     <View style={styles.container} accessibilityLabel="Restaurant swipe deck">
@@ -372,10 +393,10 @@ export default function SwipeDeck({
 
 function EmptyState() {
   return (
-    <View style={empty.wrap} accessibilityLabel="Loading more restaurants">
+    <View style={empty.wrap} accessibilityLabel="Deck complete">
       <Text style={empty.emoji}>{'\u2728'}</Text>
-      <Text style={empty.title}>Finding more places…</Text>
-      <Text style={empty.sub}>Hang tight, fresh picks are on the way.</Text>
+      <Text style={empty.title}>{`That${'’'}s everyone`}</Text>
+      <Text style={empty.sub}>Tap See Matches to see where your group landed.</Text>
     </View>
   );
 }

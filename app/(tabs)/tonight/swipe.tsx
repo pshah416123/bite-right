@@ -215,7 +215,7 @@ export default function TonightSwipeScreen() {
       <SafeAreaView style={styles.safe}>
         <View style={styles.center}>
           <ActivityIndicator size="large" color={colors.accent} />
-          <Text style={styles.helper}>Loading restaurants\u2026</Text>
+          <Text style={styles.helper}>Loading restaurants{'\u2026'}</Text>
         </View>
       </SafeAreaView>
     );

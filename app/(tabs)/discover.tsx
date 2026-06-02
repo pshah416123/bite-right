@@ -389,8 +389,13 @@ export default function DiscoverScreen() {
     const reqId = ++geoReqRef.current;
     const t = setTimeout(async () => {
       try {
+        // Short 6s timeout so a flaky network doesn't leave the user
+        // staring at "Searching…" forever. If it times out we still let
+        // them submit their free-form input via the "Use this location"
+        // button below.
         const { data } = await apiClient.get<{ results: GeoSuggestion[] }>('/api/geo/autocomplete', {
           params: { query: q },
+          timeout: 6000,
         });
         if (geoReqRef.current !== reqId) return;
         setGeoSuggestions(Array.isArray(data?.results) ? data.results : []);
@@ -398,12 +403,38 @@ export default function DiscoverScreen() {
         if (geoReqRef.current !== reqId) return;
         setGeoSuggestions([]);
       } finally {
-        if (geoReqRef.current !== reqId) return;
-        setGeoLoading(false);
+        if (geoReqRef.current === reqId) setGeoLoading(false);
       }
-    }, 300);
+    }, 250);
     return () => clearTimeout(t);
   }, [locationPickerOpen, locationInput]);
+
+  // Free-form submit fallback — if autocomplete returns nothing (or the
+  // user just wants to bypass the suggestion list), they can hit "Use this
+  // location" or press Search on the keyboard and we'll geocode the
+  // whatever-they-typed via the same endpoint and use the first result.
+  // Without this, a flaky autocomplete leaves the sheet useless.
+  const submitFreeFormLocation = useCallback(async () => {
+    const q = locationInput.trim();
+    if (!q) return;
+    try {
+      const { data } = await apiClient.get<{ results: GeoSuggestion[] }>('/api/geo/autocomplete', {
+        params: { query: q },
+        timeout: 6000,
+      });
+      const top = Array.isArray(data?.results) ? data.results[0] : null;
+      if (top) {
+        setCustomLocation({ label: top.label, placeId: null, lat: top.lat, lng: top.lng });
+        setLocationInput('');
+        setRadiusMiles(pendingRadius);
+        closeLocationSheet();
+      } else {
+        setGeoSuggestions([]);
+      }
+    } catch {
+      setGeoSuggestions([]);
+    }
+  }, [locationInput, pendingRadius]);
 
   const selectLocation = useCallback((loc: DiscoverSelectedLocation) => {
     setCustomLocation(loc);
@@ -828,11 +859,14 @@ export default function DiscoverScreen() {
               <TextInput
                 value={locationInput}
                 onChangeText={setLocationInput}
-                placeholder="Search a neighborhood or city..."
+                placeholder="City or neighborhood, then tap Search"
                 placeholderTextColor={colors.textFaint}
                 style={styles.sheetLocationInput}
                 autoCapitalize="words"
                 autoCorrect={false}
+                returnKeyType="search"
+                onSubmitEditing={submitFreeFormLocation}
+                blurOnSubmit
               />
               {locationInput.length > 0 && (
                 <TouchableOpacity onPress={() => setLocationInput('')} hitSlop={8}>
@@ -870,7 +904,17 @@ export default function DiscoverScreen() {
                 </ScrollView>
               ) : (
                 <View style={styles.sheetLocationHint}>
-                  <Text style={styles.sheetLocationHintText}>No locations found</Text>
+                  <Text style={styles.sheetLocationHintText}>
+                    No suggestions — tap below to search for {'"'}{locationInput.trim()}{'"'} anyway
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.sheetUseLocationBtn}
+                    onPress={submitFreeFormLocation}
+                    activeOpacity={0.85}
+                  >
+                    <Ionicons name="search" size={14} color="#fff" />
+                    <Text style={styles.sheetUseLocationBtnText}>Use this location</Text>
+                  </TouchableOpacity>
                 </View>
               )
             ) : (
@@ -1236,6 +1280,22 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '500',
     color: colors.textMuted,
+  },
+  sheetUseLocationBtn: {
+    marginTop: 10,
+    flexDirection: 'row',
+    alignSelf: 'flex-start',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: colors.accent,
+  },
+  sheetUseLocationBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#fff',
   },
   sheetDivider: {
     height: 1,

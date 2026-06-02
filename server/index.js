@@ -953,86 +953,155 @@ function coalesceCuisine({ types, name, hint }) {
 }
 
 // ── Recommended dishes by cuisine (popular picks for Tonight cards) ──────────
+// Each cuisine has an expanded pool of 6–8 items. getRecommendedDishes
+// picks 3 deterministically via a name hash, so different restaurants
+// in the same cuisine show different "must try" lists — fixes the
+// "every Mexican spot shows the same 3 tacos" feedback.
 const CUISINE_DISHES = {
   Japanese: [
     { name: 'Omakase Nigiri', price: null, description: 'Chef\'s choice sushi selection' },
     { name: 'Spicy Tuna Roll', price: null, description: 'Fresh tuna with spicy mayo' },
     { name: 'Wagyu Tataki', price: null, description: 'Seared wagyu with ponzu' },
+    { name: 'Tonkotsu Ramen', price: null, description: 'Rich pork broth with chashu' },
+    { name: 'Agedashi Tofu', price: null, description: 'Crispy tofu in dashi broth' },
+    { name: 'Yakitori Skewers', price: null, description: 'Charcoal-grilled chicken with tare' },
+    { name: 'Chirashi Bowl', price: null, description: 'Sashimi over seasoned sushi rice' },
   ],
   Sushi: [
     { name: 'Omakase Nigiri', price: null, description: 'Chef\'s choice sushi selection' },
     { name: 'Dragon Roll', price: null, description: 'Eel and avocado with unagi sauce' },
     { name: 'Sashimi Platter', price: null, description: 'Assorted fresh-cut fish' },
+    { name: 'Spicy Tuna Roll', price: null, description: 'Fresh tuna with spicy mayo' },
+    { name: 'Salmon Belly Nigiri', price: null, description: 'Fatty salmon over warm rice' },
+    { name: 'Rainbow Roll', price: null, description: 'California roll topped with assorted fish' },
+    { name: 'Uni Hand Roll', price: null, description: 'Sea urchin wrapped in nori' },
   ],
   Italian: [
     { name: 'Cacio e Pepe', price: null, description: 'Roman pasta with pecorino & black pepper' },
     { name: 'Burrata', price: null, description: 'Creamy burrata with heirloom tomatoes' },
     { name: 'Osso Buco', price: null, description: 'Braised veal shank with gremolata' },
+    { name: 'Carbonara', price: null, description: 'Guanciale, pecorino, egg yolk, black pepper' },
+    { name: 'Margherita Pizza', price: null, description: 'San Marzano, fior di latte, basil' },
+    { name: 'Tagliatelle al Ragù', price: null, description: 'Hand-cut pasta with Bolognese' },
+    { name: 'Tiramisu', price: null, description: 'Espresso-soaked ladyfingers, mascarpone' },
   ],
   Mexican: [
     { name: 'Al Pastor Tacos', price: null, description: 'Spit-roasted pork with pineapple' },
     { name: 'Guacamole Fresco', price: null, description: 'Tableside-prepared guacamole' },
     { name: 'Birria Quesadilla', price: null, description: 'Braised beef with consommé' },
+    { name: 'Carne Asada', price: null, description: 'Marinated grilled steak with tortillas' },
+    { name: 'Mole Poblano', price: null, description: 'Slow-simmered chocolate-chile sauce over chicken' },
+    { name: 'Carnitas Tacos', price: null, description: 'Slow-cooked pork shoulder, salsa verde' },
+    { name: 'Enchiladas Suizas', price: null, description: 'Tomatillo sauce, crema, queso fresco' },
+    { name: 'Elote', price: null, description: 'Charred corn with cotija, lime, chili' },
   ],
   Chinese: [
     { name: 'Xiao Long Bao', price: null, description: 'Soup dumplings with pork filling' },
     { name: 'Mapo Tofu', price: null, description: 'Silken tofu in spicy chili sauce' },
     { name: 'Peking Duck', price: null, description: 'Roasted duck with pancakes & hoisin' },
+    { name: 'Dan Dan Noodles', price: null, description: 'Sichuan noodles with chili oil and pork' },
+    { name: 'Salt & Pepper Shrimp', price: null, description: 'Crispy-fried with garlic and chilies' },
+    { name: 'Kung Pao Chicken', price: null, description: 'Wok-tossed with peanuts and dried chilies' },
+    { name: 'Cumin Lamb', price: null, description: 'Stir-fried with cumin seeds and scallion' },
   ],
   Indian: [
     { name: 'Butter Chicken', price: null, description: 'Tandoori chicken in tomato cream' },
     { name: 'Lamb Biryani', price: null, description: 'Fragrant basmati rice with spiced lamb' },
     { name: 'Garlic Naan', price: null, description: 'Fresh-baked garlic flatbread' },
+    { name: 'Chicken Tikka Masala', price: null, description: 'Charred chicken in spiced tomato cream' },
+    { name: 'Saag Paneer', price: null, description: 'Spinach with house-made cheese cubes' },
+    { name: 'Tandoori Lamb Chops', price: null, description: 'Spice-marinated, clay-oven roasted' },
+    { name: 'Goan Fish Curry', price: null, description: 'Coconut-tamarind sauce with fish of the day' },
+    { name: 'Samosa Chaat', price: null, description: 'Crispy samosas with chutneys and yogurt' },
   ],
   Thai: [
     { name: 'Pad Thai', price: null, description: 'Stir-fried rice noodles with shrimp' },
     { name: 'Green Curry', price: null, description: 'Coconut curry with Thai basil' },
     { name: 'Tom Yum Soup', price: null, description: 'Hot & sour lemongrass broth' },
+    { name: 'Pad See Ew', price: null, description: 'Wide noodles with Chinese broccoli, dark soy' },
+    { name: 'Massaman Curry', price: null, description: 'Mild peanut-coconut curry with beef and potato' },
+    { name: 'Khao Soi', price: null, description: 'Northern coconut curry noodles with crispy egg noodles' },
+    { name: 'Crying Tiger', price: null, description: 'Grilled marinated beef with nam jim jaew' },
   ],
   Korean: [
     { name: 'Korean BBQ Platter', price: null, description: 'Bulgogi and galbi with banchan' },
     { name: 'Bibimbap', price: null, description: 'Rice bowl with veggies and gochujang' },
     { name: 'Kimchi Jjigae', price: null, description: 'Spicy fermented cabbage stew' },
+    { name: 'Bossam', price: null, description: 'Slow-boiled pork belly with kimchi and lettuce wraps' },
+    { name: 'Soondubu Jjigae', price: null, description: 'Silken tofu stew with seafood and chili' },
+    { name: 'Japchae', price: null, description: 'Sweet potato glass noodles with vegetables' },
   ],
   Mediterranean: [
     { name: 'Lamb Chops', price: null, description: 'Grilled with rosemary and lemon' },
     { name: 'Hummus Platter', price: null, description: 'Classic hummus with warm pita' },
     { name: 'Grilled Octopus', price: null, description: 'Charred tentacles with olive oil' },
+    { name: 'Spanakopita', price: null, description: 'Spinach and feta in flaky phyllo' },
+    { name: 'Falafel Plate', price: null, description: 'Crispy chickpea fritters with tahini' },
+    { name: 'Shawarma', price: null, description: 'Spit-roasted lamb or chicken with garlic sauce' },
+    { name: 'Branzino Whole', price: null, description: 'Wood-grilled Mediterranean sea bass' },
   ],
   American: [
     { name: 'Smash Burger', price: null, description: 'Double-stacked with American cheese' },
     { name: 'Mac & Cheese', price: null, description: 'Three-cheese blend, baked golden' },
     { name: 'BBQ Ribs', price: null, description: 'Slow-smoked with house dry rub' },
+    { name: 'Buttermilk Fried Chicken', price: null, description: 'Crispy, juicy, served with honey' },
+    { name: 'Chicken & Waffles', price: null, description: 'Crispy fried chicken on a Belgian waffle' },
+    { name: 'Wedge Salad', price: null, description: 'Iceberg with blue cheese and bacon' },
+    { name: 'Buffalo Wings', price: null, description: 'Hot sauce, blue cheese, celery' },
+    { name: 'Loaded Nachos', price: null, description: 'Cheese, jalapeños, sour cream, salsa' },
   ],
   Steakhouse: [
     { name: 'Dry-Aged Ribeye', price: null, description: '28-day aged, bone-in' },
     { name: 'Wedge Salad', price: null, description: 'Iceberg with blue cheese & bacon' },
     { name: 'Creamed Spinach', price: null, description: 'Classic steakhouse side' },
+    { name: 'Filet Mignon', price: null, description: 'Center-cut tenderloin with béarnaise' },
+    { name: 'NY Strip', price: null, description: '14oz Prime, butter-basted' },
+    { name: 'Surf & Turf', price: null, description: 'Steak paired with grilled lobster' },
+    { name: 'Truffle Mac & Cheese', price: null, description: 'Black truffle, gruyère, breadcrumbs' },
   ],
   Seafood: [
     { name: 'Lobster Roll', price: null, description: 'Butter-poached lobster on brioche' },
     { name: 'Oysters on the Half Shell', price: null, description: 'Fresh selection with mignonette' },
     { name: 'Pan-Seared Salmon', price: null, description: 'Crispy skin with lemon butter' },
+    { name: 'Cioppino', price: null, description: 'San Francisco seafood stew in tomato broth' },
+    { name: 'Clam Chowder', price: null, description: 'Creamy New England-style with bacon' },
+    { name: 'Grilled Whole Branzino', price: null, description: 'Wood-fired with charred lemon' },
+    { name: 'Fish Tacos', price: null, description: 'Beer-battered cod with slaw and lime crema' },
   ],
   French: [
     { name: 'Steak Frites', price: null, description: 'Hanger steak with herb butter & fries' },
     { name: 'French Onion Soup', price: null, description: 'Caramelized onion with gruyère' },
     { name: 'Crème Brûlée', price: null, description: 'Classic vanilla custard, torched' },
+    { name: 'Coq au Vin', price: null, description: 'Red-wine braised chicken with mushrooms' },
+    { name: 'Duck Confit', price: null, description: 'Slow-cooked duck leg, crispy skin' },
+    { name: 'Bouillabaisse', price: null, description: 'Provençal seafood stew with rouille' },
+    { name: 'Niçoise Salad', price: null, description: 'Tuna, egg, haricots verts, olives, potato' },
   ],
   Pizza: [
     { name: 'Margherita', price: null, description: 'San Marzano, fresh mozzarella, basil' },
     { name: 'Pepperoni & Hot Honey', price: null, description: 'Crispy pepperoni with chili honey' },
     { name: 'Burrata Pizza', price: null, description: 'Arugula, prosciutto, burrata' },
+    { name: 'White Pie', price: null, description: 'Ricotta, mozzarella, garlic, olive oil' },
+    { name: 'Sausage & Peppers', price: null, description: 'Italian sausage with roasted peppers' },
+    { name: 'Detroit-Style Pepperoni', price: null, description: 'Thick crust, crispy cheese edges' },
   ],
   BBQ: [
     { name: 'Brisket Platter', price: null, description: '14-hour smoked, sliced to order' },
     { name: 'Pulled Pork Sandwich', price: null, description: 'Slow-smoked with slaw & pickles' },
     { name: 'Burnt Ends', price: null, description: 'Caramelized point-cut brisket bites' },
+    { name: 'Smoked Sausage Link', price: null, description: 'Coarse-ground beef and pork' },
+    { name: 'Half Rack of Ribs', price: null, description: 'Dry-rubbed, fall-off-the-bone' },
+    { name: 'Smoked Turkey', price: null, description: 'Juicy hardwood-smoked breast' },
+    { name: 'Mac & Cheese', price: null, description: 'Three-cheese blend, baked' },
   ],
   Burgers: [
     { name: 'Classic Smash Burger', price: null, description: 'Double patty, cheese, pickles, sauce' },
     { name: 'Truffle Burger', price: null, description: 'Truffle aioli, gruyère, caramelized onion' },
     { name: 'Crispy Chicken Sandwich', price: null, description: 'Buttermilk-fried with slaw' },
+    { name: 'Bacon Cheeseburger', price: null, description: 'Applewood-smoked bacon, sharp cheddar' },
+    { name: 'Mushroom Swiss Burger', price: null, description: 'Sautéed mushrooms, melted swiss' },
+    { name: 'Veggie Burger', price: null, description: 'House black bean patty, chipotle mayo' },
+    { name: 'Hand-Cut Fries', price: null, description: 'Twice-fried with sea salt' },
   ],
 };
 /**
@@ -1164,6 +1233,27 @@ async function batchReadCachedMenus(restaurantIds) {
   return map;
 }
 
+// Tiny djb2-style hash so the same restaurant name always picks the same
+// dish slice. Deterministic per-restaurant + cheap to compute.
+function hashStr(s) {
+  let h = 5381;
+  const str = String(s || '');
+  for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0;
+  return Math.abs(h);
+}
+
+// Pick `count` items from `list` starting at a name-hashed offset, rotating
+// around. With a 7-item list and count=3, two different restaurants in the
+// same cuisine will start at different offsets and show different dish
+// triples — the fix for "every Italian spot in my deck shows the same 3
+// dishes". Stable across requests (no randomness).
+function pickDishesForRestaurant(list, restaurantName, count) {
+  if (!Array.isArray(list) || list.length === 0) return [];
+  if (list.length <= count) return list.slice(0, count);
+  const start = hashStr(restaurantName) % list.length;
+  return [...list.slice(start), ...list.slice(0, start)].slice(0, count);
+}
+
 function getRecommendedDishes(cuisine, restaurantName) {
   const c = (cuisine || '').trim();
   // Try exact match first, then partial match on cuisine
@@ -1205,8 +1295,7 @@ function getRecommendedDishes(cuisine, restaurantName) {
       }
     }
   }
-  // Return empty array instead of generic placeholders — the client handles this gracefully
-  return (dishes || []).slice(0, 3);
+  return pickDishesForRestaurant(dishes, restaurantName, 3);
 }
 
 /** Maps Discover cuisine chip labels to Google Nearby Search keyword hints. */
