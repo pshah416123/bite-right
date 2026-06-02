@@ -52,6 +52,13 @@ function detectProvider(url, html) {
   // checks for the block class + menu-item-title (must have both so we
   // don't false-positive on Squarespace nav menus).
   if (/sqs-block-menu|sqs-block\s+menu-block/i.test(h) && /menu-item-title/i.test(h)) return 'squarespace';
+  // "Dine" / "Dine Framework" WordPress theme + similar restaurant themes
+  // (Sabroso Chicago, many independent Mexican/Italian/American spots).
+  // Stable DOM: <h2 class="dine-menu-heading"> + <div class="dine-menu-item">
+  // each containing .menu-item-name / .menu-item-price / .menu-item-desc.
+  // Also matches restaurants using the bare WP convention of those inner
+  // classes without the dine-* wrappers.
+  if (/class="dine-menu(?:-item|-heading|-wrapper)?[\s"]|menu-item-name[\s"][\s\S]{0,2000}menu-item-price/i.test(h)) return 'dine_wp';
   if (u.includes('clover.com')) return 'clover';
   if (u.includes('wixsite.com') || u.includes('editorx.io')) return 'wix';
   if (/<meta[^>]+generator[^>]+wordpress/i.test(h)) return 'wordpress';
@@ -500,6 +507,118 @@ function parseSquarespaceMenu(html) {
     }
     if (sections.length === 0) return null;
     return { sections, rawData: null, source: 'squarespace' };
+  } catch {
+    return null;
+  }
+}
+
+// ─── Dine / WP restaurant theme ────────────────────────────────────────────
+//
+// Many WordPress restaurant themes (Dine Framework being the canonical one,
+// also clones / forks) render the menu as:
+//
+//   <h2 class="dine-menu-heading">Section Name</h2>
+//   <div class="dine-menu">
+//     <div class="dine-menu-item">
+//       <h3 class="menu-item-name">Dish Name</h3>
+//       <span class="menu-item-price">$10.50</span>
+//       <div class="menu-item-desc">Description...</div>
+//     </div>
+//     ...
+//   </div>
+//
+// The inner classes (.menu-item-name / -price / -desc) are also used by
+// other WP restaurant themes without the dine-* wrappers, so we accept
+// either: explicit dine-menu-item containers, or bare .menu-item-name
+// siblings within a parent.
+function parseDineWpMenu(html) {
+  try {
+    const $ = cheerio.load(html);
+
+    // Strategy A: explicit .dine-menu-item containers with surrounding
+    // .dine-menu-heading siblings as section titles.
+    const sectionsA = [];
+    // Walk top-down so we can attach items to the most recent heading.
+    let currentTitle = 'Menu';
+    let currentItems = [];
+    const flush = () => {
+      if (currentItems.length > 0) {
+        sectionsA.push({ title: currentTitle || 'Menu', items: currentItems });
+        currentItems = [];
+      }
+    };
+    $('.dine-menu-heading, .dine-menu-item').each((_, el) => {
+      const $el = $(el);
+      if ($el.hasClass('dine-menu-heading')) {
+        flush();
+        currentTitle = $el.text().trim() || 'Menu';
+        return;
+      }
+      // .dine-menu-item
+      const name = $el.find('.menu-item-name').first().text().trim();
+      if (!name || name.length < 2 || name.length > 120) return;
+      const desc = $el.find('.menu-item-desc, .menu-item-description').first().text().trim();
+      const priceText = $el.find('.menu-item-price').first().text().trim();
+      currentItems.push({
+        name,
+        description: desc || null,
+        price: priceText ? normalizePrice(priceText) : null,
+        tags: null,
+        photoUrl: null,
+      });
+    });
+    flush();
+    if (sectionsA.length > 0 && sectionsA.some((s) => s.items.length > 0)) {
+      return { sections: sectionsA.filter((s) => s.items.length > 0), rawData: null, source: 'dine_wp' };
+    }
+
+    // Strategy B: bare .menu-item-name / .menu-item-price pattern, no
+    // dine-* wrappers. Group items by nearest preceding heading
+    // (<h2>/<h3>/<h4>) so different section names survive.
+    const items = [];
+    $('.menu-item-name').each((_, name) => {
+      const $name = $(name);
+      const text = $name.text().trim();
+      if (!text || text.length < 2 || text.length > 120) return;
+      // Sibling structure: <h3 class="menu-item-name"> then
+      // <span class="menu-item-price"> then <div class="menu-item-desc">
+      let priceText = '';
+      let desc = '';
+      const $price = $name.nextAll('.menu-item-price').first();
+      if ($price.length) priceText = $price.text().trim();
+      const $desc = $name.nextAll('.menu-item-desc, .menu-item-description').first();
+      if ($desc.length) desc = $desc.text().trim();
+      // Find the nearest preceding heading element for section grouping.
+      let title = 'Menu';
+      const $parent = $name.parent();
+      const $heading = $parent.prevAll('h1, h2, h3, h4, h5, h6').first();
+      if ($heading.length) title = $heading.text().trim() || 'Menu';
+      else {
+        // Try a heading inside the same wrapper, or upstream of the wrapper.
+        const $up = $name.closest('section, article, div').prevAll('h1, h2, h3, h4, h5, h6').first();
+        if ($up.length) title = $up.text().trim() || 'Menu';
+      }
+      items.push({
+        title,
+        item: {
+          name: text,
+          description: desc || null,
+          price: priceText ? normalizePrice(priceText) : null,
+          tags: null,
+          photoUrl: null,
+        },
+      });
+    });
+    if (items.length > 0) {
+      const byTitle = new Map();
+      for (const { title, item } of items) {
+        if (!byTitle.has(title)) byTitle.set(title, []);
+        byTitle.get(title).push(item);
+      }
+      const sectionsB = Array.from(byTitle.entries()).map(([title, its]) => ({ title, items: its }));
+      return { sections: sectionsB, rawData: null, source: 'dine_wp' };
+    }
+    return null;
   } catch {
     return null;
   }
@@ -1017,6 +1136,10 @@ async function extractMenuFromHtml(html, url) {
     const r = parseSquarespaceMenu(html);
     if (r) return r;
   }
+  if (provider === 'dine_wp') {
+    const r = parseDineWpMenu(html);
+    if (r) return r;
+  }
   if (provider === 'wix') {
     const r = parseWixMenu(html);
     if (r) return r;
@@ -1034,6 +1157,8 @@ async function extractMenuFromHtml(html, url) {
   if (crossLE) return crossLE;
   const crossSQ = parseSquarespaceMenu(html);
   if (crossSQ) return crossSQ;
+  const crossDW = parseDineWpMenu(html);
+  if (crossDW) return crossDW;
   const jsonLd = parseJsonLdMenu(html);
   if (jsonLd) return { ...jsonLd, source: jsonLd.source || provider };
 

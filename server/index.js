@@ -4215,8 +4215,19 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
   //   (TTL still gates a future re-attempt; user gets the popular-dishes
   //   fallback in the meantime).
   const cached = await readCachedMenu(restaurantId);
+  // Heuristic: a generic_scrape cache that holds fewer than 15 items is
+  // almost always a casualty of the pre-provider-parser era — the old
+  // extractor pulled a stray handful of items off a WordPress / Squarespace
+  // page where we now have a structured parser. Treating these as stale
+  // triggers a background refresh that uses the current parsers (Dine WP,
+  // Lettuce, SpotApps, Squarespace, etc.) and replaces the weak cache the
+  // next time the row is read.
+  const isWeakGenericScrape =
+    cached?.source_type === 'generic_scrape' &&
+    Array.isArray(cached?.structured_data?.sections) &&
+    cached.structured_data.sections.reduce((n, s) => n + (s.items?.length || 0), 0) < 15;
   if (cached && cached.scrape_status === 'success' && cached.quality_score >= MENU_QUALITY_THRESHOLD) {
-    if (!isCacheFresh(cached)) {
+    if (!isCacheFresh(cached) || isWeakGenericScrape) {
       // Fire-and-forget background refresh; never block the response on it.
       refreshOneMenu(restaurantId).catch((e) =>
         console.error('[menu-cache] background refresh failed', restaurantId, e?.message),
