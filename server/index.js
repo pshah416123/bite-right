@@ -4026,12 +4026,458 @@ const CHAIN_MENUS = {
       },
     ],
   },
-  // Add more chains here as needed: mcdonalds, taco-bell, panera, etc.
+  // ─── National fast-food chains ─────────────────────────────────────────
+  // These are corporate-SPA sites where the generic scraper + Puppeteer
+  // fail (heavy client-side rendering, location-keyed menus, no static
+  // HTML). Items are national-menu staples; prices left null because
+  // they vary by store. Includes the iconic items diners actually look
+  // for, not the full corporate SKU list.
+
+  'mcdonalds': {
+    sections: [
+      {
+        title: 'Burgers',
+        items: [
+          { name: 'Big Mac', description: 'Two beef patties, special sauce, lettuce, cheese, pickles, onions on a sesame seed bun', price: null, tags: null, photoUrl: null },
+          { name: 'Quarter Pounder with Cheese', description: 'Quarter-pound 100% beef patty with cheese, onions, pickles, ketchup, mustard', price: null, tags: null, photoUrl: null },
+          { name: 'Double Quarter Pounder with Cheese', description: 'Two quarter-pound patties, cheese, onions, pickles', price: null, tags: null, photoUrl: null },
+          { name: 'McDouble', description: 'Two beef patties, cheese, pickles, onions, ketchup, mustard', price: null, tags: null, photoUrl: null },
+          { name: 'Cheeseburger', description: 'Beef patty, cheese, pickles, onions, ketchup, mustard', price: null, tags: null, photoUrl: null },
+          { name: 'Hamburger', description: 'Beef patty, pickles, onions, ketchup, mustard', price: null, tags: null, photoUrl: null },
+        ],
+      },
+      {
+        title: 'Chicken & Fish',
+        items: [
+          { name: 'McCrispy', description: 'Crispy chicken filet, pickles, on a potato roll', price: null, tags: null, photoUrl: null },
+          { name: 'Spicy McCrispy', description: 'Spicy crispy chicken filet, pickles, on a potato roll', price: null, tags: ['spicy'], photoUrl: null },
+          { name: 'McChicken', description: 'Crispy chicken patty, lettuce, mayo on a toasted bun', price: null, tags: null, photoUrl: null },
+          { name: 'Chicken McNuggets (10 pc)', description: 'Tender, juicy chicken nuggets', price: null, tags: null, photoUrl: null },
+          { name: 'Spicy Chicken McNuggets', description: 'Hot and spicy McNuggets', price: null, tags: ['spicy'], photoUrl: null },
+          { name: 'Filet-O-Fish', description: 'Wild-caught Alaskan pollock, melted cheese, tartar sauce on a steamed bun', price: null, tags: null, photoUrl: null },
+        ],
+      },
+      {
+        title: 'Breakfast',
+        items: [
+          { name: 'Egg McMuffin', description: 'Egg, Canadian bacon, American cheese on a toasted English muffin', price: null, tags: null, photoUrl: null },
+          { name: 'Sausage McMuffin with Egg', description: 'Sausage patty, egg, cheese on an English muffin', price: null, tags: null, photoUrl: null },
+          { name: 'Bacon, Egg & Cheese Biscuit', description: 'Thick-cut bacon, fluffy egg, cheese on a warm biscuit', price: null, tags: null, photoUrl: null },
+          { name: 'Sausage Burrito', description: 'Sausage, eggs, peppers, onions, cheese in a soft tortilla', price: null, tags: null, photoUrl: null },
+          { name: 'Hotcakes', description: 'Three fluffy hotcakes with butter and syrup', price: null, tags: null, photoUrl: null },
+          { name: 'Hash Browns', description: 'Crispy golden hash brown', price: null, tags: null, photoUrl: null },
+        ],
+      },
+      {
+        title: 'Sides & Desserts',
+        items: [
+          { name: 'World Famous Fries', description: 'Golden, crispy french fries', price: null, tags: null, photoUrl: null },
+          { name: 'Apple Slices', description: 'Crisp apple slices', price: null, tags: ['vegan'], photoUrl: null },
+          { name: 'McFlurry with OREO Cookies', description: 'Vanilla soft-serve with OREO pieces', price: null, tags: null, photoUrl: null },
+          { name: 'McFlurry with M&M’s', description: 'Vanilla soft-serve with M&M’s candies', price: null, tags: null, photoUrl: null },
+          { name: 'Vanilla Cone', description: 'Classic soft-serve vanilla cone', price: null, tags: null, photoUrl: null },
+          { name: 'Baked Apple Pie', description: 'Warm cinnamon-spiced apples in a flaky crust', price: null, tags: null, photoUrl: null },
+        ],
+      },
+    ],
+  },
+
+  'taco-bell': {
+    sections: [
+      {
+        title: 'Tacos',
+        items: [
+          { name: 'Crunchy Taco', description: 'Seasoned beef, lettuce, cheddar in a crunchy corn shell', price: null, tags: null, photoUrl: null },
+          { name: 'Soft Taco', description: 'Seasoned beef, lettuce, cheddar in a soft flour tortilla', price: null, tags: null, photoUrl: null },
+          { name: 'Crunchy Taco Supreme', description: 'Crunchy taco with tomatoes and reduced-fat sour cream', price: null, tags: null, photoUrl: null },
+          { name: 'Doritos Locos Tacos — Nacho Cheese', description: 'Crunchy taco with a Doritos nacho cheese shell', price: null, tags: null, photoUrl: null },
+          { name: 'Chalupa Supreme', description: 'Fried flatbread, seasoned beef, lettuce, cheese, sour cream, tomato', price: null, tags: null, photoUrl: null },
+        ],
+      },
+      {
+        title: 'Burritos',
+        items: [
+          { name: 'Bean Burrito', description: 'Refried beans, red sauce, onions, cheddar in a flour tortilla', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Beefy 5-Layer Burrito', description: 'Beef, beans, cheese, sour cream, cheddar', price: null, tags: null, photoUrl: null },
+          { name: 'Burrito Supreme', description: 'Beef, beans, lettuce, tomato, onion, cheese, sour cream, red sauce', price: null, tags: null, photoUrl: null },
+          { name: 'Cheesy Bean and Rice Burrito', description: 'Rice, refried beans, nacho cheese, jalapeño sauce', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Chicken Burrito', description: 'Grilled chicken, rice, cheese, sour cream, chipotle sauce', price: null, tags: null, photoUrl: null },
+        ],
+      },
+      {
+        title: 'Specialties & Sides',
+        items: [
+          { name: 'Crunchwrap Supreme', description: 'Beef, nacho cheese, sour cream, lettuce, tomato in a grilled tortilla', price: null, tags: null, photoUrl: null },
+          { name: 'Quesadilla (Chicken)', description: 'Grilled chicken, three-cheese blend, creamy jalapeño sauce', price: null, tags: null, photoUrl: null },
+          { name: 'Mexican Pizza', description: 'Crisp shells, beans, beef, tomatoes, cheese, sauce', price: null, tags: null, photoUrl: null },
+          { name: 'Nachos BellGrande', description: 'Chips, beef, beans, nacho cheese, tomatoes, sour cream', price: null, tags: null, photoUrl: null },
+          { name: 'Cinnamon Twists', description: 'Cinnamon-and-sugar twists', price: null, tags: ['vegetarian'], photoUrl: null },
+        ],
+      },
+    ],
+  },
+
+  'chipotle': {
+    sections: [
+      {
+        title: 'Build Your Own',
+        items: [
+          { name: 'Burrito', description: 'Flour tortilla, your choice of rice, beans, protein, salsa, toppings', price: null, tags: null, photoUrl: null },
+          { name: 'Burrito Bowl', description: 'Same fillings, served in a bowl', price: null, tags: null, photoUrl: null },
+          { name: 'Tacos (3)', description: 'Soft flour or crispy corn shells with your choice of fillings', price: null, tags: null, photoUrl: null },
+          { name: 'Quesadilla', description: 'Cheese plus your choice of protein, salsa, and a side', price: null, tags: null, photoUrl: null },
+          { name: 'Salad', description: 'Romaine lettuce, fajita veggies, fillings, vinaigrette', price: null, tags: null, photoUrl: null },
+          { name: 'Kids’ Build Your Own', description: 'Two crispy corn tacos or a quesadilla with a side and drink', price: null, tags: null, photoUrl: null },
+        ],
+      },
+      {
+        title: 'Proteins',
+        items: [
+          { name: 'Chicken', description: 'Marinated and grilled', price: null, tags: null, photoUrl: null },
+          { name: 'Steak', description: 'Hand-seasoned, grilled to order', price: null, tags: null, photoUrl: null },
+          { name: 'Barbacoa', description: 'Slow-braised, spicy shredded beef', price: null, tags: ['spicy'], photoUrl: null },
+          { name: 'Carnitas', description: 'Slow-cooked shredded pork', price: null, tags: null, photoUrl: null },
+          { name: 'Chicken al Pastor', description: 'Citrus-marinated grilled chicken with morita peppers and pineapple', price: null, tags: null, photoUrl: null },
+          { name: 'Sofritas', description: 'Spicy braised tofu', price: null, tags: ['vegan', 'spicy'], photoUrl: null },
+          { name: 'Veggie', description: 'Fajita vegetables and guacamole', price: null, tags: ['vegan'], photoUrl: null },
+        ],
+      },
+      {
+        title: 'Sides & Extras',
+        items: [
+          { name: 'Chips & Guacamole', description: 'Fresh-made guacamole with crispy chips', price: null, tags: ['vegan'], photoUrl: null },
+          { name: 'Chips & Queso Blanco', description: 'White cheese dip with chips', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Chips & Tomatillo-Red Chili Salsa', description: 'Smoky red salsa with chips', price: null, tags: ['vegan', 'spicy'], photoUrl: null },
+          { name: 'Side of Guacamole', description: 'Fresh-made guacamole', price: null, tags: ['vegan'], photoUrl: null },
+        ],
+      },
+    ],
+  },
+
+  'subway': {
+    sections: [
+      {
+        title: 'Signature Series',
+        items: [
+          { name: 'The Boss', description: 'Pepperoni, meatballs, marinara, mozzarella, Parmesan on Artisan Italian', price: null, tags: null, photoUrl: null },
+          { name: 'The Philly', description: 'Steak, cheese, green peppers, red onions on Artisan Italian', price: null, tags: null, photoUrl: null },
+          { name: 'The Monster', description: 'Roast beef, turkey, ham, bacon, pepper jack', price: null, tags: null, photoUrl: null },
+          { name: 'The Hotshot Italiano', description: 'Pepperoni, salami, capicola, provolone, banana peppers', price: null, tags: ['spicy'], photoUrl: null },
+        ],
+      },
+      {
+        title: 'Classics',
+        items: [
+          { name: 'Italian B.M.T.', description: 'Genoa salami, spicy pepperoni, Black Forest ham', price: null, tags: null, photoUrl: null },
+          { name: 'Spicy Italian', description: 'Pepperoni and Genoa salami', price: null, tags: ['spicy'], photoUrl: null },
+          { name: 'Turkey Breast', description: 'Sliced turkey breast', price: null, tags: null, photoUrl: null },
+          { name: 'Tuna', description: 'Tuna salad with mayo', price: null, tags: null, photoUrl: null },
+          { name: 'Meatball Marinara', description: 'Italian-style meatballs in marinara with Parmesan', price: null, tags: null, photoUrl: null },
+          { name: 'Steak & Cheese', description: 'Steak with American cheese', price: null, tags: null, photoUrl: null },
+          { name: 'Veggie Delite', description: 'Lettuce, tomatoes, cucumbers, green peppers, onions', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Cold Cut Combo', description: 'Turkey-based ham, salami, and bologna', price: null, tags: null, photoUrl: null },
+        ],
+      },
+    ],
+  },
+
+  'wendys': {
+    sections: [
+      {
+        title: 'Burgers',
+        items: [
+          { name: 'Dave’s Single', description: 'Quarter-pound fresh beef, cheese, lettuce, tomato, pickle, onion, ketchup, mayo', price: null, tags: null, photoUrl: null },
+          { name: 'Dave’s Double', description: 'Two quarter-pound patties with full Dave’s fixings', price: null, tags: null, photoUrl: null },
+          { name: 'Baconator', description: 'Two patties, six strips of bacon, American cheese, ketchup, mayo', price: null, tags: null, photoUrl: null },
+          { name: 'Son of Baconator', description: 'Junior Baconator — two patties, bacon, cheese', price: null, tags: null, photoUrl: null },
+          { name: 'Jr. Cheeseburger', description: 'Quarter-pound junior cheeseburger with ketchup, mustard, pickle', price: null, tags: null, photoUrl: null },
+        ],
+      },
+      {
+        title: 'Chicken',
+        items: [
+          { name: 'Spicy Chicken Sandwich', description: 'Hand-spiced filet, lettuce, tomato, mayo', price: null, tags: ['spicy'], photoUrl: null },
+          { name: 'Classic Chicken Sandwich', description: 'Crispy filet, lettuce, tomato, mayo on a toasted bun', price: null, tags: null, photoUrl: null },
+          { name: 'Grilled Chicken Sandwich', description: 'Grilled filet, lettuce, tomato, herb mayo on a toasted bun', price: null, tags: null, photoUrl: null },
+          { name: 'Asiago Ranch Chicken Club', description: 'Crispy or grilled, asiago, bacon, ranch', price: null, tags: null, photoUrl: null },
+          { name: 'Crispy Chicken Nuggets', description: 'White-meat chicken nuggets', price: null, tags: null, photoUrl: null },
+          { name: 'Spicy Chicken Nuggets', description: 'Spice-marinated nuggets', price: null, tags: ['spicy'], photoUrl: null },
+        ],
+      },
+      {
+        title: 'Sides & Frosty',
+        items: [
+          { name: 'Natural-Cut Fries', description: 'Sea-salted fries cut from whole potatoes', price: null, tags: null, photoUrl: null },
+          { name: 'Baconator Fries', description: 'Fries topped with bacon and cheese sauce', price: null, tags: null, photoUrl: null },
+          { name: 'Chili (small)', description: 'Hearty beef-and-bean chili', price: null, tags: null, photoUrl: null },
+          { name: 'Frosty (Chocolate)', description: 'The classic thick, cold treat', price: null, tags: null, photoUrl: null },
+          { name: 'Frosty (Vanilla)', description: 'Vanilla soft-serve–style Frosty', price: null, tags: null, photoUrl: null },
+        ],
+      },
+    ],
+  },
+
+  'burger-king': {
+    sections: [
+      {
+        title: 'Whoppers & Burgers',
+        items: [
+          { name: 'Whopper', description: 'Flame-grilled beef patty, tomato, lettuce, mayo, pickles, onion on a sesame seed bun', price: null, tags: null, photoUrl: null },
+          { name: 'Double Whopper', description: 'Two flame-grilled beef patties, full Whopper fixings', price: null, tags: null, photoUrl: null },
+          { name: 'Whopper Jr.', description: 'Smaller flame-grilled Whopper with full fixings', price: null, tags: null, photoUrl: null },
+          { name: 'Bacon King', description: 'Two flame-grilled patties, bacon, American cheese, ketchup, mayo', price: null, tags: null, photoUrl: null },
+          { name: 'Big King', description: 'Two patties, special sauce, lettuce, cheese, onions, pickles on a sesame bun', price: null, tags: null, photoUrl: null },
+          { name: 'Impossible Whopper', description: 'Plant-based patty, full Whopper fixings', price: null, tags: ['vegetarian'], photoUrl: null },
+        ],
+      },
+      {
+        title: 'Chicken',
+        items: [
+          { name: 'Original Chicken Sandwich', description: 'Long crispy chicken filet, lettuce, mayo on a sesame seed bun', price: null, tags: null, photoUrl: null },
+          { name: 'Ch’King Sandwich', description: 'Crispy hand-breaded chicken filet, pickles, savory sauce', price: null, tags: null, photoUrl: null },
+          { name: 'Spicy Ch’King Sandwich', description: 'Hot, spicy hand-breaded chicken filet', price: null, tags: ['spicy'], photoUrl: null },
+          { name: 'Chicken Nuggets (8 pc)', description: 'White-meat chicken nuggets', price: null, tags: null, photoUrl: null },
+          { name: 'Chicken Fries', description: 'Fry-shaped chicken tenders', price: null, tags: null, photoUrl: null },
+        ],
+      },
+      {
+        title: 'Sides & Desserts',
+        items: [
+          { name: 'French Fries', description: 'Classic salty fries', price: null, tags: null, photoUrl: null },
+          { name: 'Onion Rings', description: 'Crispy battered onion rings', price: null, tags: null, photoUrl: null },
+          { name: 'Mozzarella Sticks', description: 'Breaded fried mozzarella with marinara', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Chocolate Shake', description: 'Hand-spun chocolate shake', price: null, tags: null, photoUrl: null },
+        ],
+      },
+    ],
+  },
+
+  'panera': {
+    sections: [
+      {
+        title: 'Sandwiches',
+        items: [
+          { name: 'Bacon Turkey Bravo', description: 'Smoked turkey, bacon, gouda, tomato, lettuce, signature sauce', price: null, tags: null, photoUrl: null },
+          { name: 'Smokehouse BBQ Chicken', description: 'Chicken raised without antibiotics, smoked Gouda, frizzled onions, BBQ', price: null, tags: null, photoUrl: null },
+          { name: 'Chipotle Chicken Avocado Melt', description: 'Chicken, smoked Gouda, applewood-smoked bacon, avocado, chipotle mayo', price: null, tags: null, photoUrl: null },
+          { name: 'Mediterranean Veggie', description: 'Feta, cucumbers, tomatoes, peppers, onions, hummus, cilantro', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Toasted Italiano', description: 'Salami, smoked ham, capicola, mozzarella, banana peppers', price: null, tags: null, photoUrl: null },
+        ],
+      },
+      {
+        title: 'Soups',
+        items: [
+          { name: 'Broccoli Cheddar Soup', description: 'The Panera classic', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Bistro French Onion', description: 'Caramelized onions, beef broth, gruyère crouton', price: null, tags: null, photoUrl: null },
+          { name: 'Creamy Tomato Soup', description: 'Slow-simmered tomato cream with basil and herbs', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Chicken Noodle Soup', description: 'Egg noodles, carrots, celery, chicken in savory broth', price: null, tags: null, photoUrl: null },
+          { name: 'Ten Vegetable Soup', description: 'Ten garden vegetables in a savory tomato broth', price: null, tags: ['vegan'], photoUrl: null },
+        ],
+      },
+      {
+        title: 'Salads & Bowls',
+        items: [
+          { name: 'Caesar Salad with Chicken', description: 'Romaine, chicken, Parmesan, Caesar dressing, croutons', price: null, tags: null, photoUrl: null },
+          { name: 'Greek Salad', description: 'Romaine, feta, kalamata olives, peppers, onions, tomatoes', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Fuji Apple Salad with Chicken', description: 'Apples, chicken, pecans, gorgonzola, white balsamic apple', price: null, tags: null, photoUrl: null },
+          { name: 'Baja Bowl with Chicken', description: 'Chicken, rice, beans, corn, salsa, avocado', price: null, tags: null, photoUrl: null },
+          { name: 'Mediterranean Bowl with Chicken', description: 'Chicken, ancient grains, lemon tahini, tomatoes, cucumbers', price: null, tags: null, photoUrl: null },
+        ],
+      },
+    ],
+  },
+
+  'starbucks': {
+    sections: [
+      {
+        title: 'Espresso',
+        items: [
+          { name: 'Caffè Latte', description: 'Espresso with steamed milk and a light layer of foam', price: null, tags: null, photoUrl: null },
+          { name: 'Cappuccino', description: 'Espresso topped with deep foam', price: null, tags: null, photoUrl: null },
+          { name: 'Caffè Americano', description: 'Espresso shots topped with hot water', price: null, tags: null, photoUrl: null },
+          { name: 'Caffè Mocha', description: 'Espresso, mocha sauce, steamed milk, whipped cream', price: null, tags: null, photoUrl: null },
+          { name: 'Caramel Macchiato', description: 'Steamed milk, vanilla syrup, espresso, caramel drizzle', price: null, tags: null, photoUrl: null },
+          { name: 'Flat White', description: 'Ristretto shots with steamed whole milk', price: null, tags: null, photoUrl: null },
+          { name: 'Pumpkin Spice Latte', description: 'Espresso, pumpkin spice sauce, steamed milk (seasonal)', price: null, tags: null, photoUrl: null },
+        ],
+      },
+      {
+        title: 'Brewed & Cold Coffee',
+        items: [
+          { name: 'Pike Place Roast', description: 'Smooth, balanced drip coffee', price: null, tags: null, photoUrl: null },
+          { name: 'Cold Brew', description: 'Slow-steeped, naturally sweet cold brew', price: null, tags: null, photoUrl: null },
+          { name: 'Nitro Cold Brew', description: 'Cold brew infused with nitrogen for cascading micro-foam', price: null, tags: null, photoUrl: null },
+          { name: 'Iced Caffè Latte', description: 'Espresso, cold milk, ice', price: null, tags: null, photoUrl: null },
+        ],
+      },
+      {
+        title: 'Frappuccino & Refreshers',
+        items: [
+          { name: 'Caramel Frappuccino', description: 'Blended coffee, caramel syrup, milk, whipped cream', price: null, tags: null, photoUrl: null },
+          { name: 'Mocha Frappuccino', description: 'Blended coffee with mocha sauce and whipped cream', price: null, tags: null, photoUrl: null },
+          { name: 'Strawberry Açaí Refresher', description: 'Strawberry açaí with real strawberry pieces', price: null, tags: null, photoUrl: null },
+          { name: 'Mango Dragonfruit Refresher', description: 'Mango with dragonfruit pieces', price: null, tags: null, photoUrl: null },
+        ],
+      },
+      {
+        title: 'Food',
+        items: [
+          { name: 'Bacon, Gouda & Egg Sandwich', description: 'Applewood-smoked bacon, gouda, egg on an artisan roll', price: null, tags: null, photoUrl: null },
+          { name: 'Spinach, Feta & Egg White Wrap', description: 'Egg whites, spinach, feta in a whole-wheat wrap', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Banana Walnut & Pecan Loaf', description: 'Banana bread with walnuts and pecans', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Chocolate Croissant', description: 'Flaky butter croissant filled with chocolate', price: null, tags: ['vegetarian'], photoUrl: null },
+        ],
+      },
+    ],
+  },
+
+  'dunkin': {
+    sections: [
+      {
+        title: 'Coffee & Espresso',
+        items: [
+          { name: 'Original Blend Hot Coffee', description: 'The Dunkin’ staple — medium roast', price: null, tags: null, photoUrl: null },
+          { name: 'Iced Coffee', description: 'Cold-brewed and slow-poured over ice', price: null, tags: null, photoUrl: null },
+          { name: 'Cold Brew', description: 'Smooth, full-bodied cold brew', price: null, tags: null, photoUrl: null },
+          { name: 'Latte', description: 'Espresso with steamed milk', price: null, tags: null, photoUrl: null },
+          { name: 'Caramel Macchiato', description: 'Espresso, milk, caramel swirl', price: null, tags: null, photoUrl: null },
+          { name: 'Mocha Iced Latte', description: 'Iced espresso with chocolate syrup and milk', price: null, tags: null, photoUrl: null },
+        ],
+      },
+      {
+        title: 'Donuts',
+        items: [
+          { name: 'Glazed Donut', description: 'Classic yeast donut, glazed', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Boston Kreme Donut', description: 'Cream-filled with chocolate icing', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Chocolate Frosted Donut', description: 'Cake donut, chocolate icing', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Jelly Donut', description: 'Yeast donut filled with raspberry jelly', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Old Fashioned Donut', description: 'Cake donut, lightly glazed', price: null, tags: ['vegetarian'], photoUrl: null },
+        ],
+      },
+      {
+        title: 'Breakfast Food',
+        items: [
+          { name: 'Bacon, Egg & Cheese on a Croissant', description: 'Smoky bacon, fluffy egg, cheese on a buttery croissant', price: null, tags: null, photoUrl: null },
+          { name: 'Sausage, Egg & Cheese English Muffin', description: 'Pork sausage, egg, cheese', price: null, tags: null, photoUrl: null },
+          { name: 'Wake-Up Wrap (Bacon)', description: 'Bacon, egg, cheese in a flour tortilla', price: null, tags: null, photoUrl: null },
+          { name: 'Hash Browns', description: 'Bite-sized crispy potato pieces', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Avocado Toast', description: 'Sourdough with smashed avocado and sea salt', price: null, tags: ['vegetarian'], photoUrl: null },
+        ],
+      },
+    ],
+  },
+
+  'popeyes': {
+    sections: [
+      {
+        title: 'Signature Chicken',
+        items: [
+          { name: 'Classic Chicken Sandwich', description: 'Buttermilk-marinated chicken filet, pickles, mayo on a buttered brioche bun', price: null, tags: null, photoUrl: null },
+          { name: 'Spicy Chicken Sandwich', description: 'Spicy chicken filet, pickles, spicy mayo on a buttered brioche bun', price: null, tags: ['spicy'], photoUrl: null },
+          { name: 'Handcrafted Tenders', description: 'Marinated, hand-battered chicken tenders', price: null, tags: null, photoUrl: null },
+          { name: 'Bonafide Chicken (Mild or Spicy)', description: 'Bone-in chicken pieces — choose mild or spicy', price: null, tags: null, photoUrl: null },
+          { name: 'Ghost Pepper Wings', description: 'Wings tossed in ghost pepper sauce', price: null, tags: ['spicy'], photoUrl: null },
+        ],
+      },
+      {
+        title: 'Sides',
+        items: [
+          { name: 'Cajun Fries', description: 'Crispy fries with Cajun seasoning', price: null, tags: null, photoUrl: null },
+          { name: 'Red Beans & Rice', description: 'Slow-cooked Cajun red beans over rice', price: null, tags: null, photoUrl: null },
+          { name: 'Mashed Potatoes with Cajun Gravy', description: 'Creamy mashed potatoes with savory Cajun gravy', price: null, tags: null, photoUrl: null },
+          { name: 'Mac & Cheese', description: 'Three-cheese baked mac and cheese', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Coleslaw', description: 'Crisp, creamy coleslaw', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Biscuit', description: 'Buttery flaky biscuit', price: null, tags: ['vegetarian'], photoUrl: null },
+        ],
+      },
+    ],
+  },
+
+  'five-guys': {
+    sections: [
+      {
+        title: 'Burgers',
+        items: [
+          { name: 'Hamburger', description: 'Fresh ground beef, double patty, hand-formed, on a sesame seed bun', price: null, tags: null, photoUrl: null },
+          { name: 'Cheeseburger', description: 'Double patty with American cheese', price: null, tags: null, photoUrl: null },
+          { name: 'Bacon Cheeseburger', description: 'Double patty, American cheese, applewood-smoked bacon', price: null, tags: null, photoUrl: null },
+          { name: 'Little Hamburger', description: 'Single fresh beef patty', price: null, tags: null, photoUrl: null },
+          { name: 'Little Cheeseburger', description: 'Single patty with American cheese', price: null, tags: null, photoUrl: null },
+        ],
+      },
+      {
+        title: 'Sandwiches & Hot Dogs',
+        items: [
+          { name: 'BLT', description: 'Bacon, lettuce, tomato, mayo', price: null, tags: null, photoUrl: null },
+          { name: 'Veggie Sandwich', description: 'Grilled onions, mushrooms, peppers, lettuce, tomato, cheese', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Hot Dog', description: 'All-beef kosher hot dog, butterflied and grilled', price: null, tags: null, photoUrl: null },
+          { name: 'Cheese Dog', description: 'Hot dog with American cheese', price: null, tags: null, photoUrl: null },
+          { name: 'Bacon Cheese Dog', description: 'Hot dog with bacon and cheese', price: null, tags: null, photoUrl: null },
+        ],
+      },
+      {
+        title: 'Fries & Shakes',
+        items: [
+          { name: 'Five Guys Fries (Regular)', description: 'Fresh-cut, double-fried in peanut oil', price: null, tags: null, photoUrl: null },
+          { name: 'Cajun Fries (Regular)', description: 'Fries dusted with Cajun seasoning', price: null, tags: null, photoUrl: null },
+          { name: 'Hand-Spun Milkshake', description: 'Choose mix-ins: Oreo, banana, peanut butter, bacon, more', price: null, tags: null, photoUrl: null },
+        ],
+      },
+    ],
+  },
+
+  'shake-shack': {
+    sections: [
+      {
+        title: 'Burgers',
+        items: [
+          { name: 'ShackBurger', description: 'Cheeseburger topped with lettuce, tomato, ShackSauce', price: null, tags: null, photoUrl: null },
+          { name: 'SmokeShack', description: 'Cheeseburger, applewood-smoked bacon, chopped cherry peppers, ShackSauce', price: null, tags: null, photoUrl: null },
+          { name: 'Shack Stack', description: 'Cheeseburger plus a ‘Shroom Burger (crispy fried Portobello with cheese)', price: null, tags: null, photoUrl: null },
+          { name: 'Hamburger', description: 'Single patty, lettuce, tomato, pickles', price: null, tags: null, photoUrl: null },
+          { name: '‘Shroom Burger', description: 'Crispy fried Portobello mushroom filled with melted cheese', price: null, tags: ['vegetarian'], photoUrl: null },
+        ],
+      },
+      {
+        title: 'Chicken & Dogs',
+        items: [
+          { name: 'Chick’n Shack', description: 'Crispy chicken breast, lettuce, pickles, buttermilk herb mayo', price: null, tags: null, photoUrl: null },
+          { name: 'Hot Chick’n', description: 'Spicy crispy chicken with pickles and slaw', price: null, tags: ['spicy'], photoUrl: null },
+          { name: 'Shack-cago Dog', description: 'Vienna all-beef dog, relish, onion, cucumber, pickle, tomato, sport peppers, mustard, celery salt', price: null, tags: null, photoUrl: null },
+        ],
+      },
+      {
+        title: 'Fries, Shakes, Concretes',
+        items: [
+          { name: 'Crinkle Cut Fries', description: 'Crispy crinkle-cut fries', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Cheese Fries', description: 'Crinkle fries topped with melted cheese sauce', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Vanilla Shake', description: 'Hand-spun frozen custard shake', price: null, tags: null, photoUrl: null },
+          { name: 'Chocolate Shake', description: 'Hand-spun frozen custard shake', price: null, tags: null, photoUrl: null },
+          { name: 'Black & White Shake', description: 'Vanilla custard with fudge sauce', price: null, tags: null, photoUrl: null },
+        ],
+      },
+    ],
+  },
+
+  // Add more chains here as needed.
 };
 
 const CHAIN_PATTERNS = [
   { re: /chick[\s-]?fil[\s-]?a/i, key: 'chick-fil-a' },
   { re: /jimmy\s*john'?s?/i, key: 'jimmy-johns' },
+  { re: /mc\s?donald'?s?/i, key: 'mcdonalds' },
+  { re: /taco\s?bell/i, key: 'taco-bell' },
+  { re: /chipotle/i, key: 'chipotle' },
+  // \b prevents matching "Underground Subway Stop" / transit-named places
+  { re: /\bsubway\b/i, key: 'subway' },
+  { re: /wendy'?s/i, key: 'wendys' },
+  { re: /burger\s?king/i, key: 'burger-king' },
+  { re: /panera(\s+bread)?/i, key: 'panera' },
+  { re: /starbucks/i, key: 'starbucks' },
+  { re: /dunkin'?(\s+donuts?)?/i, key: 'dunkin' },
+  { re: /popeyes/i, key: 'popeyes' },
+  { re: /five\s+guys/i, key: 'five-guys' },
+  { re: /shake\s*shack/i, key: 'shake-shack' },
 ];
 
 function getChainMenu(restaurantName) {
