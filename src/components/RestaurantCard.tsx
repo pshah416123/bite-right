@@ -21,6 +21,7 @@ import {
   type FriendVisitAtRestaurant,
 } from '../hooks/useFriendVisitsAtRestaurant';
 import { useCompare } from '../context/CompareContext';
+import { useSavedRestaurants } from '../context/SavedRestaurantsContext';
 import { RestaurantImage } from './RestaurantImage';
 
 export interface DiscoverItem {
@@ -121,6 +122,43 @@ export function RestaurantCard({ item, saved, userCoords }: Props) {
   const [friendsModalOpen, setFriendsModalOpen] = useState(false);
   const { isSelected: isCompareSelected, toggle: toggleCompare, compareMode } = useCompare();
   const inCompare = isCompareSelected(restaurant.id);
+  // Save toggle replaces the per-card compare button (compare still works
+  // via the global compare mode + bulk select flow elsewhere). The save
+  // key is the placeId when we have one, falling back to restaurant.id so
+  // ChIJ-only Discover hits still save reliably.
+  const { isSaved, saveRestaurant, removeSaved } = useSavedRestaurants();
+  const saveKey = restaurant.placeId ?? restaurant.id;
+  const cardIsSaved = saved ?? isSaved(saveKey);
+  const [savingThis, setSavingThis] = useState(false);
+
+  const handleToggleSave = async () => {
+    if (savingThis) return;
+    setSavingThis(true);
+    try {
+      if (cardIsSaved) {
+        await removeSaved(saveKey);
+      } else {
+        await saveRestaurant(
+          {
+            place_id: saveKey,
+            name: restaurant.name,
+            photo: restaurant.displayImageUrl ?? restaurant.imageUrl ?? restaurant.previewPhotoUrl ?? undefined,
+            cuisine: cuisine || undefined,
+            neighborhood: restaurant.neighborhood || undefined,
+            address: restaurant.address ?? undefined,
+            lat: typeof restaurant.lat === 'number' ? restaurant.lat : undefined,
+            lng: typeof restaurant.lng === 'number' ? restaurant.lng : undefined,
+            cuisines: restaurant.cuisines,
+            price_level: restaurant.priceLevel,
+          },
+          'manual',
+        );
+      }
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    } finally {
+      setSavingThis(false);
+    }
+  };
 
   const cuisine = primaryCuisineLabel(restaurant);
 
@@ -302,15 +340,17 @@ export function RestaurantCard({ item, saved, userCoords }: Props) {
                 </View>
               )}
               <TouchableOpacity
-                style={[styles.compareBtn, inCompare && styles.compareBtnActive]}
-                onPress={addToCompare}
+                style={[styles.compareBtn, cardIsSaved && styles.compareBtnActive]}
+                onPress={handleToggleSave}
+                disabled={savingThis}
                 hitSlop={6}
                 activeOpacity={0.7}
+                accessibilityLabel={cardIsSaved ? 'Remove from saved' : 'Save restaurant'}
               >
                 <Ionicons
-                  name={inCompare ? 'git-compare' : 'git-compare-outline'}
+                  name={cardIsSaved ? 'bookmark' : 'bookmark-outline'}
                   size={15}
-                  color={inCompare ? colors.accent : colors.textFaint}
+                  color={cardIsSaved ? colors.accent : colors.textFaint}
                 />
               </TouchableOpacity>
             </View>
