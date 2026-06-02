@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AccessibilityRole,
   ActionSheetIOS,
@@ -34,8 +34,9 @@ import {
   updateSessionSettings,
   getTonightPool,
   postTonightSwipe,
+  getSessionState,
 } from '~/src/api/tonight';
-import type { PoolItem } from '~/src/api/tonight';
+import type { ParticipantProgress, PoolItem } from '~/src/api/tonight';
 import type { TonightCardModel } from '~/src/components/TonightCard';
 import { apiClient } from '~/src/api/client';
 
@@ -134,6 +135,41 @@ export default function TonightScreen() {
   const [createError, setCreateError] = useState<string | null>(null);
   const [inviteLink, setInviteLink] = useState<string | null>(null);
   const [inviteOpen, setInviteOpen] = useState(false);
+
+  // ── Live group progress ──────────────────────────────────────────────────
+  // Poll the session state every 5s while the user is on the Tonight tab
+  // AND has an active group session. Drives the progress strip + "everyone
+  // done" banner. Tab navigation is unaffected — polling pauses when the
+  // tab loses focus, so this is cheap.
+  const [groupParticipants, setGroupParticipants] = useState<ParticipantProgress[]>([]);
+  const [groupDeckSize, setGroupDeckSize] = useState<number>(15);
+  useEffect(() => {
+    if (!session?.code) {
+      setGroupParticipants([]);
+      return;
+    }
+    let cancelled = false;
+    const poll = () => {
+      if (!session?.code) return;
+      getSessionState(session.code)
+        .then((state) => {
+          if (cancelled) return;
+          setGroupParticipants(state.participants);
+        })
+        .catch(() => { /* server cleanup or transient error — leave last-known state */ });
+    };
+    poll();
+    const id = setInterval(poll, 5000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [session?.code]);
+  const groupAllDone = useMemo(
+    () => groupParticipants.length > 0 && groupParticipants.every((p) => p.doneSwiping),
+    [groupParticipants],
+  );
+  const groupDoneCount = useMemo(
+    () => groupParticipants.filter((p) => p.doneSwiping).length,
+    [groupParticipants],
+  );
 
   // ── Toast (lightweight swipe feedback) ───────────────────────────────────
   const [toastText, setToastText] = useState<string | null>(null);
@@ -686,6 +722,77 @@ export default function TonightScreen() {
         </TouchableOpacity>
       ) : null}
 
+      {/* Live group progress strip — visible whenever a session is active.
+          Two visual modes: an "everyone done" call-to-action when all
+          participants finished, and an in-progress chip row otherwise.
+          Tapping always takes the user where they want to go (matches if
+          done, swipe deck if mid-session). */}
+      {session ? (
+        groupAllDone ? (
+          <TouchableOpacity
+            style={s.groupDoneBanner}
+            onPress={() => router.navigate('/(tabs)/tonight/matches')}
+            activeOpacity={0.88}
+            accessibilityLabel="Everyone is done swiping — see matches"
+            accessibilityRole={"button" as AccessibilityRole}
+          >
+            <Text style={s.groupDoneEmoji}>{'\u{1F389}'}</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={s.groupDoneTitle}>Everyone's done swiping!</Text>
+              <Text style={s.groupDoneSub}>Tap to see your group's matches</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color="#fff" />
+          </TouchableOpacity>
+        ) : (
+          <View style={s.groupProgressStrip}>
+            <View style={s.groupProgressHeaderRow}>
+              <View style={s.groupProgressTitleWrap}>
+                <Ionicons name="people" size={14} color={TN.accent} />
+                <Text style={s.groupProgressTitle}>
+                  {groupDoneCount} of {groupParticipants.length || 1} done
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => router.navigate('/(tabs)/tonight/matches')}
+                activeOpacity={0.7}
+                hitSlop={6}
+              >
+                <Text style={s.groupProgressLink}>Matches so far</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={s.groupProgressChipsRow}
+            >
+              {groupParticipants.map((p) => (
+                <View
+                  key={p.participantId}
+                  style={[s.groupProgressChip, p.doneSwiping && s.groupProgressChipDone]}
+                >
+                  <View style={[s.groupProgressDot, p.doneSwiping && s.groupProgressDotDone]} />
+                  <Text style={[s.groupProgressChipText, p.doneSwiping && s.groupProgressChipTextDone]} numberOfLines={1}>
+                    {p.displayName}
+                  </Text>
+                  <Text style={s.groupProgressChipCount}>
+                    {p.doneSwiping ? '✓' : `${p.swipeCount}/${groupDeckSize}`}
+                  </Text>
+                </View>
+              ))}
+            </ScrollView>
+            <TouchableOpacity
+              style={s.groupProgressCta}
+              onPress={() => router.navigate('/(tabs)/tonight/swipe')}
+              activeOpacity={0.85}
+            >
+              <Text style={s.groupProgressCtaText}>
+                {groupDoneCount > 0 ? 'Keep swiping' : 'Start swiping'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )
+      ) : null}
+
       {/* ── Deck ────────────────────────────────────────────────────── */}
       <View style={s.body}>
         {loading ? (
@@ -1015,6 +1122,124 @@ const s = StyleSheet.create({
     fontWeight: '500',
     color: 'rgba(255,255,255,0.85)',
     letterSpacing: -0.1,
+  },
+  groupProgressStrip: {
+    marginHorizontal: 16,
+    marginTop: 4,
+    marginBottom: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 16,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    gap: 10,
+  },
+  groupProgressHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  groupProgressTitleWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  groupProgressTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: colors.text,
+    letterSpacing: -0.2,
+  },
+  groupProgressLink: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: TN.accent,
+  },
+  groupProgressChipsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingVertical: 2,
+  },
+  groupProgressChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: colors.surfaceSoft,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  groupProgressChipDone: {
+    backgroundColor: 'rgba(34,197,94,0.10)',
+    borderColor: 'rgba(34,197,94,0.45)',
+  },
+  groupProgressDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: colors.border,
+  },
+  groupProgressDotDone: {
+    backgroundColor: '#22c55e',
+  },
+  groupProgressChipText: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: colors.text,
+    maxWidth: 90,
+  },
+  groupProgressChipTextDone: {
+    color: '#15803d',
+  },
+  groupProgressChipCount: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.textMuted,
+  },
+  groupProgressCta: {
+    backgroundColor: TN.accent,
+    borderRadius: 999,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  groupProgressCtaText: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#fff',
+    letterSpacing: -0.2,
+  },
+  groupDoneBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginHorizontal: 16,
+    marginTop: 4,
+    marginBottom: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    borderRadius: 16,
+    backgroundColor: colors.accent,
+    shadowColor: 'rgba(0,0,0,0.12)',
+    shadowOpacity: 1,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
+  },
+  groupDoneEmoji: { fontSize: 28 },
+  groupDoneTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#fff',
+    letterSpacing: -0.2,
+  },
+  groupDoneSub: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: 'rgba(255,255,255,0.9)',
+    marginTop: 1,
   },
   headerRight: {
     flexDirection: 'row',

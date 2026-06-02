@@ -5398,6 +5398,14 @@ app.get('/api/tonight/sessions/:code/pool', async (req, res) => {
     }
   }
 
+  // Hard-cap the deck so the swipe experience has a natural endpoint.
+  // Endless prefetch made the group feel like it could swipe forever, which
+  // hurt overlap and felt exhausting. 15 cards is enough variety + finite.
+  // Cap applies to the FULL pool (combined), not per-page — so once a
+  // participant has seen 15 unique restaurants, the deck genuinely ends.
+  const MAX_TONIGHT_DECK = 15;
+  combined = combined.slice(0, MAX_TONIGHT_DECK);
+
   const start = page * pageSize;
   const slice = combined.slice(start, start + pageSize);
   const tonightCtx = { savedRestaurants, tonightSwipes, logs, friends, groupSessions, userDisplayNames };
@@ -5483,6 +5491,7 @@ app.get('/api/tonight/sessions/:code/pool', async (req, res) => {
   res.json({
     pool,
     total: combined.length,
+    deckSize: MAX_TONIGHT_DECK,
     page,
     pageSize,
     filtersRelaxed,

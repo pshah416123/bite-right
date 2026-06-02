@@ -107,6 +107,10 @@ export interface PoolItem {
 export interface GetPoolResponse {
   pool: PoolItem[];
   total: number;
+  /** Cap on the total number of cards the participant will see this session.
+   *  Mirrors the server-side MAX_TONIGHT_DECK constant; used by the swipe UI
+   *  to render "x of N" progress and to know when the deck has bottomed out. */
+  deckSize?: number;
   page: number;
   pageSize: number;
   /** True when the cuisine filter returned no results and we showed unfiltered picks instead. */

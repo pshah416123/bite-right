@@ -773,6 +773,13 @@ export default function TonightSetupScreen() {
 
         {/* Bottom CTA — host: Start, member: waiting */}
         <View style={[s.bottomBar, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+          {/* Tells users up front what the swipe burden is. 15 was chosen to
+              feel finite (vs the old endless deck) and to maximize overlap.
+              Anchored above the CTA so it's the last thing they read before
+              tapping Start. */}
+          <Text style={s.preStartHint}>
+            You{'’'}ll each see 15 spots to swipe through, then we{'’'}ll show your group{'’'}s matches.
+          </Text>
           {isHost || participantCount <= 1 ? (
             <TouchableOpacity
               style={s.startBtn}
@@ -1143,6 +1150,13 @@ const s = StyleSheet.create({
     justifyContent: 'center',
   },
   startBtnText: { fontSize: 16, fontWeight: '800', color: '#fff' },
+  preStartHint: {
+    fontSize: 13,
+    color: colors.textMuted,
+    textAlign: 'center',
+    marginBottom: 10,
+    lineHeight: 18,
+  },
   waitingBar: {
     flexDirection: 'row',
     alignItems: 'center',

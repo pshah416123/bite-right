@@ -62,6 +62,11 @@ export default function TonightSwipeScreen() {
   const [relaxedFrom, setRelaxedFrom] = useState<string | null>(null);
   const [relaxedTo, setRelaxedTo] = useState<string | null>(null);
   const [participants, setParticipants] = useState<ParticipantProgress[]>([]);
+  // Local swipe counter — drives the "X of 15" progress badge in the header
+  // and lets us decide when the "Done swiping" early-exit affordance is
+  // worth showing (after the user has actually swiped a few cards).
+  const [swipeCount, setSwipeCount] = useState(0);
+  const [deckSize, setDeckSize] = useState<number>(15);
   const nextPageRef = useRef(1);
   const prefetchingRef = useRef(false);
   const seenIdsRef = useRef(new Set<string>());
@@ -85,6 +90,9 @@ export default function TonightSwipeScreen() {
         setFiltersRelaxed(!!res.filtersRelaxed);
         setRelaxedFrom(res.relaxedFrom ?? res.relaxedCuisine ?? null);
         setRelaxedTo(res.relaxedTo ?? null);
+        if (typeof res.deckSize === 'number' && res.deckSize > 0) {
+          setDeckSize(res.deckSize);
+        }
       })
       .catch((err) => {
         if (cancelled) return;
@@ -146,6 +154,7 @@ export default function TonightSwipeScreen() {
       if (!session?.code || !session?.participantId) return;
       const restaurantId = card.restaurant.id;
       setCards((prev) => prev.filter((c) => c.restaurant.id !== restaurantId));
+      setSwipeCount((n) => n + 1);
       const userId = 'default';
       postTonightSwipe(session.code, {
         participantId: session.participantId,
@@ -226,16 +235,40 @@ export default function TonightSwipeScreen() {
   }
 
   if (cards.length === 0) {
+    // Friendly done state. Splits the message based on whether the rest of
+    // the group is still swiping — if so, tell them to check back; if not,
+    // jump straight to the matches CTA. Either way, the bottom tab bar is
+    // visible so the user can use the rest of the app freely while they wait.
+    const stillSwipingCount = participants.filter((p) => !p.doneSwiping).length - 1;
+    const everyoneDone = stillSwipingCount <= 0 && participants.length > 0;
     return (
       <SafeAreaView style={styles.safe}>
         <View style={styles.center}>
-          <Text style={styles.emptyTitle}>You're done swiping</Text>
-          <Text style={styles.helper}>Check matches to see where the group can eat.</Text>
+          <Text style={styles.emptyEmoji}>{'\u{1F389}'}</Text>
+          <Text style={styles.emptyTitle}>Nice — you{'’'}re done!</Text>
+          <Text style={styles.helper}>
+            {everyoneDone
+              ? 'Everyone has finished swiping. Time to see your matches.'
+              : stillSwipingCount === 1
+                ? '1 friend is still swiping. Feel free to use the rest of the app — we’ll have matches ready when they finish.'
+                : participants.length > 1
+                  ? `${stillSwipingCount} friends are still swiping. Feel free to use the rest of the app — we’ll have matches ready when they finish.`
+                  : 'Check back in a bit for your matches.'}
+          </Text>
           <TouchableOpacity
             style={styles.button}
             onPress={() => router.push('/(tabs)/tonight/matches')}
           >
-            <Text style={styles.buttonText}>See matches</Text>
+            <Text style={styles.buttonText}>
+              {everyoneDone ? 'See matches' : 'See matches so far'}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.secondaryButton}
+            onPress={() => router.navigate('/(tabs)/tonight')}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.secondaryButtonText}>Back to Tonight</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -250,16 +283,14 @@ export default function TonightSwipeScreen() {
           <TouchableOpacity onPress={() => router.navigate('/(tabs)/tonight')}>
             <Text style={styles.backText}>{'\u2190'} Back</Text>
           </TouchableOpacity>
-          <TouchableOpacity
-            onPress={async () => {
-              if (!session?.code || !session?.participantId) return;
-              await markDoneSwiping(session.code, session.participantId).catch(() => {});
-              router.navigate('/(tabs)/tonight/matches');
-            }}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.doneLink}>Done swiping</Text>
-          </TouchableOpacity>
+          {/* Progress counter \u2014 replaces the visually-loud "Done swiping"
+              text link. Deck is now capped at deckSize, so people don't
+              need a manual "I give up" button; the deck ends naturally. */}
+          <View style={styles.progressBadge}>
+            <Text style={styles.progressBadgeText}>
+              {Math.min(swipeCount + 1, deckSize)} of {deckSize}
+            </Text>
+          </View>
         </View>
         {/* Participant status */}
         {participants.length > 1 && (
@@ -342,6 +373,20 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     color: colors.accent,
+  },
+  progressBadge: {
+    backgroundColor: colors.surfaceSoft,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  progressBadgeText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.textMuted,
+    letterSpacing: 0.3,
   },
   participantRow: {
     flexDirection: 'row',
@@ -433,5 +478,19 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#fff',
+  },
+  emptyEmoji: {
+    fontSize: 48,
+    marginBottom: 8,
+  },
+  secondaryButton: {
+    marginTop: 10,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+  },
+  secondaryButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.textMuted,
   },
 });
