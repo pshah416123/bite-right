@@ -6095,6 +6095,9 @@ async function buildGooglePlaceDiscover(lat, lng, radiusMiles, userId, cuisineFi
       distance: r.distance,
       inRadius: r.inRadius,
       similarTasteSignal: r.similarTasteSignal,
+      // Forward Google's rating + review count so sortMode comparators work.
+      rating: r.rating ?? input?.rating ?? null,
+      reviewCount: r.reviewCount ?? input?.userRatingsTotal ?? null,
       // Preserve _scoring for section re-ranking
       _scoring: r._scoring,
       _baseScore: r._baseScore,
@@ -6302,18 +6305,44 @@ async function buildGooglePlaceDiscover(lat, lng, radiusMiles, userId, cuisineFi
   }
 
   // ── Sort mode: override ranking order ─────────────────────────────
+  // 'popular'  → most-reviewed first (Google's user_ratings_total).
+  // 'rating'   → highest Google star rating first; ties broken by review
+  //              count so a 5.0 with 12 reviews doesn't beat a 4.8 with 8000.
+  // 'nearest'  → distance ascending.
+  // 'new'      → low review count + decent rating. Google doesn't expose
+  //              opening dates, so we proxy "new / undiscovered": prefer
+  //              rating ≥ 4.0 with the fewest reviews. Pure-low-review
+  //              ordering picks up tucked-away dives too, but that's
+  //              arguably the right answer — both fit "new to you".
+  const sortModeApplied = meta?.sortMode && meta.sortMode !== 'best';
   if (meta?.sortMode === 'nearest') {
     recs.sort((a, b) => (a.distance ?? Infinity) - (b.distance ?? Infinity));
   } else if (meta?.sortMode === 'rating') {
-    recs.sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0));
+    recs.sort((a, b) => {
+      const dr = (b.rating ?? 0) - (a.rating ?? 0);
+      if (dr !== 0) return dr;
+      return (b.reviewCount ?? 0) - (a.reviewCount ?? 0);
+    });
+  } else if (meta?.sortMode === 'popular') {
+    recs.sort((a, b) => (b.reviewCount ?? 0) - (a.reviewCount ?? 0));
+  } else if (meta?.sortMode === 'new') {
+    const decent = recs.filter((r) => (r.rating ?? 0) >= 4.0);
+    const rest = recs.filter((r) => (r.rating ?? 0) < 4.0);
+    decent.sort((a, b) => (a.reviewCount ?? Infinity) - (b.reviewCount ?? Infinity));
+    rest.sort((a, b) => (a.reviewCount ?? Infinity) - (b.reviewCount ?? Infinity));
+    recs = [...decent, ...rest];
   }
 
   recs = recs.slice(0, 50);
 
   // Build differentiated sections using different weight profiles.
   // "Top Picks" leans on quality+curation, "Trending" leans on popularity.
-  const topRated = rankForSection(recs, 'top_rated');
-  const trending = rankForSection(recs, 'trending');
+  // When the user has chosen a sortMode, the section profile re-sorts
+  // would override that user choice (e.g. you pick "Nearest" but Top Picks
+  // still ranks by curation). Honor sortMode by feeding recs directly
+  // into the section in the order the sort comparator produced.
+  const topRated = sortModeApplied ? recs : rankForSection(recs, 'top_rated');
+  const trending = sortModeApplied ? recs : rankForSection(recs, 'trending');
 
   // Deduplicate: remove trending items that already appear in top picks
   const topPickIds = new Set(topRated.slice(0, 8).map(r => r.restaurantId));

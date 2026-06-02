@@ -841,7 +841,9 @@ export default function DiscoverScreen() {
               )}
             </View>
 
-            {/* Location suggestions */}
+            {/* Location suggestions. Tapping commits the location AND
+                closes the sheet — previously the sheet stayed open and
+                users couldn't tell if their selection had registered. */}
             {locationInput.trim().length > 0 ? (
               geoLoading ? (
                 <View style={styles.sheetLocationHint}>
@@ -853,7 +855,12 @@ export default function DiscoverScreen() {
                     <TouchableOpacity
                       key={sug.label}
                       style={styles.sheetLocationRow}
-                      onPress={() => { setCustomLocation({ label: sug.label, placeId: null, lat: sug.lat, lng: sug.lng }); setLocationInput(''); }}
+                      onPress={() => {
+                        setCustomLocation({ label: sug.label, placeId: null, lat: sug.lat, lng: sug.lng });
+                        setLocationInput('');
+                        setRadiusMiles(pendingRadius);
+                        closeLocationSheet();
+                      }}
                       activeOpacity={0.7}
                     >
                       <Ionicons name="location-outline" size={15} color={colors.textMuted} />
@@ -874,7 +881,12 @@ export default function DiscoverScreen() {
                     <TouchableOpacity
                       key={loc.label}
                       style={[styles.sheetLocationRow, active && styles.sheetLocationRowActive]}
-                      onPress={() => { setCustomLocation(loc); setLocationInput(''); }}
+                      onPress={() => {
+                        setCustomLocation(loc);
+                        setLocationInput('');
+                        setRadiusMiles(pendingRadius);
+                        closeLocationSheet();
+                      }}
                       activeOpacity={0.7}
                     >
                       <Ionicons name="location-outline" size={15} color={active ? colors.accent : colors.textMuted} />

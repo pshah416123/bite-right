@@ -256,6 +256,12 @@ function rankPlaces(places, userLocation, opts = {}) {
       similarTasteSignal: r.similarTasteSignal,
       tags: r.tags,
       curatedKnownFor: r.curatedKnownFor,
+      // Forward Google's rating + review count so the sortMode handler
+      // in /api/discover can sort by them (rating / popular / new).
+      // Without these, the sort comparators read undefined and the sort
+      // is a no-op.
+      rating: r._placeInput?.rating ?? null,
+      reviewCount: r._placeInput?.userRatingsTotal ?? null,
       _baseScore: r.baseScore,
       _finalScore: r.finalScore,
       _scoring: r._scoring,
