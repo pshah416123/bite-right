@@ -4426,6 +4426,71 @@ const CHAIN_MENUS = {
     ],
   },
 
+  'olive-garden': {
+    sections: [
+      {
+        title: 'Classic Entrées',
+        items: [
+          { name: 'Chicken Alfredo', description: 'Grilled chicken over fettuccine in our creamy, classic Alfredo sauce', price: null, tags: null, photoUrl: null },
+          { name: 'Fettuccine Alfredo', description: 'Fettuccine tossed in our signature Alfredo sauce', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Chicken Parmigiana', description: 'Lightly breaded chicken topped with marinara and melted Italian cheeses, with a side of spaghetti', price: null, tags: null, photoUrl: null },
+          { name: 'Lasagna Classico', description: 'Layers of pasta, beef, Italian sausage and a five-cheese marinara', price: null, tags: null, photoUrl: null },
+          { name: 'Five Cheese Ziti al Forno', description: 'Ziti baked in a five-cheese sauce with marinara and Italian cheese crumb topping', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Spaghetti & Meatballs', description: 'Hearty meatballs simmered in marinara over spaghetti', price: null, tags: null, photoUrl: null },
+          { name: 'Tour of Italy', description: 'Lasagna Classico, Chicken Parmigiana, and Fettuccine Alfredo on one plate', price: null, tags: null, photoUrl: null },
+          { name: 'Shrimp Scampi', description: 'Shrimp sautéed in a garlic sauce with asparagus and tomatoes, tossed with angel hair', price: null, tags: null, photoUrl: null },
+          { name: 'Eggplant Parmigiana', description: 'Breaded eggplant topped with marinara and melted cheese, with spaghetti', price: null, tags: ['vegetarian'], photoUrl: null },
+        ],
+      },
+      {
+        title: 'Create Your Own Pasta',
+        items: [
+          { name: 'Pasta — Choose Your Style', description: 'Spaghetti, fettuccine, angel hair, rigatoni, cavatappi, or whole wheat linguine', price: null, tags: null, photoUrl: null },
+          { name: 'Sauce — Marinara', description: 'Classic tomato sauce with garlic and basil', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Sauce — Alfredo', description: 'Rich, creamy white cheese sauce', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Sauce — Five Cheese Marinara', description: 'Marinara blended with five Italian cheeses', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Sauce — Traditional Meat Sauce', description: 'Hearty meat sauce, slow-simmered', price: null, tags: null, photoUrl: null },
+          { name: 'Add — Italian Sausage', description: 'Italian sausage', price: null, tags: null, photoUrl: null },
+          { name: 'Add — Grilled Chicken', description: 'Grilled chicken breast', price: null, tags: null, photoUrl: null },
+          { name: 'Add — Shrimp', description: 'Sautéed shrimp', price: null, tags: null, photoUrl: null },
+          { name: 'Add — Meatballs', description: 'Italian-style beef meatballs', price: null, tags: null, photoUrl: null },
+        ],
+      },
+      {
+        title: 'Soups, Salad & Breadsticks',
+        items: [
+          { name: 'Unlimited Soup, Salad & Breadsticks', description: 'Choose any soup, classic house salad, and warm garlic breadsticks — refills included', price: null, tags: null, photoUrl: null },
+          { name: 'Zuppa Toscana', description: 'Spicy Italian sausage, kale, russet potatoes in a creamy broth', price: null, tags: ['spicy'], photoUrl: null },
+          { name: 'Pasta e Fagioli', description: 'Beans and ground beef in a savory broth with tomatoes and tubular pasta', price: null, tags: null, photoUrl: null },
+          { name: 'Chicken & Gnocchi', description: 'Chicken, traditional Italian dumplings and spinach in a creamy soup', price: null, tags: null, photoUrl: null },
+          { name: 'Minestrone', description: 'Fresh vegetables, beans and pasta in a savory broth', price: null, tags: ['vegan'], photoUrl: null },
+          { name: 'House Salad', description: 'Crisp lettuce, black olives, croutons, tomatoes, onions, banana peppers, signature Italian dressing', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Garlic Breadsticks', description: 'Warm breadsticks brushed with garlic and herbs', price: null, tags: ['vegetarian'], photoUrl: null },
+        ],
+      },
+      {
+        title: 'Chicken & Seafood',
+        items: [
+          { name: 'Chicken Marsala', description: 'Pan-seared chicken in a sweet marsala wine sauce with mushrooms', price: null, tags: null, photoUrl: null },
+          { name: 'Chicken Scampi', description: 'Sautéed chicken, bell peppers, onions in a garlic cream sauce over angel hair', price: null, tags: null, photoUrl: null },
+          { name: 'Herb-Grilled Salmon', description: 'Wood-grilled salmon brushed with Italian herbs, served with seasonal vegetables', price: null, tags: null, photoUrl: null },
+          { name: 'Shrimp Alfredo', description: 'Sautéed shrimp over fettuccine in classic Alfredo sauce', price: null, tags: null, photoUrl: null },
+        ],
+      },
+      {
+        title: 'Appetizers & Desserts',
+        items: [
+          { name: 'Calamari', description: 'Lightly breaded and fried calamari with marinara and spicy ranch', price: null, tags: null, photoUrl: null },
+          { name: 'Stuffed Ziti Fritta', description: 'Crispy ziti stuffed with cheese, served with marinara and Alfredo for dipping', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Toasted Beef & Pork Ravioli', description: 'Toasted ravioli filled with Italian beef and pork, with marinara', price: null, tags: null, photoUrl: null },
+          { name: 'Tiramisù', description: 'Layers of ladyfingers soaked in coffee with a creamy mascarpone filling', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Black Tie Mousse Cake', description: 'Chocolate cake with custard, dark chocolate mousse and white chocolate cheesecake', price: null, tags: ['vegetarian'], photoUrl: null },
+          { name: 'Sicilian Cheesecake', description: 'New York-style cheesecake with strawberry topping', price: null, tags: ['vegetarian'], photoUrl: null },
+        ],
+      },
+    ],
+  },
+
   'shake-shack': {
     sections: [
       {
@@ -4478,6 +4543,7 @@ const CHAIN_PATTERNS = [
   { re: /popeyes/i, key: 'popeyes' },
   { re: /five\s+guys/i, key: 'five-guys' },
   { re: /shake\s*shack/i, key: 'shake-shack' },
+  { re: /olive\s+garden/i, key: 'olive-garden' },
 ];
 
 function getChainMenu(restaurantName) {
