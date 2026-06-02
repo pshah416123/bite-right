@@ -998,6 +998,48 @@ export default function RestaurantScreen() {
     </View>
   ) : null;
 
+  // Social-proof summary block — sits right above the menu and is
+  // ALWAYS rendered (zero-state included). The friendsBar near the top
+  // is a visual avatar strip and only renders when friends > 0; this
+  // block is the textual summary that the user explicitly asked for
+  // above the menu, and is reliable to find regardless of state.
+  const friendVisitCount = friendVisits.length;
+  const friendNames = friendVisits.slice(0, 3).map((fv) => fv.userName);
+  const friendQuote = quotesWithNotes[0] ?? null;
+  const saveCount = detail?.saveCount ?? 0;
+  const socialProofBlock = (
+    <View style={styles.socialSummarySection}>
+      <Text style={styles.socialSummaryTitle}>Friends + community</Text>
+      <View style={styles.socialSummaryRow}>
+        <Ionicons name="people-outline" size={16} color={colors.textMuted} />
+        <Text style={styles.socialSummaryText}>
+          {friendVisitCount === 0
+            ? 'No friends have been here yet — you could be the first.'
+            : friendVisitCount === 1
+              ? `${friendNames[0]} has been here.`
+              : friendVisitCount <= 3
+                ? `${friendNames.slice(0, friendVisitCount - 1).join(', ')} and ${friendNames[friendVisitCount - 1]} have been here.`
+                : `${friendNames.join(', ')} and ${friendVisitCount - 3} more friends have been here.`}
+        </Text>
+      </View>
+      {friendQuote ? (
+        <Text style={styles.socialSummaryQuote} numberOfLines={2}>
+          {'“'}{friendQuote.note}{'”'} — {friendQuote.userName}
+        </Text>
+      ) : null}
+      <View style={styles.socialSummaryRow}>
+        <Ionicons name="bookmark-outline" size={16} color={colors.textMuted} />
+        <Text style={styles.socialSummaryText}>
+          {saveCount === 0
+            ? 'Not yet saved by anyone on BiteRight.'
+            : saveCount === 1
+              ? 'Saved by 1 person on BiteRight.'
+              : `Saved by ${saveCount} people on BiteRight.`}
+        </Text>
+      </View>
+    </View>
+  );
+
   // Menu block — four possible states:
   //  1. menuLoading                              -> spinner
   //  2. filteredMenu present                     -> full menu
@@ -1435,6 +1477,7 @@ export default function RestaurantScreen() {
             {!isFromFriendPost && friendQuotesBlock}
             {!isFromFriendPost && whatPeopleAreSayingBlock}
             {!isFromFriendPost && id && <QuickTipsBlock restaurantId={id} />}
+            {!isFromFriendPost && socialProofBlock}
             {!isFromFriendPost && menuBlock}
             {!isFromFriendPost && afterSpotsBlock}
             {isFromFriendPost && (
@@ -1486,6 +1529,7 @@ export default function RestaurantScreen() {
             {friendQuotesBlock}
             {!isFromFriendPost && whatPeopleAreSayingBlock}
             {id && <QuickTipsBlock restaurantId={id} />}
+            {!isFromFriendPost && socialProofBlock}
             {!isFromFriendPost && menuBlock}
             {!isFromFriendPost && afterSpotsBlock}
             {isFromFriendPost && (
@@ -1880,6 +1924,43 @@ const styles = StyleSheet.create({
     backgroundColor: colors.accentSoft,
   },
   peopleOrderText: { fontSize: 13, fontWeight: '600', color: colors.accent },
+  socialSummarySection: {
+    marginTop: 18,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    borderRadius: 16,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    gap: 8,
+  },
+  socialSummaryTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+    marginBottom: 2,
+  },
+  socialSummaryRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  socialSummaryText: {
+    flex: 1,
+    fontSize: 14,
+    color: colors.text,
+    lineHeight: 19,
+  },
+  socialSummaryQuote: {
+    marginLeft: 24,
+    marginTop: -2,
+    fontSize: 13,
+    fontStyle: 'italic',
+    color: colors.textMuted,
+    lineHeight: 18,
+  },
   retryBtn: {
     flexDirection: 'row',
     alignItems: 'center',

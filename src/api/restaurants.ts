@@ -201,6 +201,9 @@ export interface RestaurantDetail {
   /** Descriptor+noun phrases mined from reviews ("great pizza", "cozy spot").
    *  Surfaces the same kind of keyword signal Google highlights in its UI. */
   whatPeopleAreSaying?: SayingPhrase[] | null;
+  /** Total number of users (across the whole app) who've saved this restaurant.
+   *  Used for the "Saved by N people" social-proof line on the detail page. */
+  saveCount?: number;
   /** Present when `?debug=1` on GET /api/restaurants/:id */
   imageSource?: string;
 }
@@ -253,7 +256,7 @@ export interface MenuSection {
 export type MenuSourceType =
   | 'toast' | 'popmenu' | 'square' | 'chownow' | 'bentobox' | 'clover'
   | 'wix' | 'wordpress' | 'yelp_menu' | 'pdf' | 'generic_scrape' | 'chain_curated'
-  | 'llm' | 'photos' | 'google_photo_ocr' | null;
+  | 'llm' | 'photos' | 'google_photo_ocr' | 'page_image_ocr' | 'dine_wp' | null;
 
 export interface RestaurantMenu {
   sections: MenuSection[];

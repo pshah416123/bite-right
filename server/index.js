@@ -2518,6 +2518,24 @@ app.get('/api/restaurants/:restaurantId', async (req, res) => {
   const cachedDetail = await readCachedDetail(restaurantId);
   const cacheFresh = isDetailCacheFresh(cachedDetail);
 
+  // Save count — how many users have this restaurant in their saved list.
+  // Fired in parallel because it's a small Supabase count and lets the
+  // detail page show "Saved by N people" alongside friend social proof.
+  // Kicked off here so it overlaps the Google/Claude work below; awaited
+  // just before res.json.
+  const saveCountPromise = (async () => {
+    if (!supabaseConfigured) return 0;
+    try {
+      const { count } = await supabase
+        .from('saved_restaurants')
+        .select('user_id', { count: 'exact', head: true })
+        .eq('restaurant_id', restaurantId);
+      return count ?? 0;
+    } catch {
+      return 0;
+    }
+  })();
+
   // Variables populated from EITHER cache or live; keep the downstream code
   // source-agnostic.
   let placeDetails = null;     // raw Google response (only set on live fetch; used for image resolution)
@@ -2703,7 +2721,8 @@ app.get('/api/restaurants/:restaurantId', async (req, res) => {
   }
 
   resolveRestaurantCardImageWithSource(restaurantId, placeId, undefined)
-    .then(({ url, source, resolved }) => {
+    .then(async ({ url, source, resolved }) => {
+      const saveCount = await saveCountPromise;
       let imageUrl = url && url.trim() ? toAbsoluteImageUrl(url.trim()) : null;
 
       // If resolver still returned placeholder but we have fresh Google photos, use them.
@@ -2759,11 +2778,13 @@ app.get('/api/restaurants/:restaurantId', async (req, res) => {
         googleReviews,
         popularDishesFromReviews,
         whatPeopleAreSaying,
+        saveCount,
         ...(debug ? { imageSource: source } : {}),
       });
     })
-    .catch((err) => {
+    .catch(async (err) => {
       console.error('[BiteRight] restaurant detail image resolution error', err.message);
+      const saveCount = await saveCountPromise;
       res.json({
         name: info.name,
         address: info.address || addressFromGoogle || '',
@@ -2788,6 +2809,7 @@ app.get('/api/restaurants/:restaurantId', async (req, res) => {
         googleReviews,
         popularDishesFromReviews,
         whatPeopleAreSaying,
+        saveCount,
       });
     });
 });
@@ -4499,6 +4521,59 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
             console.log('[BiteRight] menu: Puppeteer found menu', { restaurantId, url: tryUrl, totalItems });
             return res.json(await finalize('generic_scrape', tryUrl));
           }
+        }
+      }
+    }
+
+    // ── Priority 3.3: OCR menu images embedded on the restaurant's site ──
+    // Squarespace / Wix / Webflow sites commonly upload their menu as
+    // screenshots embedded on the /menu page (Birdman Ramen, etc.). Those
+    // images don't get picked up by any DOM parser or by the PDF pipeline.
+    // We OCR them via the same Claude Haiku Vision wrapper we already use
+    // for Google Place Photos. This runs BEFORE the Google Place Photos
+    // fallback because images the restaurant uploaded itself are a stronger
+    // signal than the average of user-uploaded photos on Google Maps.
+    const pageImagesModule = require('./menuPageImages');
+    if (pageImagesModule.isConfigured()) {
+      // Fetch the menu page if we haven't already — homepageHtml is the
+      // home page, which often won't have the menu image. Prefer a /menu
+      // URL when one exists.
+      let menuPageHtml = null;
+      let menuPageUrl = websiteUrl;
+      if (homepageHtml && websiteUrl) {
+        const linked = findMenuUrl(homepageHtml, websiteUrl);
+        if (linked) menuPageUrl = linked;
+      }
+      if (menuPageUrl) {
+        try {
+          const { data } = await axios.get(menuPageUrl, {
+            timeout: 8000,
+            headers: SCRAPE_HEADERS,
+            maxRedirects: 5,
+            responseType: 'text',
+          });
+          if (typeof data === 'string') menuPageHtml = data;
+        } catch { /* ignore */ }
+      }
+      // Also try the homepage HTML as a fallback if the /menu fetch failed
+      // or returned nothing — for some restaurants the home page itself
+      // carries the menu screenshots.
+      const htmlsToTry = [menuPageHtml, homepageHtml].filter(Boolean);
+      for (const htmlSrc of htmlsToTry) {
+        try {
+          const pageOcr = await pageImagesModule.extractMenuFromPageImages(htmlSrc, menuPageUrl || websiteUrl);
+          if (pageOcr && pageOcr.sections.length > 0) {
+            result.sections = pageOcr.sections;
+            result.source = 'page_image_ocr';
+            console.log('[BiteRight] menu: extracted via page-image OCR', {
+              restaurantId,
+              sections: pageOcr.sections.length,
+              items: pageOcr.sections.reduce((n, s) => n + s.items.length, 0),
+            });
+            return res.json(await finalize('page_image_ocr', menuPageUrl || websiteUrl));
+          }
+        } catch (err) {
+          console.log('[BiteRight] menu: page_image_ocr failed', err.message);
         }
       }
     }
