@@ -512,6 +512,162 @@ function parseSquarespaceMenu(html) {
   }
 }
 
+// ─── Squarespace text-block menus (Trivoli pattern) ─────────────────────────
+//
+// Not every Squarespace restaurant uses the official Menu Block. Many compose
+// the menu out of free-form HTML blocks where:
+//   <h3><strong>Snacks</strong></h3>     ← section title
+//   <h3>Lobster Mac & Cheese</h3>        ← dish name
+//   <p>maine lobster, white cheddar sauce, chives 26.99</p>   ← desc + price
+//   <h3>New England Style Lobster Roll</h3>
+//   <p>...</p>
+//   <h3><strong>Starters</strong></h3>   ← next section…
+//
+// .text() flattens this into a single line per block, so .menu-item-title
+// based parsers see nothing. This parser walks the children, treats h3 as
+// either a section title (when it contains a <strong>) or a dish name
+// (when it doesn't), and pulls the trailing price out of the following <p>.
+function parseSquarespaceTextMenu(html) {
+  try {
+    const $ = cheerio.load(html);
+    const contentBlocks = $('.sqs-html-content');
+    if (contentBlocks.length === 0) return null;
+
+    // Trailing price: 12.99, $12.99, $12, 12.99. Squarespace's rich-text
+    // editor sometimes inserts a stray space between the integer and the
+    // decimal (e.g. "butter 12 .99" — the .99 is in a child <strong> tag).
+    // Normalize that before extraction so we don't read $99 as the price.
+    const normalizeStraySpacePrice = (s) => s.replace(/(\d)\s+\.(\d{1,2})\b/g, '$1.$2');
+    // Trailing price regex: leading non-word separator, optional $, number.
+    // Also handles dotted leaders ("Cynar ........ 14") on spirit lists.
+    const PRICE_TAIL_RE = /[\s.•·…\-]+\$?(\d{1,3}(?:\.\d{1,2})?)\s*$/;
+
+    const sections = [];
+    let currentTitle = 'Menu';
+    let currentItems = [];
+    const flush = () => {
+      if (currentItems.length > 0) {
+        sections.push({ title: currentTitle, items: currentItems });
+        currentItems = [];
+      }
+    };
+
+    const isSectionHeading = ($h) => {
+      // A heading with a <strong> child is the convention used for section
+      // labels (often paired with a brand color). Single bare h3s are dish
+      // names. Also catch all-caps short headings ("SNACKS").
+      if ($h.find('strong, b').length > 0) return true;
+      const t = $h.text().trim();
+      if (!t) return false;
+      if (t.length <= 30 && /^[A-Z][A-Z &'/—-]+$/.test(t)) return true;
+      return false;
+    };
+
+    contentBlocks.each((_, block) => {
+      const $block = $(block);
+      // Process direct children top-to-bottom. Most menus have h1-h4 + p,
+      // but some use <div>s that wrap each item — flatten via .children().
+      const children = $block.children();
+      // If the block has no headings at all, skip it (it's just prose).
+      if (children.filter('h1, h2, h3, h4, h5, h6').length === 0) return;
+
+      let pendingName = null;
+      children.each((__, el) => {
+        const $el = $(el);
+        const tag = (el.tagName || el.name || '').toLowerCase();
+
+        if (/^h[1-6]$/.test(tag)) {
+          if (isSectionHeading($el)) {
+            flush();
+            currentTitle = $el.text().trim() || 'Menu';
+            pendingName = null;
+            return;
+          }
+          // Some restaurants pack a whole section into a single heading
+          // separated by <br> ("Mushroom Casserole 15.99<br>Steamed Broccoli
+          // 15.99<br>…"). Detect that and split per line instead of treating
+          // the whole heading as one dish name.
+          const innerHtml = $el.html() || '';
+          if (/<br\s*\/?>/i.test(innerHtml)) {
+            const lines = innerHtml
+              .split(/<br\s*\/?>/i)
+              .map((chunk) => cheerio.load(`<div>${chunk}</div>`)('div').text().replace(/\s+/g, ' ').trim())
+              .filter(Boolean);
+            for (const lineRaw of lines) {
+              const line = normalizeStraySpacePrice(lineRaw);
+              const m = line.match(PRICE_TAIL_RE);
+              if (m) {
+                const num = parseFloat(m[1]);
+                if (!Number.isFinite(num) || num < 1 || num > 999) continue;
+                const name = line.slice(0, m.index).replace(/[\s.•·…\-]+$/, '').trim();
+                if (name.length >= 2 && name.length <= 120) {
+                  currentItems.push({
+                    name, description: null,
+                    price: `$${num.toFixed(2)}`,
+                    tags: null, photoUrl: null,
+                  });
+                }
+              } else if (line.length >= 2 && line.length <= 120) {
+                currentItems.push({ name: line, description: null, price: null, tags: null, photoUrl: null });
+              }
+            }
+            pendingName = null;
+            return;
+          }
+          // Plain heading — treat as a dish name waiting for the next <p>.
+          if (pendingName) {
+            currentItems.push({ name: pendingName, description: null, price: null, tags: null, photoUrl: null });
+          }
+          pendingName = $el.text().replace(/\s+/g, ' ').trim();
+          return;
+        }
+        if (tag === 'p' || tag === 'div') {
+          if (!pendingName) return;
+          const rawText = normalizeStraySpacePrice(
+            $el.text().replace(/\s+/g, ' ').trim(),
+          );
+          if (!rawText) return;
+          const priceMatch = rawText.match(PRICE_TAIL_RE);
+          let description = rawText;
+          let price = null;
+          if (priceMatch) {
+            const num = parseFloat(priceMatch[1]);
+            if (Number.isFinite(num) && num >= 1 && num <= 999) {
+              price = `$${num.toFixed(2)}`;
+              description = rawText.slice(0, priceMatch.index).replace(/[\s.•·…\-]+$/, '').trim();
+            }
+          }
+          if (pendingName.length >= 2 && pendingName.length <= 120) {
+            currentItems.push({
+              name: pendingName,
+              description: description || null,
+              price,
+              tags: null,
+              photoUrl: null,
+            });
+          }
+          pendingName = null;
+        }
+      });
+      // Trailing name without a <p>
+      if (pendingName) {
+        currentItems.push({ name: pendingName, description: null, price: null, tags: null, photoUrl: null });
+        pendingName = null;
+      }
+    });
+    flush();
+
+    // Reject the parse if it found < 3 items overall — likely a false
+    // positive on a non-menu page that happens to have h3/p pairs.
+    const totalItems = sections.reduce((n, s) => n + s.items.length, 0);
+    if (totalItems < 3) return null;
+
+    return { sections, rawData: null, source: 'squarespace' };
+  } catch {
+    return null;
+  }
+}
+
 // ─── Dine / WP restaurant theme ────────────────────────────────────────────
 //
 // Many WordPress restaurant themes (Dine Framework being the canonical one,
@@ -1135,6 +1291,11 @@ async function extractMenuFromHtml(html, url) {
   if (provider === 'squarespace') {
     const r = parseSquarespaceMenu(html);
     if (r) return r;
+    // Trivoli Tavern et al. — Squarespace site using free-form
+    // <h3>/<p> blocks instead of the Menu Block. Try the text-pattern
+    // parser before falling through.
+    const textR = parseSquarespaceTextMenu(html);
+    if (textR) return textR;
   }
   if (provider === 'dine_wp') {
     const r = parseDineWpMenu(html);
@@ -1157,6 +1318,8 @@ async function extractMenuFromHtml(html, url) {
   if (crossLE) return crossLE;
   const crossSQ = parseSquarespaceMenu(html);
   if (crossSQ) return crossSQ;
+  const crossSQT = parseSquarespaceTextMenu(html);
+  if (crossSQT) return crossSQT;
   const crossDW = parseDineWpMenu(html);
   if (crossDW) return crossDW;
   const jsonLd = parseJsonLdMenu(html);
