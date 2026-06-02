@@ -8,6 +8,11 @@ const dotenv = require('dotenv');
 dotenv.config({ path: require('path').join(__dirname, '.env') });
 const { rankPlaces, rankForSection } = require('./ranking');
 const { getCuisineGroups, matchesCuisineGroup } = require('./utils/cuisineNormalization');
+const {
+  isNarrowCategory,
+  classifyCategoryConfidence,
+  applyCategoryConfidenceFilter,
+} = require('./utils/categoryEvidence');
 const db = require('./utils/db');
 const { supabase, supabaseConfigured } = require('./utils/supabase');
 
@@ -4772,6 +4777,28 @@ async function readCachedDetail(restaurantId) {
   return data;
 }
 
+/** Batch-fetch detail-cache rows for a list of restaurant_ids. Used by the
+ *  evidence-based category classifier in Discover so we can check
+ *  popular_dishes for the whole candidate set in one round-trip. */
+async function batchReadCachedDetails(restaurantIds) {
+  const map = new Map();
+  if (!supabaseConfigured) return map;
+  const ids = Array.from(new Set((restaurantIds || []).filter(Boolean)));
+  if (ids.length === 0) return map;
+  // Slim projection — we only need popular_dishes + last_fetched_at for
+  // the classifier. Avoids dragging the full review payload over.
+  const { data, error } = await supabase
+    .from('restaurant_details_cache')
+    .select('restaurant_id, popular_dishes')
+    .in('restaurant_id', ids);
+  if (error) {
+    console.warn('[categoryEvidence] batchReadCachedDetails error', error.message);
+    return map;
+  }
+  for (const row of data || []) map.set(row.restaurant_id, row);
+  return map;
+}
+
 function isDetailCacheFresh(row) {
   if (!row) return false;
   return new Date(row.next_refresh_at).getTime() > Date.now();
@@ -6794,75 +6821,82 @@ async function buildGooglePlaceDiscover(lat, lng, radiusMiles, userId, cuisineFi
 
   let recs = ranked.map(mapRankedToRec);
 
-  // ── Cuisine post-filter (preserves existing logic) ──────────────
+  // ── Cuisine post-filter ──────────────────────────────────────────
+  // Two paths:
+  //   (a) Narrow chips (Pizza, Burgers, Tacos, Ramen, Sushi, Wings, …) —
+  //       require ACTUAL evidence the restaurant serves the food item:
+  //       cached menu has matching items, popular_dishes mentions it,
+  //       Google has the specific type, or the name is unambiguous.
+  //       Italian alone no longer matches Pizza chip; Mexican alone no
+  //       longer matches Tacos chip.
+  //   (b) Broad chips (Italian, Japanese, Mexican, Asian, …) — keep the
+  //       existing taxonomy + parent-rollup matching since the user has
+  //       asked for a wide cuisine net.
   if (cuisineFilter) {
-    const GENERIC_LABELS = new Set(['Restaurant', 'Takeout', '']);
-    // Google place `types[]` that disqualify a result from a given cuisine
-    // chip even when the derive-cuisine pass came back generic. Without this,
-    // an ice cream shop returned for keyword "pizza" sneaks through the
-    // trust-Google fallback below because it has no specific cuisine label.
-    const DISQUALIFYING_TYPES_FOR_FILTER = {
-      Pizza:      ['ice_cream_shop', 'bakery'],
-      Burgers:    ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
-      Sushi:      ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
-      Ramen:      ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
-      Tacos:      ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
-      Steakhouse: ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
-      BBQ:        ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
-      Italian:    ['ice_cream_shop'],
-      Mexican:    ['ice_cream_shop', 'bakery'],
-      Japanese:   ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
-      Chinese:    ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
-      Korean:     ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
-      Thai:       ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
-      Indian:     ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
-      Vietnamese: ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
-      Seafood:    ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
-      // Bakery / Dessert / Coffee are themselves these categories — no disqualifiers.
-    };
-    const disqualifyingTypes = DISQUALIFYING_TYPES_FOR_FILTER[cuisineFilter] || [];
-
-    // Strict mode: only include a place when we have POSITIVE evidence it
-    // serves the requested cuisine — either the cuisine-normalizer matched, or
-    // the restaurant name contains the cuisine keyword. Anything else (generic
-    // labels, unclear types, "Google sort-of returned this for our keyword")
-    // is excluded so the user never sees false recommendations.
-    const nameRegex = keyword
-      ? new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i')
-      : null;
-
-    recs = recs.filter((rec) => {
-      const derived = deriveCuisinesFromPlace(rec.types || [], rec.name, rec.cuisine);
-      const matchesFilter = restaurantMatchesCuisineFilter(derived, cuisineFilter, rec.name, rec.cuisine);
-      const types = rec.types || [];
-      const hasDisqualifyingType = types.some((t) => disqualifyingTypes.includes(t));
-      const nameMentionsCuisine = nameRegex ? nameRegex.test(rec.name || '') : false;
-
-      // Hard rejection first.
-      if (hasDisqualifyingType) {
-        console.log('[BiteRight][Discover] inclusion', {
-          name: rec.name, derivedCuisines: derived, selectedCuisine: cuisineFilter,
-          included: false, reason: 'disqualifying-google-type', types,
-        });
-        return false;
-      }
-      // Positive match via derived cuisine taxonomy.
-      if (matchesFilter) return true;
-      // Positive match via name (e.g. "Tony's Pizza Napoletana" for Pizza).
-      if (nameMentionsCuisine) {
-        console.log('[BiteRight][Discover] inclusion', {
-          name: rec.name, derivedCuisines: derived, selectedCuisine: cuisineFilter,
-          included: true, reason: 'name-contains-cuisine',
-        });
-        return true;
-      }
-      // No positive evidence — exclude.
-      console.log('[BiteRight][Discover] inclusion', {
-        name: rec.name, derivedCuisines: derived, selectedCuisine: cuisineFilter,
-        included: false, reason: 'no-positive-match (strict mode)',
+    if (isNarrowCategory(cuisineFilter)) {
+      // ── Narrow path: evidence-based confidence classifier ────────
+      // Batch fetch cached menus + detail rows for the candidates so
+      // the classifier has every available signal in one round-trip.
+      const candidateIds = recs.map((r) => r.restaurantId);
+      const [menuRows, detailRows] = await Promise.all([
+        batchReadCachedMenus(candidateIds),
+        batchReadCachedDetails(candidateIds),
+      ]);
+      const scored = recs.map((rec) => ({
+        rec,
+        confidence: classifyCategoryConfidence({
+          chip: cuisineFilter,
+          menuRow: menuRows.get(rec.restaurantId) || null,
+          detailRow: detailRows.get(rec.restaurantId) || null,
+          types: rec.types || [],
+          name: rec.name,
+          cuisine: rec.cuisine,
+        }),
+      }));
+      const kept = applyCategoryConfidenceFilter(scored);
+      const counts = {
+        high: scored.filter((s) => s.confidence === 'high').length,
+        medium: scored.filter((s) => s.confidence === 'medium').length,
+        low: scored.filter((s) => s.confidence === 'low').length,
+        none: scored.filter((s) => s.confidence === 'none').length,
+      };
+      console.log('[BiteRight][Discover] narrow-category filter', {
+        chip: cuisineFilter,
+        before: recs.length,
+        after: kept.length,
+        counts,
       });
-      return false;
-    });
+      recs = kept.map((s) => s.rec);
+    } else {
+      // ── Broad path: existing taxonomy + name match (parent rollup) ──
+      const DISQUALIFYING_TYPES_FOR_FILTER = {
+        Italian:    ['ice_cream_shop'],
+        Mexican:    ['ice_cream_shop', 'bakery'],
+        Japanese:   ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
+        Chinese:    ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
+        Korean:     ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
+        Thai:       ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
+        Indian:     ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
+        Vietnamese: ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
+        Seafood:    ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
+        Steakhouse: ['ice_cream_shop', 'bakery', 'cafe', 'coffee_shop'],
+      };
+      const disqualifyingTypes = DISQUALIFYING_TYPES_FOR_FILTER[cuisineFilter] || [];
+      const nameRegex = keyword
+        ? new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i')
+        : null;
+      recs = recs.filter((rec) => {
+        const derived = deriveCuisinesFromPlace(rec.types || [], rec.name, rec.cuisine);
+        const matchesFilter = restaurantMatchesCuisineFilter(derived, cuisineFilter, rec.name, rec.cuisine);
+        const types = rec.types || [];
+        const hasDisqualifyingType = types.some((t) => disqualifyingTypes.includes(t));
+        const nameMentionsCuisine = nameRegex ? nameRegex.test(rec.name || '') : false;
+        if (hasDisqualifyingType) return false;
+        if (matchesFilter) return true;
+        if (nameMentionsCuisine) return true;
+        return false;
+      });
+    }
   }
 
   // ── Search relevance post-filter ─────────────────────────────────
@@ -7259,7 +7293,15 @@ app.get('/api/discover', async (req, res) => {
   }
 
   if (mode === 'nearby' && cuisineQuery) {
-    sections = filterRecommendationSectionsByCuisine(sections, cuisineQuery);
+    // For narrow chips, buildGooglePlaceDiscover already applied the
+    // evidence-based filter (with cached menu + popular-dish signals).
+    // Re-running the taxonomy-only filter here would unnecessarily drop
+    // restaurants we kept via menu evidence whose taxonomy match was thin
+    // (e.g. "Au Cheval" with burger items in its cached menu but no
+    // burger-related types or name keyword).
+    if (!isNarrowCategory(cuisineQuery)) {
+      sections = filterRecommendationSectionsByCuisine(sections, cuisineQuery);
+    }
   }
 
   // Attach images with concurrency limit to avoid flooding Google API

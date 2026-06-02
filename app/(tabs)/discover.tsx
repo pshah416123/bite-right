@@ -40,7 +40,7 @@ const CHIP_CATALOG: Record<string, CuisineChip> = {
   Coffee:        { label: 'Coffee',        emoji: '\u2615' },
   Burgers:       { label: 'Burgers',       emoji: '\u{1F354}' },
   Dessert:       { label: 'Dessert',       emoji: '\u{1F370}' },
-  Thai:          { label: 'Thai',          emoji: '\u{1F966}' },
+  Thai:          { label: 'Thai',          emoji: '\u{1F336}' },
   Indian:        { label: 'Indian',        emoji: '\u{1F35B}' },
   Italian:       { label: 'Italian',       emoji: '\u{1F35D}' },
   Mexican:       { label: 'Mexican',       emoji: '\u{1F32E}' },
