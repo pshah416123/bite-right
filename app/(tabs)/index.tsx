@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Link, useRouter } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { FeedCard, type FeedLog } from '~/src/components/FeedCard';
@@ -145,6 +146,16 @@ export default function FeedScreen() {
     }
     itemCountRef.current = items.length;
   }, [items.length]);
+
+  // Whenever the Feed tab regains focus (user came back from another tab
+  // or from a detail screen), snap the list to the top. Without this, the
+  // feed stayed wherever the user left off — confusing for the "home"
+  // screen, which should always present the freshest content first.
+  useFocusEffect(
+    useCallback(() => {
+      listRef.current?.scrollToOffset({ offset: 0, animated: false });
+    }, []),
+  );
 
   const renderItem = useCallback(
     ({ item }: { item: FeedLog }) => {
