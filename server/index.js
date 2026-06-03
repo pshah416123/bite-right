@@ -5897,36 +5897,56 @@ app.get('/api/tonight/sessions/:code/pool', async (req, res) => {
         return Array.from(mergedMap.values()).filter((p) => isFoodPlace(p.types));
       };
       let merged = await fetchMerged(keyword);
-      // Auto-relax: walk the similarity ladder so the user gets the *closest*
-      // alternative cuisine, not just "anything". e.g. Ramen → Japanese → Asian.
-      // Only after every similar tier comes up empty do we drop the filter
-      // entirely. Banner copy uses relaxedFrom + relaxedTo to explain the choice.
-      if (merged.length === 0 && keyword) {
+      // Auto-augment: when the chosen cuisine has *few* results in the
+      // area (not just zero), pad with the closest alternative cuisines
+      // from the similarity ladder so the deck still has enough variety
+      // to swipe through. e.g. only 1 Ramen place nearby? Walk Ramen →
+      // Japanese → Asian, appending each tier until we have at least
+      // MIN_POOL results. Original-cuisine results stay at the front so
+      // the user sees their primary pick first; same-place dedupe keeps
+      // the list clean. Banner copy uses relaxedFrom + relaxedTo to
+      // explain the choice ("Only 1 ramen spot nearby — also showing
+      // Japanese").
+      //
+      // Previously this code only fired on merged.length === 0, so a
+      // single sparse result for a narrow cuisine like Ramen would
+      // leave the user with one card and no fallback.
+      const MIN_POOL = 12;
+      if (keyword && merged.length < MIN_POOL) {
         const original = sessionCuisines[0];
         const ladder = getCuisineFallbackChain(original);
+        const originalCount = merged.length;
+        const seenPlaceIds = new Set(merged.map((p) => p.placeId));
         for (const fallback of ladder) {
+          if (merged.length >= MIN_POOL) break;
           const altKeyword = cuisineChipToNearbyKeyword(fallback);
           const altMerged = await fetchMerged(altKeyword);
-          if (altMerged.length > 0) {
-            merged = altMerged;
+          const additions = altMerged.filter((p) => p.placeId && !seenPlaceIds.has(p.placeId));
+          if (additions.length === 0) continue;
+          additions.forEach((p) => seenPlaceIds.add(p.placeId));
+          merged = [...merged, ...additions];
+          if (!filtersRelaxed) {
             filtersRelaxed = true;
             relaxedCuisine = original;
             relaxedFrom = original;
             relaxedTo = fallback;
-            console.log('[BiteRight][Tonight pool] relaxed', original, '→', fallback, ': found', altMerged.length, 'places');
-            break;
           }
+          console.log('[BiteRight][Tonight pool] augmented', original, '+', fallback, ':', originalCount, '→', merged.length);
         }
-        // Last resort: drop the cuisine entirely.
-        if (merged.length === 0) {
+        // Last resort: drop the cuisine entirely. Only when we still
+        // can't reach MIN_POOL after walking the similarity ladder.
+        if (merged.length < MIN_POOL) {
           const anyMerged = await fetchMerged('');
-          if (anyMerged.length > 0) {
-            merged = anyMerged;
-            filtersRelaxed = true;
-            relaxedCuisine = original;
-            relaxedFrom = original;
-            relaxedTo = null; // means "no cuisine at all"
-            console.log('[BiteRight][Tonight pool] relaxed', original, '→ ANY: found', anyMerged.length, 'places');
+          const additions = anyMerged.filter((p) => p.placeId && !seenPlaceIds.has(p.placeId));
+          if (additions.length > 0) {
+            merged = [...merged, ...additions];
+            if (!filtersRelaxed) {
+              filtersRelaxed = true;
+              relaxedCuisine = original;
+              relaxedFrom = original;
+              relaxedTo = null; // means "broadened beyond the cuisine ladder"
+            }
+            console.log('[BiteRight][Tonight pool] augmented', original, '+ ANY:', originalCount, '→', merged.length);
           }
         }
       }

@@ -29,7 +29,8 @@ import { useLocalSearchParams, useRouter, Stack } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { colors } from '~/src/theme/colors';
 import { blockUser, followUser, getUser, getUserLogs, type UserSummary } from '~/src/api/users';
-import { FeedCard, type FeedLog } from '~/src/components/FeedCard';
+import { type FeedLog } from '~/src/components/FeedCard';
+import { RestaurantImage } from '~/src/components/RestaurantImage';
 
 /** Format an ISO timestamp as "Mon YYYY" (e.g. "Mar 2026"). Returns empty
  *  string on parse failure so the row collapses cleanly. */
@@ -329,9 +330,43 @@ export default function FriendProfileScreen() {
               <Text style={s.emptyBody}>Try a different filter or clear the search.</Text>
             </View>
           }
-          renderItem={({ item }) => (
-            <FeedCard log={item} socialLabel={null} isHero={false} />
-          )}
+          renderItem={({ item }) => {
+            const meta = [item.cuisine, item.neighborhood].filter(Boolean).join(' · ');
+            const note = item.note?.trim() || null;
+            const highScore = (item.score ?? 0) >= 8.0;
+            return (
+              <TouchableOpacity
+                style={s.logRow}
+                onPress={() => router.push(`/(tabs)/restaurant/${encodeURIComponent(item.restaurantId)}?logId=${encodeURIComponent(item.id)}`)}
+                activeOpacity={0.8}
+              >
+                <View style={s.logThumbWrap}>
+                  <RestaurantImage
+                    restaurant={{
+                      id: item.restaurantId,
+                      name: item.restaurantName,
+                      displayImageUrl: item.photo_url ?? null,
+                      previewPhotoUrl: item.previewPhotoUrl ?? null,
+                    }}
+                    aspectRatio={1}
+                    fallbackType="icon"
+                    borderRadius={12}
+                    style={s.logThumb}
+                  />
+                </View>
+                <View style={s.logInfo}>
+                  <Text style={s.logName} numberOfLines={1}>{item.restaurantName}</Text>
+                  {meta ? <Text style={s.logMeta} numberOfLines={1}>{meta}</Text> : null}
+                  {note ? <Text style={s.logNote} numberOfLines={1}>{note}</Text> : null}
+                </View>
+                <View style={[s.logScorePill, highScore && s.logScorePillHigh]}>
+                  <Text style={[s.logScoreText, highScore && s.logScoreTextHigh]}>
+                    {(item.score ?? 0).toFixed(1)}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            );
+          }}
           contentContainerStyle={s.listContent}
           showsVerticalScrollIndicator={false}
         />
@@ -460,5 +495,34 @@ const s = StyleSheet.create({
   },
   emptyTitle: { fontSize: 16, fontWeight: '700', color: colors.text, marginTop: 6 },
   emptyBody: { fontSize: 13, color: colors.textMuted, textAlign: 'center' },
-  listContent: { paddingBottom: 32 },
+  listContent: { paddingBottom: 32, paddingHorizontal: 16 },
+
+  // Compact log row — mirrors the EatsListRow on the own-profile screen
+  // so a friend's logs render in the same visual style as the user's own.
+  logRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+    gap: 12,
+  },
+  logThumbWrap: { width: 48, height: 48, borderRadius: 12, overflow: 'hidden' },
+  logThumb: { width: 48, height: 48 },
+  logInfo: { flex: 1, minWidth: 0 },
+  logName: { fontSize: 15, fontWeight: '700', color: colors.text, letterSpacing: -0.2 },
+  logMeta: { fontSize: 12, fontWeight: '500', color: colors.textMuted, marginTop: 1 },
+  logNote: { fontSize: 12, fontWeight: '500', color: colors.textFaint, fontStyle: 'italic', marginTop: 2 },
+  logScorePill: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 10,
+    backgroundColor: colors.surfaceSoft,
+  },
+  logScorePillHigh: {
+    backgroundColor: colors.accent,
+  },
+  logScoreText: { fontSize: 13, fontWeight: '800', color: colors.text },
+  logScoreTextHigh: { color: '#fff' },
 });

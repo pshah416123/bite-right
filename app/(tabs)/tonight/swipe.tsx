@@ -389,12 +389,12 @@ export default function TonightSwipeScreen() {
       {filtersRelaxed ? (
         <View style={styles.relaxedBanner}>
           <Text style={styles.relaxedBannerTitle}>
-            {relaxedFrom ? `No ${relaxedFrom.toLowerCase()} places nearby` : 'No matches for your filters'}
+            {relaxedFrom ? `Few ${relaxedFrom.toLowerCase()} spots nearby` : 'Few matches for your filters'}
           </Text>
           <Text style={styles.relaxedBannerText} numberOfLines={2}>
             {relaxedTo
-              ? `Showing ${relaxedTo.toLowerCase()} spots instead — the closest match in your area.`
-              : 'Showing top picks in your area instead.'}
+              ? `Mixed in ${relaxedTo.toLowerCase()} so you have enough to swipe. Your ${relaxedFrom?.toLowerCase() || 'cuisine'} picks come first.`
+              : 'Added other top picks in your area so you have enough to swipe.'}
           </Text>
         </View>
       ) : null}
