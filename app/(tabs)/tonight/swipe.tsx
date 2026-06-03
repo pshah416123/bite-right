@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Share, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import SwipeDeck from '~/src/components/SwipeDeck';
 import { getTonightPool, postTonightSwipe, getSessionState, markDoneSwiping } from '~/src/api/tonight';
 import type { ParticipantProgress, PoolItem } from '~/src/api/tonight';
@@ -235,12 +236,35 @@ export default function TonightSwipeScreen() {
   }
 
   if (cards.length === 0) {
-    // Friendly done state. Splits the message based on whether the rest of
-    // the group is still swiping — if so, tell them to check back; if not,
-    // jump straight to the matches CTA. Either way, the bottom tab bar is
-    // visible so the user can use the rest of the app freely while they wait.
-    const stillSwipingCount = participants.filter((p) => !p.doneSwiping).length - 1;
-    const everyoneDone = stillSwipingCount <= 0 && participants.length > 0;
+    // Friendly done state. Branches:
+    //   solo       — user swiped alone (participants is just them or empty).
+    //                Make sharing the link the primary action; "see my
+    //                picks" is secondary. This is the case the user
+    //                reported as a dead-end: they swiped without sharing
+    //                and ended up with no clear next step.
+    //   waiting    — others are still swiping. Soft prompt to come back.
+    //   everyoneDone — group has finished.
+    //
+    // We use router.replace to navigate AWAY so this empty-deck screen
+    // doesn't stay in the back stack causing the "back gesture lands me
+    // here again" glitch the user described.
+    const others = participants.filter((p) =>
+      session?.participantId ? p.participantId !== session.participantId : true,
+    );
+    const isSolo = others.length === 0;
+    const stillSwipingCount = others.filter((p) => !p.doneSwiping).length;
+    const everyoneDone = !isSolo && stillSwipingCount === 0;
+
+    const shareInvite = async () => {
+      if (!session?.code) return;
+      const link = `biteright://tonight/join?code=${session.code}`;
+      try {
+        await Share.share({
+          message: `Help me decide where to eat tonight — join my group swipe: ${link}`,
+        });
+      } catch { /* user cancelled, no-op */ }
+    };
+
     return (
       <SafeAreaView style={styles.safe}>
         <View style={styles.center}>
@@ -249,27 +273,56 @@ export default function TonightSwipeScreen() {
           <Text style={styles.helper}>
             {everyoneDone
               ? 'Everyone has finished swiping. Time to see your matches.'
-              : stillSwipingCount === 1
-                ? '1 friend is still swiping. Feel free to use the rest of the app — we’ll have matches ready when they finish.'
-                : participants.length > 1
-                  ? `${stillSwipingCount} friends are still swiping. Feel free to use the rest of the app — we’ll have matches ready when they finish.`
-                  : 'Check back in a bit for your matches.'}
+              : isSolo
+                ? 'Looks like you swiped solo. Invite friends to compare picks, or jump to your top choices.'
+                : stillSwipingCount === 1
+                  ? `1 friend is still swiping. Feel free to use the rest of the app — we${'’'}ll have matches ready when they finish.`
+                  : `${stillSwipingCount} friends are still swiping. Feel free to use the rest of the app — we${'’'}ll have matches ready when they finish.`}
           </Text>
-          <TouchableOpacity
-            style={styles.button}
-            onPress={() => router.push('/(tabs)/tonight/matches')}
-          >
-            <Text style={styles.buttonText}>
-              {everyoneDone ? 'See matches' : 'See matches so far'}
-            </Text>
-          </TouchableOpacity>
+
+          {/* Primary CTA. Solo → invite (the user's main need). Group → matches. */}
+          {isSolo ? (
+            <TouchableOpacity
+              style={styles.button}
+              onPress={shareInvite}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="paper-plane" size={16} color="#fff" style={{ marginRight: 8 }} />
+              <Text style={styles.buttonText}>Invite friends</Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={styles.button}
+              onPress={() => router.replace('/(tabs)/tonight/matches')}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.buttonText}>
+                {everyoneDone ? 'See matches' : 'See matches so far'}
+              </Text>
+            </TouchableOpacity>
+          )}
+
+          {/* Secondary — always available. */}
           <TouchableOpacity
             style={styles.secondaryButton}
-            onPress={() => router.navigate('/(tabs)/tonight')}
+            onPress={() => router.replace(isSolo ? '/(tabs)/tonight/matches' : '/(tabs)/tonight')}
             activeOpacity={0.7}
           >
-            <Text style={styles.secondaryButtonText}>Back to Tonight</Text>
+            <Text style={styles.secondaryButtonText}>
+              {isSolo ? 'See my picks' : 'Back to Tonight'}
+            </Text>
           </TouchableOpacity>
+
+          {/* Tertiary — only when solo, give the user a way back. */}
+          {isSolo ? (
+            <TouchableOpacity
+              style={[styles.secondaryButton, { marginTop: 4 }]}
+              onPress={() => router.replace('/(tabs)/tonight')}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.secondaryButtonText}>Back to Tonight</Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
       </SafeAreaView>
     );
@@ -292,8 +345,11 @@ export default function TonightSwipeScreen() {
             </Text>
           </View>
         </View>
-        {/* Participant status */}
-        {participants.length > 1 && (
+        {/* Participant status OR solo-share prompt. When the user is
+            swiping alone (no other joined participants), surface a
+            persistent "Share this link" banner so they don't reach the
+            end of the deck with nobody to compare picks against. */}
+        {participants.length > 1 ? (
           <View style={styles.participantRow}>
             {participants.map((p) => (
               <View key={p.participantId} style={styles.participantPill}>
@@ -305,7 +361,25 @@ export default function TonightSwipeScreen() {
               </View>
             ))}
           </View>
-        )}
+        ) : session?.code ? (
+          <TouchableOpacity
+            style={styles.soloShareBanner}
+            onPress={async () => {
+              const link = `biteright://tonight/join?code=${session.code}`;
+              try {
+                await Share.share({
+                  message: `Help me decide where to eat tonight \u2014 join my group swipe: ${link}`,
+                });
+              } catch { /* user cancelled */ }
+            }}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="paper-plane-outline" size={14} color={colors.accent} />
+            <Text style={styles.soloShareBannerText}>
+              Swiping solo \u2014 tap to invite friends to compare picks
+            </Text>
+          </TouchableOpacity>
+        ) : null}
       </View>
 
       {/* Filter-relaxed banner — surfaced when the cuisine filter produced no
@@ -387,6 +461,25 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: colors.textMuted,
     letterSpacing: 0.3,
+  },
+  soloShareBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: colors.accentSoft,
+    borderWidth: 1,
+    borderColor: 'rgba(232, 89, 42, 0.3)',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 4,
+  },
+  soloShareBannerText: {
+    flex: 1,
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: colors.text,
+    letterSpacing: -0.1,
   },
   participantRow: {
     flexDirection: 'row',

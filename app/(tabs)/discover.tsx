@@ -924,36 +924,11 @@ export default function DiscoverScreen() {
                 users couldn't tell if their selection had registered. */}
             {locationInput.trim().length > 0 ? (
               <View>
-                {/* Always-visible submit button. Previously this was hidden
-                    behind a no-suggestions branch — if suggestions were
-                    rendered (or "Searching…" stuck), the user had no way
-                    to commit their typed value. Now the button is always
-                    available the moment they've typed something, and
-                    suggestions / status messages render BELOW it. */}
-                <TouchableOpacity
-                  style={[styles.sheetUseLocationBtn, { alignSelf: 'stretch', justifyContent: 'center', marginVertical: 8 }]}
-                  onPress={submitFreeFormLocation}
-                  activeOpacity={0.85}
-                >
-                  <Ionicons name="search" size={14} color="#fff" />
-                  <Text style={styles.sheetUseLocationBtnText}>
-                    Use {'"'}{locationInput.trim()}{'"'}
-                  </Text>
-                </TouchableOpacity>
-
-                {geoError ? (
-                  <View style={styles.sheetLocationHint}>
-                    <Text style={[styles.sheetLocationHintText, { color: colors.accent }]}>
-                      {geoError}
-                    </Text>
-                  </View>
-                ) : null}
-
-                {geoLoading ? (
-                  <View style={styles.sheetLocationHint}>
-                    <Text style={styles.sheetLocationHintText}>Searching…</Text>
-                  </View>
-                ) : geoSuggestions.length > 0 ? (
+                {/* Suggestions render ABOVE the submit button. Most of the
+                    time the user wants to tap a matched suggestion — only
+                    if no match looks right do they need the free-form
+                    "Use what I typed" escape hatch below. */}
+                {geoSuggestions.length > 0 ? (
                   <ScrollView style={styles.sheetSuggestionsScroll} keyboardShouldPersistTaps="always">
                     {geoSuggestions.map((sug) => (
                       <TouchableOpacity
@@ -972,13 +947,37 @@ export default function DiscoverScreen() {
                       </TouchableOpacity>
                     ))}
                   </ScrollView>
+                ) : geoLoading ? (
+                  <View style={styles.sheetLocationHint}>
+                    <Text style={styles.sheetLocationHintText}>Searching…</Text>
+                  </View>
                 ) : !geoError ? (
                   <View style={styles.sheetLocationHint}>
                     <Text style={styles.sheetLocationHintText}>
-                      No matches yet — keep typing or tap above to use what you typed.
+                      No matches yet — keep typing or use what you{'’'}ve typed below.
                     </Text>
                   </View>
                 ) : null}
+
+                {geoError ? (
+                  <View style={styles.sheetLocationHint}>
+                    <Text style={[styles.sheetLocationHintText, { color: colors.accent }]}>
+                      {geoError}
+                    </Text>
+                  </View>
+                ) : null}
+
+                {/* Always-visible submit button below the suggestions. */}
+                <TouchableOpacity
+                  style={[styles.sheetUseLocationBtn, { alignSelf: 'stretch', justifyContent: 'center', marginVertical: 8 }]}
+                  onPress={submitFreeFormLocation}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="search" size={14} color="#fff" />
+                  <Text style={styles.sheetUseLocationBtnText}>
+                    Use {'"'}{locationInput.trim()}{'"'}
+                  </Text>
+                </TouchableOpacity>
               </View>
             ) : (
               <ScrollView style={styles.sheetSuggestionsScroll} keyboardShouldPersistTaps="always">
