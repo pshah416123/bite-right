@@ -391,21 +391,35 @@ export default function DiscoverScreen() {
     setGeoError(null);
     const reqId = ++geoReqRef.current;
     const t = setTimeout(async () => {
+      // Watchdog: if for any reason the response handling below doesn't
+      // clear geoLoading within 8 seconds (stale-reqId guard skips it,
+      // iOS network drops the response, anything else), force it false
+      // so the user doesn't stare at "Searching…" indefinitely. We also
+      // surface an error so the user can describe what happened.
+      const watchdog = setTimeout(() => {
+        setGeoLoading(false);
+        setGeoError('Search took too long. Tap retry or pick a popular city below.');
+      }, 8000);
       try {
         const { data } = await apiClient.get<{ results: GeoSuggestion[] }>('/api/geo/autocomplete', {
           params: { query: q },
           timeout: 6000,
         });
-        if (geoReqRef.current !== reqId) return;
+        clearTimeout(watchdog);
         const results = Array.isArray(data?.results) ? data.results : [];
-        setGeoSuggestions(results);
-        setGeoError(null);
+        // Loosened guard: even if a newer keystroke has bumped reqId
+        // (e.g. iOS autocorrect mutated the field after we sent the
+        // request), still surface whatever results we got. Better to
+        // show slightly-stale suggestions than to leave the user stuck.
+        // The next keystroke's response will overwrite this anyway.
+        if (geoReqRef.current === reqId || geoSuggestions.length === 0) {
+          setGeoSuggestions(results);
+          setGeoError(null);
+        }
       } catch (err) {
-        if (geoReqRef.current !== reqId) return;
+        clearTimeout(watchdog);
+        if (geoReqRef.current !== reqId && geoSuggestions.length > 0) return;
         setGeoSuggestions([]);
-        // Best-effort surface of the actual error so the user can tell us
-        // what's happening on their device. axios errors carry a code +
-        // message; we display a short hint and the message itself.
         const e = err as { code?: string; message?: string; response?: { status?: number } };
         if (e?.code === 'ECONNABORTED' || /timeout/i.test(e?.message ?? '')) {
           setGeoError('Network timeout — check your connection and tap retry.');
@@ -415,7 +429,11 @@ export default function DiscoverScreen() {
           setGeoError(`Couldn't reach search service: ${e?.message ?? 'unknown error'}. Tap retry.`);
         }
       } finally {
-        if (geoReqRef.current === reqId) setGeoLoading(false);
+        // Always clear loading — the watchdog handles the rare case where
+        // this finally never runs. Removing the reqId guard here so a
+        // late-arriving response from the only-in-flight request can't
+        // leave loading stuck even if reqId bumped during the wait.
+        setGeoLoading(false);
       }
     }, 250);
     return () => clearTimeout(t);
