@@ -485,7 +485,18 @@ export default function LogVisitScreen() {
 
   return (
     <SafeAreaView style={styles.safe}>
-      <ScrollView ref={scrollRef} contentContainerStyle={styles.content} keyboardShouldPersistTaps="always">
+      <ScrollView
+        ref={scrollRef}
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="always"
+        // Dismiss the keyboard when the user starts scrolling. Previously
+        // the keyboard would only dismiss via the Return key — annoying
+        // on a long form where the user needs to scroll to keep filling
+        // out fields. 'interactive' on iOS lets the user drag the
+        // keyboard down with their finger; 'on-drag' is the Android
+        // equivalent.
+        keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+      >
         <Text style={styles.title}>{isEditMode ? 'Edit your visit' : 'Log a visit'}</Text>
         <Text style={styles.subtitle}>
           {isEditMode
