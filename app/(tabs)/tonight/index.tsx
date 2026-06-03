@@ -26,6 +26,7 @@ import * as Location from 'expo-location';
 import { useFocusEffect } from '@react-navigation/native';
 import SwipeDeck from '~/src/components/SwipeDeck';
 import { TN } from '~/src/components/SwipeCard';
+import { FirstVisitTip } from '~/src/components/FirstVisitTip';
 import { colors } from '~/src/theme/colors';
 import { useSavedRestaurants } from '~/src/context/SavedRestaurantsContext';
 import { useTonightSession } from '~/src/context/TonightContext';
@@ -698,6 +699,13 @@ export default function TonightScreen() {
       </View>
 
       {createError ? <Text style={s.errorText}>{createError}</Text> : null}
+
+      <FirstVisitTip
+        storageKey="byterite_tip_tonight"
+        icon="flame"
+        title="Can't decide? Swipe it out"
+        body="Solo or in a group — Tonight gives you 15 nearby spots to swipe. Tap Group to share a link with friends; we'll show everyone's overlap when you're done."
+      />
 
       {/* Group-swipe primary CTA — shown only when there's no active session
           so first-time users immediately see that the main point of Tonight

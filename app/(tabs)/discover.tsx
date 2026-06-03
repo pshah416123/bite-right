@@ -17,6 +17,7 @@ import { ActivityIndicator } from 'react-native';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDiscover, type DiscoverSectionItems } from '~/src/hooks/useDiscover';
 import { RestaurantCard } from '~/src/components/RestaurantCard';
+import { FirstVisitTip } from '~/src/components/FirstVisitTip';
 import { POPULAR_LOCATIONS, type DiscoverSelectedLocation } from '~/src/components/DiscoverLocationBar';
 import { useSavedRestaurants } from '~/src/context/SavedRestaurantsContext';
 import { useFeedContext } from '~/src/context/FeedContext';
@@ -756,6 +757,13 @@ export default function DiscoverScreen() {
           </View>
         )}
       </View>
+
+      <FirstVisitTip
+        storageKey="byterite_tip_discover"
+        icon="compass"
+        title="Discover is personalized to your taste"
+        body="Picks update as you log more visits. Tap a category chip to narrow it down, search by name or dish, or tap the location pill to explore a different city."
+      />
 
       {/* ── Content ─────────────────────────────────────────────────────── */}
       {searchFocused ? null : showLoading ? (

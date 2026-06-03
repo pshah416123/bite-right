@@ -6,6 +6,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { FeedCard, type FeedLog } from '~/src/components/FeedCard';
+import { FirstVisitTip } from '~/src/components/FirstVisitTip';
 import { SearchOverlay } from '~/src/components/SearchOverlay';
 import { useFeed } from '~/src/hooks/useFeed';
 import { useDiscover } from '~/src/hooks/useDiscover';
@@ -197,6 +198,13 @@ export default function FeedScreen() {
           <Text style={s.headline}>{headline}</Text>
           <Text style={s.subline}>{subline}</Text>
         </View>
+
+        <FirstVisitTip
+          storageKey="byterite_tip_feed_fab"
+          icon="add-circle"
+          title="Tap + to log a visit"
+          body="Rate places you tried, mark standout dishes, add a photo. Your taste profile builds from these — Discover and group swipes use it."
+        />
 
         {/* ── Feed ── */}
         <View style={s.listWrap}>
