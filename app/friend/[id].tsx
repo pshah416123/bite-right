@@ -314,7 +314,15 @@ export default function FriendProfileScreen() {
         <FlatList
           data={filteredLogs}
           keyExtractor={(l) => l.id}
-          ListHeaderComponent={renderHeader}
+          // Pass a React element (the result of renderHeader()) instead of
+          // the function itself. Passing the function makes FlatList treat
+          // it as a component type — and because renderHeader is recreated
+          // on every parent render, FlatList sees a new "component type"
+          // on every keystroke and remounts the entire header. That
+          // remount blurs the TextInput inside the header, causing the
+          // "glitchy" search experience the user reported (keyboard
+          // dismissing, cursor jumping, etc.).
+          ListHeaderComponent={renderHeader()}
           ListEmptyComponent={
             <View style={s.emptyFilter}>
               <Text style={s.emptyTitle}>No matches</Text>
