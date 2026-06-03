@@ -915,52 +915,63 @@ export default function DiscoverScreen() {
                 closes the sheet — previously the sheet stayed open and
                 users couldn't tell if their selection had registered. */}
             {locationInput.trim().length > 0 ? (
-              geoLoading ? (
-                <View style={styles.sheetLocationHint}>
-                  <Text style={styles.sheetLocationHintText}>Searching...</Text>
-                </View>
-              ) : geoSuggestions.length > 0 ? (
-                <ScrollView style={styles.sheetSuggestionsScroll} keyboardShouldPersistTaps="always">
-                  {geoSuggestions.map((sug) => (
-                    <TouchableOpacity
-                      key={sug.label}
-                      style={styles.sheetLocationRow}
-                      onPress={() => {
-                        setCustomLocation({ label: sug.label, placeId: null, lat: sug.lat, lng: sug.lng });
-                        setLocationInput('');
-                        setRadiusMiles(pendingRadius);
-                        closeLocationSheet();
-                      }}
-                      activeOpacity={0.7}
-                    >
-                      <Ionicons name="location-outline" size={15} color={colors.textMuted} />
-                      <Text style={styles.sheetLocationText} numberOfLines={1}>{sug.label}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </ScrollView>
-              ) : (
-                <View style={styles.sheetLocationHint}>
-                  {geoError ? (
+              <View>
+                {/* Always-visible submit button. Previously this was hidden
+                    behind a no-suggestions branch — if suggestions were
+                    rendered (or "Searching…" stuck), the user had no way
+                    to commit their typed value. Now the button is always
+                    available the moment they've typed something, and
+                    suggestions / status messages render BELOW it. */}
+                <TouchableOpacity
+                  style={[styles.sheetUseLocationBtn, { alignSelf: 'stretch', justifyContent: 'center', marginVertical: 8 }]}
+                  onPress={submitFreeFormLocation}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="search" size={14} color="#fff" />
+                  <Text style={styles.sheetUseLocationBtnText}>
+                    Use {'"'}{locationInput.trim()}{'"'}
+                  </Text>
+                </TouchableOpacity>
+
+                {geoError ? (
+                  <View style={styles.sheetLocationHint}>
                     <Text style={[styles.sheetLocationHintText, { color: colors.accent }]}>
                       {geoError}
                     </Text>
-                  ) : (
+                  </View>
+                ) : null}
+
+                {geoLoading ? (
+                  <View style={styles.sheetLocationHint}>
+                    <Text style={styles.sheetLocationHintText}>Searching…</Text>
+                  </View>
+                ) : geoSuggestions.length > 0 ? (
+                  <ScrollView style={styles.sheetSuggestionsScroll} keyboardShouldPersistTaps="always">
+                    {geoSuggestions.map((sug) => (
+                      <TouchableOpacity
+                        key={sug.label}
+                        style={styles.sheetLocationRow}
+                        onPress={() => {
+                          setCustomLocation({ label: sug.label, placeId: null, lat: sug.lat, lng: sug.lng });
+                          setLocationInput('');
+                          setRadiusMiles(pendingRadius);
+                          closeLocationSheet();
+                        }}
+                        activeOpacity={0.7}
+                      >
+                        <Ionicons name="location-outline" size={15} color={colors.textMuted} />
+                        <Text style={styles.sheetLocationText} numberOfLines={1}>{sug.label}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                ) : !geoError ? (
+                  <View style={styles.sheetLocationHint}>
                     <Text style={styles.sheetLocationHintText}>
-                      No suggestions — tap below to search for {'"'}{locationInput.trim()}{'"'} anyway
+                      No matches yet — keep typing or tap above to use what you typed.
                     </Text>
-                  )}
-                  <TouchableOpacity
-                    style={styles.sheetUseLocationBtn}
-                    onPress={submitFreeFormLocation}
-                    activeOpacity={0.85}
-                  >
-                    <Ionicons name="search" size={14} color="#fff" />
-                    <Text style={styles.sheetUseLocationBtnText}>
-                      {geoError ? 'Retry' : 'Use this location'}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              )
+                  </View>
+                ) : null}
+              </View>
             ) : (
               <ScrollView style={styles.sheetSuggestionsScroll} keyboardShouldPersistTaps="always">
                 {POPULAR_LOCATIONS.map((loc) => {
