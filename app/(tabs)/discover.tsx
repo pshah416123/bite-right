@@ -10,6 +10,7 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  Alert,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ActivityIndicator } from 'react-native';
@@ -326,6 +327,7 @@ export default function DiscoverScreen() {
   const [locationInput, setLocationInput] = useState('');
   const [geoSuggestions, setGeoSuggestions] = useState<GeoSuggestion[]>([]);
   const [geoLoading, setGeoLoading] = useState(false);
+  const [geoError, setGeoError] = useState<string | null>(null);
   const geoReqRef = useRef(0);
 
   const effectiveCoords = useMemo(() => {
@@ -384,24 +386,34 @@ export default function DiscoverScreen() {
   useEffect(() => {
     if (!locationPickerOpen) return;
     const q = locationInput.trim();
-    if (!q) { setGeoSuggestions([]); setGeoLoading(false); return; }
+    if (!q) { setGeoSuggestions([]); setGeoLoading(false); setGeoError(null); return; }
     setGeoLoading(true);
+    setGeoError(null);
     const reqId = ++geoReqRef.current;
     const t = setTimeout(async () => {
       try {
-        // Short 6s timeout so a flaky network doesn't leave the user
-        // staring at "Searching…" forever. If it times out we still let
-        // them submit their free-form input via the "Use this location"
-        // button below.
         const { data } = await apiClient.get<{ results: GeoSuggestion[] }>('/api/geo/autocomplete', {
           params: { query: q },
           timeout: 6000,
         });
         if (geoReqRef.current !== reqId) return;
-        setGeoSuggestions(Array.isArray(data?.results) ? data.results : []);
-      } catch {
+        const results = Array.isArray(data?.results) ? data.results : [];
+        setGeoSuggestions(results);
+        setGeoError(null);
+      } catch (err) {
         if (geoReqRef.current !== reqId) return;
         setGeoSuggestions([]);
+        // Best-effort surface of the actual error so the user can tell us
+        // what's happening on their device. axios errors carry a code +
+        // message; we display a short hint and the message itself.
+        const e = err as { code?: string; message?: string; response?: { status?: number } };
+        if (e?.code === 'ECONNABORTED' || /timeout/i.test(e?.message ?? '')) {
+          setGeoError('Network timeout — check your connection and tap retry.');
+        } else if (e?.response?.status) {
+          setGeoError(`Server error (HTTP ${e.response.status}). Tap retry.`);
+        } else {
+          setGeoError(`Couldn't reach search service: ${e?.message ?? 'unknown error'}. Tap retry.`);
+        }
       } finally {
         if (geoReqRef.current === reqId) setGeoLoading(false);
       }
@@ -409,14 +421,13 @@ export default function DiscoverScreen() {
     return () => clearTimeout(t);
   }, [locationPickerOpen, locationInput]);
 
-  // Free-form submit fallback — if autocomplete returns nothing (or the
-  // user just wants to bypass the suggestion list), they can hit "Use this
-  // location" or press Search on the keyboard and we'll geocode the
-  // whatever-they-typed via the same endpoint and use the first result.
-  // Without this, a flaky autocomplete leaves the sheet useless.
+  // Free-form submit fallback. Same endpoint, but on failure / no results
+  // we now surface an Alert so the user gets visible feedback they can
+  // describe back to us. Previously failures were swallowed silently.
   const submitFreeFormLocation = useCallback(async () => {
     const q = locationInput.trim();
     if (!q) return;
+    setGeoError(null);
     try {
       const { data } = await apiClient.get<{ results: GeoSuggestion[] }>('/api/geo/autocomplete', {
         params: { query: q },
@@ -429,10 +440,17 @@ export default function DiscoverScreen() {
         setRadiusMiles(pendingRadius);
         closeLocationSheet();
       } else {
-        setGeoSuggestions([]);
+        setGeoError(`No matches found for "${q}". Try a more specific spelling.`);
       }
-    } catch {
-      setGeoSuggestions([]);
+    } catch (err) {
+      const e = err as { code?: string; message?: string; response?: { status?: number } };
+      const hint = e?.code === 'ECONNABORTED' || /timeout/i.test(e?.message ?? '')
+        ? 'Network timeout. Check your connection.'
+        : e?.response?.status
+          ? `Server error (HTTP ${e.response.status}).`
+          : `Couldn't reach search service: ${e?.message ?? 'unknown error'}.`;
+      setGeoError(hint);
+      Alert.alert('Couldn’t find that location', hint);
     }
   }, [locationInput, pendingRadius]);
 
@@ -904,16 +922,24 @@ export default function DiscoverScreen() {
                 </ScrollView>
               ) : (
                 <View style={styles.sheetLocationHint}>
-                  <Text style={styles.sheetLocationHintText}>
-                    No suggestions — tap below to search for {'"'}{locationInput.trim()}{'"'} anyway
-                  </Text>
+                  {geoError ? (
+                    <Text style={[styles.sheetLocationHintText, { color: colors.accent }]}>
+                      {geoError}
+                    </Text>
+                  ) : (
+                    <Text style={styles.sheetLocationHintText}>
+                      No suggestions — tap below to search for {'"'}{locationInput.trim()}{'"'} anyway
+                    </Text>
+                  )}
                   <TouchableOpacity
                     style={styles.sheetUseLocationBtn}
                     onPress={submitFreeFormLocation}
                     activeOpacity={0.85}
                   >
                     <Ionicons name="search" size={14} color="#fff" />
-                    <Text style={styles.sheetUseLocationBtnText}>Use this location</Text>
+                    <Text style={styles.sheetUseLocationBtnText}>
+                      {geoError ? 'Retry' : 'Use this location'}
+                    </Text>
                   </TouchableOpacity>
                 </View>
               )

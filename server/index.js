@@ -6450,7 +6450,11 @@ app.get('/api/geo/geocode', async (req, res) => {
 // GET /api/geo/autocomplete?query=... (multiple results for type-ahead)
 app.get('/api/geo/autocomplete', async (req, res) => {
   const query = (req.query.query || '').trim();
+  const ua = (req.headers['user-agent'] || '').slice(0, 80);
+  const userId = req.headers['x-user-id'] || null;
+  console.log('[BiteRight] geo/autocomplete request', { query, userId, ua });
   const results = await geocodeAutocomplete(query);
+  console.log('[BiteRight] geo/autocomplete response', { query, count: results.length });
   res.json({ results });
 });
 
