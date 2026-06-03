@@ -188,23 +188,37 @@ export default function FriendProfileScreen() {
       </View>
 
       <View style={s.profileHeader}>
-        <LinearGradient
-          colors={['#C4899A', '#8B3A4A']}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={s.avatar}
-        >
-          <Text style={s.avatarInitial}>{initial}</Text>
-        </LinearGradient>
-        <Text style={s.displayName}>{user.displayName}</Text>
-        <Text style={s.handle}>@{user.username}</Text>
+        <View style={s.headerTop}>
+          <LinearGradient
+            colors={['#C4899A', '#8B3A4A']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={s.avatar}
+          >
+            <Text style={s.avatarInitial}>{initial}</Text>
+          </LinearGradient>
+          <View style={s.headerInfo}>
+            <Text style={s.displayName} numberOfLines={1}>{user.displayName}</Text>
+            <Text style={s.handle} numberOfLines={1}>@{user.username}</Text>
+            {user.createdAt ? (
+              <Text style={s.joined}>Joined {formatJoinedDate(user.createdAt)}</Text>
+            ) : null}
+          </View>
+          <TouchableOpacity
+            style={[s.followBtn, following && s.followBtnFollowing]}
+            onPress={handleFollow}
+            activeOpacity={0.85}
+            disabled={followInFlight}
+          >
+            <Text style={[s.followBtnText, following && s.followBtnTextFollowing]}>
+              {following ? 'Following' : 'Follow'}
+            </Text>
+          </TouchableOpacity>
+        </View>
 
         {user.bio ? <Text style={s.bio}>{user.bio}</Text> : null}
-        {user.createdAt ? (
-          <Text style={s.joined}>Joined {formatJoinedDate(user.createdAt)}</Text>
-        ) : null}
 
-        <View style={s.stats}>
+        <View style={s.statsCard}>
           <View style={s.stat}>
             <Text style={s.statValue}>{user.followerCount ?? 0}</Text>
             <Text style={s.statLabel}>Followers</Text>
@@ -220,17 +234,6 @@ export default function FriendProfileScreen() {
             <Text style={s.statLabel}>Logs</Text>
           </View>
         </View>
-
-        <TouchableOpacity
-          style={[s.followBtn, following && s.followBtnFollowing]}
-          onPress={handleFollow}
-          activeOpacity={0.85}
-          disabled={followInFlight}
-        >
-          <Text style={[s.followBtnText, following && s.followBtnTextFollowing]}>
-            {following ? 'Following' : 'Follow'}
-          </Text>
-        </TouchableOpacity>
       </View>
 
       {hasAnyLogs ? (
@@ -339,59 +342,74 @@ const s = StyleSheet.create({
     paddingVertical: 8,
   },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
+  // Header — matches the compact own-profile layout: avatar on left,
+  // name/handle stacked beside it, Follow CTA on the right, stats card
+  // below. Friend profiles used to use a tall centered layout with a
+  // 96×96 avatar that felt outsized vs the user's own profile screen.
   profileHeader: {
+    paddingTop: 4,
+    paddingHorizontal: 16,
+    paddingBottom: 14,
+  },
+  headerTop: {
+    flexDirection: 'row',
     alignItems: 'center',
-    paddingTop: 16,
-    paddingHorizontal: 24,
-    paddingBottom: 20,
+    gap: 12,
+  },
+  headerInfo: {
+    flex: 1,
+    minWidth: 0,
   },
   avatar: {
-    width: 96,
-    height: 96,
-    borderRadius: 48,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 12,
   },
-  avatarInitial: { fontSize: 40, fontWeight: '800', color: '#fff' },
-  displayName: { fontSize: 22, fontWeight: '800', color: colors.text },
-  handle: { fontSize: 14, color: colors.textMuted, marginTop: 2 },
+  avatarInitial: { fontSize: 22, fontWeight: '700', color: '#fff' },
+  displayName: { fontSize: 18, fontWeight: '800', color: colors.text, letterSpacing: -0.2 },
+  handle: { fontSize: 13, color: colors.textMuted, marginTop: 1, fontWeight: '500' },
   bio: {
-    marginTop: 10,
-    fontSize: 14,
+    marginTop: 12,
+    fontSize: 13.5,
     lineHeight: 19,
     color: colors.text,
-    textAlign: 'center',
-    paddingHorizontal: 8,
   },
   joined: {
-    marginTop: 6,
-    fontSize: 11.5,
+    marginTop: 3,
+    fontSize: 11,
     fontWeight: '600',
     color: colors.textMuted,
     letterSpacing: 0.2,
   },
-  stats: {
+  statsCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 18,
-    marginTop: 16,
-    marginBottom: 18,
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    marginTop: 14,
+    shadowColor: 'rgba(180,120,80,0.10)',
+    shadowOpacity: 1,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
   },
-  stat: { alignItems: 'center', minWidth: 60 },
-  statValue: { fontSize: 20, fontWeight: '700', color: colors.text },
-  statLabel: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
-  statDivider: { width: 1, height: 32, backgroundColor: colors.border },
+  stat: { flex: 1, alignItems: 'center' },
+  statValue: { fontSize: 20, fontWeight: '800', color: colors.text },
+  statLabel: { fontSize: 12, color: colors.textMuted, fontWeight: '500', marginTop: 2 },
+  statDivider: { width: 1, height: 28, backgroundColor: colors.border, marginHorizontal: 8 },
   followBtn: {
     backgroundColor: colors.accent,
-    paddingHorizontal: 32,
-    paddingVertical: 12,
+    paddingHorizontal: 18,
+    paddingVertical: 8,
     borderRadius: 999,
-    minWidth: 140,
     alignItems: 'center',
   },
   followBtnFollowing: { backgroundColor: colors.surfaceSoft },
-  followBtnText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  followBtnText: { color: '#fff', fontSize: 13, fontWeight: '700' },
   followBtnTextFollowing: { color: colors.text },
 
   filtersSection: { paddingHorizontal: 16, paddingBottom: 8, gap: 10 },
