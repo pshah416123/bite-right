@@ -148,6 +148,15 @@ function parsePdfTextToSections(text) {
   const NOT_A_DISH_RE =
     /\b(closed|kitchen|opening hours|order online|delivery|takeout|pickup|reservations?|book a table|call us|contact|follow us|visit us|hours|allergen)\b/i;
 
+  // Whitelist of words that genuinely identify menu sections vs items.
+  // An ALL-CAPS line that doesn't include one of these is more likely a
+  // dish name styled in caps than a section header. Previously
+  // "LOBSTER TEMPURA" and "SHRIMP TEMPURA" were being promoted to
+  // sections (each containing 1 unrelated item from the next column of
+  // the multi-column PDF), which produced garbage like a "Lobster
+  // Tempura" section full of sake items.
+  const SECTION_HINT_RE = /\b(?:menu|appetizers?|starters?|small\s?plates?|mains?|entr[ée]es?|sides?|sandwich|burger|burritos?|tacos?|pasta|noodles?|salads?|soups?|desserts?|sweets?|drinks?|beverages?|wines?|beers?|cocktails?|spirits?|sakes?|whisk(?:e)?ys?|breakfast|brunch|lunch|dinner|specials?|features?|rolls?|nigiri|sashimi|maki|tempura\s+rolls?|signature|kids|family|sides?\s+and|grill|raw\s?bar|oyster|sushi|pizza|favorites?|classics?|chef'?s)\b/i;
+
   const sections = [];
   let current = null;
   const ensureCurrent = (title = 'Menu') => {
@@ -161,9 +170,14 @@ function parsePdfTextToSections(text) {
     const line = lines[i];
 
     if (isAllCaps(line)) {
-      // Close current, open a new section keyed off this header.
-      current = { title: titleCase(line), items: [] };
-      sections.push(current);
+      // Only treat this as a section header if it CONTAINS a recognized
+      // menu-category word. Otherwise it's almost certainly a dish name
+      // styled in all-caps (e.g. "LOBSTER TEMPURA", "BLUEFIN").
+      if (SECTION_HINT_RE.test(line)) {
+        current = { title: titleCase(line), items: [] };
+        sections.push(current);
+      }
+      // Either way, skip this line — never emit it as an item.
       continue;
     }
 
@@ -173,6 +187,9 @@ function parsePdfTextToSections(text) {
       const priceNum = parseFloat(priceMatch[2]);
       if (!name || NOT_A_DISH_RE.test(name) || name.length < 2 || name.length > 80) continue;
       if (!Number.isFinite(priceNum) || priceNum < 1 || priceNum > 500) continue;
+      // Reject fragment "names" with no real content — "Your choice of",
+      // "Add to any", "Add a". Indicates we caught an inter-item fragment.
+      if (/^(?:your\s+choice|add\s+to|add\s+a|served\s+with|comes\s+with|choice\s+of)\b/i.test(name)) continue;
       ensureCurrent();
       const item = {
         name,
@@ -192,8 +209,20 @@ function parsePdfTextToSections(text) {
     }
   }
 
-  // Drop sections with no items, and the whole result if it's too thin.
-  const cleaned = sections.filter((s) => s.items.length > 0);
+  // Drop sections that ended up with 0 or 1 items — those are usually
+  // misclassified headers from a multi-column PDF where the items below
+  // belong to a different physical column. The previous-section sweep
+  // merges single-item orphans into the previous valid section so the
+  // dish itself isn't lost.
+  const cleaned = [];
+  for (const sec of sections) {
+    if (sec.items.length >= 2) {
+      cleaned.push(sec);
+    } else if (sec.items.length === 1 && cleaned.length > 0) {
+      cleaned[cleaned.length - 1].items.push(sec.items[0]);
+    }
+    // sec.items.length === 0 → drop entirely
+  }
   const totalItems = cleaned.reduce((acc, s) => acc + s.items.length, 0);
   if (totalItems < 3) return null;
   return cleaned;
