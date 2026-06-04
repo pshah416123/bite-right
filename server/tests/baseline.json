@@ -1,0 +1,92 @@
+{
+  "restaurants": [
+    {
+      "label": "Trivoli Tavern (Chicago)",
+      "url": "https://trivolitavern.com/menus",
+      "status": "WARN",
+      "source": "squarespace",
+      "sectionCount": 30,
+      "itemCount": 129,
+      "qualityScore": 92,
+      "issues": [
+        "section_one_item=3"
+      ],
+      "checks": [
+        "missing required item \"Carne Asada\""
+      ]
+    },
+    {
+      "label": "The Izakaya (Chicago, PDF beverage book)",
+      "url": "https://www.momotarochicago.com/izakaya",
+      "status": "WARN",
+      "source": "pdf",
+      "sectionCount": 2,
+      "itemCount": 285,
+      "qualityScore": 80,
+      "issues": [
+        "food_keyword_pct=14"
+      ],
+      "checks": [
+        "sections 2 < minSections 20"
+      ]
+    },
+    {
+      "label": "Sabroso Chicago (Dine WP)",
+      "url": "https://sabrosochicago.com/menu/",
+      "status": "PASS",
+      "source": "dine_wp",
+      "sectionCount": 11,
+      "itemCount": 76,
+      "qualityScore": 100,
+      "issues": [],
+      "checks": []
+    },
+    {
+      "label": "Experience Zuzu Detroit (multi-column PDF)",
+      "url": "https://experiencezuzu.com/wp-content/uploads/2026/05/Copy-of-Detroit-ZuZu-Dinner-Menu.pdf",
+      "status": "PASS",
+      "source": "null",
+      "sectionCount": 0,
+      "itemCount": 0,
+      "qualityScore": 100,
+      "issues": [],
+      "checks": []
+    },
+    {
+      "label": "Cabra Chicago (Squarespace homepage with event h1s)",
+      "url": "https://www.cabrachicago.com/",
+      "status": "PASS",
+      "source": "null",
+      "sectionCount": 0,
+      "itemCount": 0,
+      "qualityScore": 100,
+      "issues": [],
+      "checks": []
+    },
+    {
+      "label": "Ken Ken Sushi (GoDaddy iSteam image menu)",
+      "url": "https://kenkensushi.com/menu",
+      "status": "PASS",
+      "source": "null",
+      "sectionCount": 0,
+      "itemCount": 0,
+      "qualityScore": 100,
+      "issues": [],
+      "checks": []
+    }
+  ],
+  "synthetic": [
+    {
+      "label": "ALL-CAPS dish names without category words (Zuzu pattern)",
+      "sections": 2,
+      "items": 4,
+      "failures": []
+    },
+    {
+      "label": "Single-column standard menu",
+      "sections": 3,
+      "items": 9,
+      "failures": []
+    }
+  ]
+}

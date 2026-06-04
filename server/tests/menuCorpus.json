@@ -1,0 +1,94 @@
+{
+  "_comment": "Menu extraction regression corpus. Each entry: { url, label, expected: { framework, cuisine, type, columnCount, mustContainItem?, mustNotContainItem?, minItems?, minSections? } }. Used by server/scripts/runMenuRegression.js.",
+  "restaurants": [
+    {
+      "url": "https://trivolitavern.com/menus",
+      "label": "Trivoli Tavern (Chicago)",
+      "expected": {
+        "framework": "Squarespace text-block",
+        "cuisine": "American",
+        "type": "casual dining",
+        "minItems": 80,
+        "minSections": 10,
+        "mustContainItem": "Carne Asada",
+        "mustNotContainItem": "Lobster Tempura"
+      }
+    },
+    {
+      "url": "https://www.momotarochicago.com/izakaya",
+      "label": "The Izakaya (Chicago, PDF beverage book)",
+      "expected": {
+        "framework": "PDF (single-source link)",
+        "cuisine": "Japanese",
+        "type": "casual dining",
+        "minItems": 200,
+        "minSections": 20,
+        "columnCount": 2
+      }
+    },
+    {
+      "url": "https://sabrosochicago.com/menu/",
+      "label": "Sabroso Chicago (Dine WP)",
+      "expected": {
+        "framework": "Dine WordPress",
+        "cuisine": "Mexican",
+        "type": "casual dining",
+        "minItems": 50,
+        "minSections": 5
+      }
+    },
+    {
+      "url": "https://experiencezuzu.com/wp-content/uploads/2026/05/Copy-of-Detroit-ZuZu-Dinner-Menu.pdf",
+      "label": "Experience Zuzu Detroit (multi-column PDF)",
+      "expected": {
+        "framework": "PDF (multi-column, all-caps dish names)",
+        "cuisine": "Japanese",
+        "type": "fine dining",
+        "columnCount": 3,
+        "mustNotContainItem": "Lobster Tempura",
+        "_note": "Sake items get column-flattened into wrong section. Acceptable as long as no fake all-caps sections appear and no Your-choice-of fragments survive."
+      }
+    },
+    {
+      "url": "https://www.cabrachicago.com/",
+      "label": "Cabra Chicago (Squarespace homepage with event h1s)",
+      "expected": {
+        "framework": "Squarespace text-block (homepage fallback)",
+        "cuisine": "Latin",
+        "type": "fine dining",
+        "_note": "After the promo/food-hint guards, homepage extraction should NOT emit Sunday Swim / Industry Nights / etc. Acceptable for the homepage to yield null."
+      }
+    },
+    {
+      "url": "https://kenkensushi.com/menu",
+      "label": "Ken Ken Sushi (GoDaddy iSteam image menu)",
+      "expected": {
+        "framework": "GoDaddy Website Builder",
+        "cuisine": "Japanese",
+        "type": "casual dining",
+        "_note": "Menu is two embedded JPEGs hosted at img1.wsimg.com. Page-image OCR must pick them up (verified the URL filter via collectImageUrls)."
+      }
+    }
+  ],
+  "synthetic": [
+    {
+      "label": "ALL-CAPS dish names without category words (Zuzu pattern)",
+      "pdfText": "GEKKEIKAN HAIKY TOKUBETSU JUNMAI......52\nFull & Sweet\nNigori Hakutsuru..............27\nFull & Sweet\nZUZU ROLLS\n5PC / 10 PC\nTruffle scallop*Scallop, Toro, Asian Pear, Yuzu Truffle\n13/25\nLOBSTER TEMPURA\nSHRIMP TEMPURA*\nTempura Lobster, Pickled Daikon, Eel Sauce\nSpicy Akami Mix, Carrot Crunch\nJunmai Daiginjo Joto.............59\nLight & Dry\nJunmai Daiginjo Dassai.............145\nLight & Sweet\n",
+      "expected": {
+        "mustNotContainItem": "Lobster Tempura",
+        "mustNotContainItem2": "Shrimp Tempura",
+        "mustContainItem": "Gekkeikan Haiky Tokubetsu Junmai",
+        "noFragments": ["Your choice of", "Add to any", "Served with"]
+      }
+    },
+    {
+      "label": "Single-column standard menu",
+      "pdfText": "APPETIZERS\nBruschetta.....8\nCalamari Fritti.....14\nCaprese.....12\nMAINS\nSpaghetti Carbonara.....22\nLasagna Bolognese.....24\nOsso Buco.....38\nDESSERTS\nTiramisu.....10\nCannoli.....8\nPanna Cotta.....9",
+      "expected": {
+        "minSections": 3,
+        "minItems": 9,
+        "mustContainItem": "Bruschetta"
+      }
+    }
+  ]
+}
