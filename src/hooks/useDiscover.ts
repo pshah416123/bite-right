@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import * as Location from 'expo-location';
 import type { DiscoverItem } from '../components/RestaurantCard';
 import { getDiscover } from '../api/discover';
@@ -35,6 +35,9 @@ interface UseDiscoverResult {
   discoverMode: DiscoverModeApi;
   /** User's GPS coordinates (falls back to Chicago if denied). */
   userCoords: { lat: number; lng: number } | null;
+  /** Re-poll GPS. Call when the user explicitly asks to use their
+   *  current location (e.g. taps "Near you" after traveling). */
+  refreshLocation: () => Promise<void>;
   loading: boolean;
   error: string | null;
 }
@@ -118,26 +121,38 @@ export function useDiscover(
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Resolve GPS on mount
+  // Resolve GPS — exposed as a function so callers can re-poll (e.g. when
+  // the user taps "Near you" after traveling). Without this, userCoords
+  // was captured once on mount and never refreshed; a user who flew from
+  // Chicago to Detroit would keep seeing Chicago results even after
+  // tapping the GPS option.
+  const refreshLocation = useCallback(async () => {
+    try {
+      const { status } = await Location.getForegroundPermissionsAsync();
+      if (status === 'granted') {
+        // Force a fresh reading by ignoring the cached last-known position
+        // (maxAge: 0). On iOS this triggers a new fix; the position may
+        // take 1-2 seconds to arrive after a long stale period.
+        const loc = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced,
+        });
+        setUserCoords({ lat: loc.coords.latitude, lng: loc.coords.longitude });
+      } else {
+        setUserCoords({ lat: 41.88, lng: -87.63 });
+      }
+    } catch {
+      setUserCoords((prev) => prev ?? { lat: 41.88, lng: -87.63 });
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      try {
-        const { status } = await Location.getForegroundPermissionsAsync();
-        if (cancelled) return;
-        if (status === 'granted') {
-          const loc = await Location.getCurrentPositionAsync({});
-          if (cancelled) return;
-          setUserCoords({ lat: loc.coords.latitude, lng: loc.coords.longitude });
-        } else {
-          setUserCoords({ lat: 41.88, lng: -87.63 }); // Chicago default
-        }
-      } catch {
-        if (!cancelled) setUserCoords({ lat: 41.88, lng: -87.63 });
-      }
+      if (cancelled) return;
+      await refreshLocation();
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [refreshLocation]);
 
   // Fetch nearby results when coords resolve
   useEffect(() => {
@@ -194,6 +209,7 @@ export function useDiscover(
       isColdStart: false,
       discoverMode: 'nearby' as DiscoverModeApi,
       userCoords: { lat: 41.88, lng: -87.63 },
+      refreshLocation: async () => { /* no-op in test mode */ },
       loading: false,
       error: null,
     };
@@ -204,6 +220,7 @@ export function useDiscover(
     isColdStart: isColdStartState,
     discoverMode,
     userCoords,
+    refreshLocation,
     loading,
     error,
   };

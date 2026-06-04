@@ -311,6 +311,7 @@ export default function DiscoverScreen() {
     error: baseError,
     isColdStart,
     userCoords,
+    refreshLocation,
   } = useDiscover('you');
   const { isSaved } = useSavedRestaurants();
 
@@ -905,14 +906,22 @@ export default function DiscoverScreen() {
             {/* ── Location section ── */}
             <Text style={styles.sheetSectionLabel}>Where are you exploring?</Text>
 
-            {/* Current location option */}
+            {/* Current location option. Tapping this also re-polls GPS
+                via refreshLocation() so a user who's traveled since the
+                app launched gets their actual current city, not the
+                cached one from app start. */}
             <TouchableOpacity
               style={[styles.sheetLocationRow, !customLocation && styles.sheetLocationRowActive]}
-              onPress={() => { setCustomLocation(null); setLocationInput(''); }}
+              onPress={() => {
+                setCustomLocation(null);
+                setLocationInput('');
+                refreshLocation().catch(() => { /* permission denied or transient */ });
+                closeLocationSheet();
+              }}
               activeOpacity={0.7}
             >
               <Ionicons name="navigate" size={16} color={!customLocation ? colors.accent : colors.textMuted} />
-              <Text style={[styles.sheetLocationText, !customLocation && styles.sheetLocationTextActive]}>Near you</Text>
+              <Text style={[styles.sheetLocationText, !customLocation && styles.sheetLocationTextActive]}>Near you (use current location)</Text>
               {!customLocation && <Ionicons name="checkmark" size={16} color={colors.accent} />}
             </TouchableOpacity>
 

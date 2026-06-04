@@ -17,6 +17,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import { FoodAutocomplete } from '~/src/components/FoodAutocomplete';
+import { searchFoodCatalog } from '~/src/data/foodCatalog';
 import Slider from '@react-native-community/slider';
 import { colors } from '~/src/theme/colors';
 import {
@@ -797,27 +798,34 @@ export default function LogVisitScreen() {
               </View>
             )}
 
-            {/* Free-text input */}
+            {/* Free-text input. Three ways to add a dish, all auto-commit
+                without a separate "Add" tap:
+                  - Tap a suggestion in the dropdown below
+                  - Press Return on the keyboard (onSubmitEditing)
+                  - Tap the explicit "Add" pill — only shown when the
+                    catalog has NO matches, so the user knows what to
+                    do when their custom dish isn't in our list. */}
             <View style={styles.dishInputRow}>
               <TextInput
                 value={dishInput}
                 onChangeText={setDishInput}
                 onSubmitEditing={() => addOrderedDish(dishInput)}
-                placeholder="e.g. Margherita pizza"
+                placeholder="Type a dish — tap a suggestion or press Return"
                 placeholderTextColor={colors.textFaint}
                 style={styles.dishInputField}
                 returnKeyType="done"
                 blurOnSubmit={false}
               />
-              {dishInput.trim().length > 0 && (
+              {dishInput.trim().length >= 2 && searchFoodCatalog(dishInput, 1).length === 0 ? (
                 <TouchableOpacity
-                  style={styles.dishAddBtn}
+                  style={styles.dishAddCustomPill}
                   onPress={() => addOrderedDish(dishInput)}
                   activeOpacity={0.8}
                 >
-                  <Ionicons name="add" size={18} color={colors.accent} />
+                  <Ionicons name="add" size={14} color="#fff" />
+                  <Text style={styles.dishAddCustomPillText}>Add</Text>
                 </TouchableOpacity>
-              )}
+              ) : null}
             </View>
 
             {/* Food autocomplete — appears below the input as the user
@@ -1241,6 +1249,20 @@ const styles = StyleSheet.create({
     backgroundColor: colors.accentSoft,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  dishAddCustomPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: colors.accent,
+  },
+  dishAddCustomPillText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#fff',
   },
   dishQuickAddWrap: { marginTop: 10 },
   dishQuickAddLabel: { fontSize: 11, fontWeight: '500', color: colors.textFaint, marginBottom: 6 },
