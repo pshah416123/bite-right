@@ -964,6 +964,44 @@ export default function RestaurantScreen() {
     ? detail.popularDishesFromReviews
     : null;
 
+  // Source-confidence map (mirrors server/scripts/auditMenuSources.js). When
+  // the source is in the low-confidence tier AND we have popular_dishes
+  // from Google reviews, render a "What people love" highlights row ABOVE
+  // the menu so the user gets a verified shortlist alongside the noisy
+  // extracted menu. Source >= 80 means the extraction is structured /
+  // first-party and we don't need the safety net.
+  const SOURCE_CONFIDENCE: Record<string, number> = {
+    chain_curated: 95, toast: 95, popmenu: 92, square: 92, chownow: 90,
+    bentobox: 90, spotapps: 88, lettuce: 88, squarespace: 85,
+    squarespace_text: 78, dine_wp: 82, next_data: 85, json_ld: 82,
+    dom_item_name: 75, wix: 70, wordpress: 65, generic_scrape: 55,
+    yelp_menu: 60, pdf: 55, page_image_ocr: 50, google_photo_ocr: 45,
+    llm: 40, photos: 30,
+  };
+  const menuSourceConfidence = menu?.source ? (SOURCE_CONFIDENCE[menu.source] ?? 50) : 0;
+  const showHighlights = !!filteredMenu
+    && menuSourceConfidence < 70
+    && Array.isArray(detail?.popularDishesFromReviews)
+    && (detail?.popularDishesFromReviews?.length ?? 0) >= 3;
+  const highlightsBlock = showHighlights ? (
+    <View style={styles.highlightsSection}>
+      <Text style={styles.highlightsTitle}>{'✨'} What people love here</Text>
+      <Text style={styles.highlightsSubtitle}>
+        From recent Google reviews — the menu below was auto-extracted and may have gaps.
+      </Text>
+      <View style={styles.highlightsRow}>
+        {(detail?.popularDishesFromReviews ?? []).slice(0, 5).map((d) => (
+          <View key={d.name} style={styles.highlightChip}>
+            <Text style={styles.highlightChipText}>{d.name}</Text>
+            {d.mentionCount > 1 ? (
+              <Text style={styles.highlightChipCount}>{' · '}{d.mentionCount}</Text>
+            ) : null}
+          </View>
+        ))}
+      </View>
+    </View>
+  ) : null;
+
   // "What people are saying" — descriptor+noun phrases mined from Google
   // reviews ("great pizza", "cozy atmosphere"). Renders as a chip cloud
   // sized roughly by mention count.
@@ -1478,6 +1516,7 @@ export default function RestaurantScreen() {
             {!isFromFriendPost && whatPeopleAreSayingBlock}
             {!isFromFriendPost && id && <QuickTipsBlock restaurantId={id} />}
             {!isFromFriendPost && socialProofBlock}
+            {!isFromFriendPost && highlightsBlock}
             {!isFromFriendPost && menuBlock}
             {!isFromFriendPost && afterSpotsBlock}
             {isFromFriendPost && (
@@ -1530,6 +1569,7 @@ export default function RestaurantScreen() {
             {!isFromFriendPost && whatPeopleAreSayingBlock}
             {id && <QuickTipsBlock restaurantId={id} />}
             {!isFromFriendPost && socialProofBlock}
+            {!isFromFriendPost && highlightsBlock}
             {!isFromFriendPost && menuBlock}
             {!isFromFriendPost && afterSpotsBlock}
             {isFromFriendPost && (
@@ -1917,6 +1957,45 @@ const styles = StyleSheet.create({
   sayingTextBig: { fontSize: 13, fontWeight: '700', color: colors.accent },
   sayingCount: { fontSize: 11, color: colors.textMuted, marginLeft: 2 },
   peopleOrderRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  highlightsSection: {
+    marginTop: 18,
+    marginHorizontal: 0,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 16,
+    backgroundColor: colors.accentSoft,
+    borderWidth: 1,
+    borderColor: 'rgba(232, 89, 42, 0.2)',
+  },
+  highlightsTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: colors.text,
+    marginBottom: 4,
+  },
+  highlightsSubtitle: {
+    fontSize: 12,
+    color: colors.textMuted,
+    marginBottom: 8,
+    lineHeight: 16,
+  },
+  highlightsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  highlightChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: 'rgba(232, 89, 42, 0.25)',
+  },
+  highlightChipText: { fontSize: 13, fontWeight: '700', color: colors.text },
+  highlightChipCount: { fontSize: 11, fontWeight: '600', color: colors.textMuted },
   peopleOrderChip: {
     paddingHorizontal: 12,
     paddingVertical: 8,

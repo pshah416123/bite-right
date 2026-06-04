@@ -5277,11 +5277,51 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
       }
     }
 
+    // ── Priority 4.5: ALREADY-CACHED popular_dishes ─────────────────
+    // Before paying for a fresh Claude call (Priority 5), check if we
+    // already mined popular dishes for this restaurant in the detail
+    // endpoint. The source-quality audit showed 8.2% of restaurants
+    // have zero extracted items but ≥3 popular_dishes already in
+    // restaurant_details_cache — zero-cost wins we'd otherwise show
+    // as "Menu unavailable" while perfectly good data sits two tables
+    // over. Synthesized as a single "Popular dishes" section so the
+    // user sees real dishes they can decide from.
+    if (placeId) {
+      try {
+        const cachedDetailForFallback = await readCachedDetail(restaurantId);
+        const cachedDishes = cachedDetailForFallback?.popular_dishes;
+        if (Array.isArray(cachedDishes) && cachedDishes.length >= 3) {
+          const items = cachedDishes
+            .filter((d) => d && typeof d.name === 'string' && d.name.trim().length >= 2)
+            .slice(0, 10)
+            .map((d) => ({
+              name: d.name.trim(),
+              description: typeof d.mentionCount === 'number' && d.mentionCount > 1
+                ? `Mentioned in ${d.mentionCount} reviews`
+                : null,
+              price: null,
+              tags: null,
+              photoUrl: null,
+            }));
+          if (items.length >= 3) {
+            result.sections = [{ title: 'Popular dishes', items, group: 'food' }];
+            result.source = 'llm';
+            console.log('[BiteRight] menu: using cached popular_dishes from reviews', {
+              restaurantId, dishCount: items.length,
+            });
+            return res.json(await finalize('llm', null));
+          }
+        }
+      } catch (err) {
+        console.warn('[BiteRight] menu: cached popular_dishes fallback failed', err.message);
+      }
+    }
+
     // ── Priority 5: LLM-inferred menu from review text (last resort) ──
-    // When every real-source extractor has failed, ask Claude Haiku to infer
-    // a conservative menu from Google review text. Marked source 'llm' so
-    // the cache row records its provenance. Only runs when ANTHROPIC_API_KEY
-    // is configured; otherwise we skip straight to the no-menu state.
+    // When every real-source extractor has failed AND no cached
+    // popular_dishes are available, ask Claude Haiku to infer a
+    // conservative menu from Google review text. Marked source 'llm'.
+    // Only runs when ANTHROPIC_API_KEY is configured.
     if (placeId && GOOGLE_PLACES_API_KEY && process.env.ANTHROPIC_API_KEY) {
       try {
         // Need to fetch reviews; the earlier Google Places call asked only
@@ -6977,16 +7017,57 @@ async function buildGooglePlaceDiscover(lat, lng, radiusMiles, userId, cuisineFi
     const expanded = SEARCH_ALIASES[searchLower] || [searchLower];
     const strictMode = STRICT_CUISINE_SEARCH.has(searchLower);
 
-    const beforeCount = recs.length;
-    recs = recs.filter((rec) => {
-      // Loose mode (most queries): if Google returned this result for our
-      // search, trust Google's relevance ranking. Catches places like Au
-      // Cheval (famous burger spot) whose name/types don't include "burger"
-      // but Google knows it's relevant.
-      // Strict mode (narrow cuisines): always run the haystack filter so
-      // sushi places don't bleed into ramen searches.
-      if (!strictMode && rec._fromSearchQuery) return true;
+    // Evidence-first filter: when a restaurant's cached menu OR Google's
+    // popular_dishes_from_reviews already contains the searched item, we
+    // KEEP it regardless of name/type matching. Catches "Au Cheval" for
+    // a burger search (menu has Single Cheeseburger) even though its
+    // name/types don't mention burgers. Equally, drops false positives
+    // for narrow searches like "ramen" against places that have neither
+    // ramen on the menu nor ramen in popular_dishes.
+    const candidateIds = recs.map((r) => r.restaurantId).filter(Boolean);
+    const [menuMap, detailMap] = await Promise.all([
+      candidateIds.length ? batchReadCachedMenus(candidateIds) : Promise.resolve(new Map()),
+      candidateIds.length ? batchReadCachedDetails(candidateIds) : Promise.resolve(new Map()),
+    ]);
 
+    const hasMenuOrDishEvidence = (rec) => {
+      // Cached menu items — strongest signal
+      const menu = menuMap.get(rec.restaurantId);
+      const sections = menu?.structured_data?.sections;
+      if (Array.isArray(sections)) {
+        for (const sec of sections) {
+          if (sec?.title && expanded.some((a) => sec.title.toLowerCase().includes(a))) return 'menu_section';
+          for (const it of (sec?.items || [])) {
+            const itName = (it?.name || '').toLowerCase();
+            if (itName && expanded.some((a) => itName.includes(a))) return 'menu_item';
+          }
+        }
+      }
+      // Google review-mined popular_dishes — secondary signal
+      const detail = detailMap.get(rec.restaurantId);
+      if (Array.isArray(detail?.popular_dishes)) {
+        for (const d of detail.popular_dishes) {
+          const dName = (d?.name || '').toLowerCase();
+          if (dName && expanded.some((a) => dName.includes(a))) return 'popular_dish';
+        }
+      }
+      return null;
+    };
+
+    const beforeCount = recs.length;
+    let evidenceHits = 0;
+    let trustGoogleHits = 0;
+    recs = recs.filter((rec) => {
+      // 1. Hard evidence: menu / popular_dishes match. Always keep.
+      const evidence = hasMenuOrDishEvidence(rec);
+      if (evidence) { evidenceHits++; return true; }
+
+      // 2. Loose mode: if Google's text-search returned this for our
+      // query, trust Google's relevance ranking — UNLESS this is a
+      // narrow strict-cuisine search where false positives are common.
+      if (!strictMode && rec._fromSearchQuery) { trustGoogleHits++; return true; }
+
+      // 3. Fallback: name/type/cuisine haystack match.
       const haystack = [
         rec.name,
         rec.cuisine,
@@ -6996,7 +7077,6 @@ async function buildGooglePlaceDiscover(lat, lng, radiusMiles, userId, cuisineFi
         .filter(Boolean)
         .join(' ')
         .toLowerCase();
-      // Result matches if ANY expanded alias appears in its metadata
       return expanded.some((alias) => haystack.includes(alias));
     });
     console.log('[BiteRight][Discover] search relevance filter', {
@@ -7004,6 +7084,8 @@ async function buildGooglePlaceDiscover(lat, lng, radiusMiles, userId, cuisineFi
       expandedAliases: expanded,
       before: beforeCount,
       after: recs.length,
+      evidenceHits,
+      trustGoogleHits,
     });
   }
 
