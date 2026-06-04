@@ -70,7 +70,18 @@ function collectImageUrls(html, baseUrl) {
     }
     // Only http(s) image-ish URLs.
     if (!/^https?:\/\//i.test(u)) return;
-    if (!/\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(u) && !/squarespace-cdn|wixstatic|images\.unsplash|cloudinary/i.test(u)) return;
+    // GoDaddy Website Builder serves images via img1.wsimg.com with an
+    // iSteam transformation pathname suffix ("/:/cr=t:0%25,..." or just
+    // "/:/"). Those URLs end with extension + "/:..." not "?" or end-of-
+    // string, so a strict extension-end regex misses them. Allow the
+    // extension to be followed by either query, end-of-string, OR "/" so
+    // GoDaddy-hosted menus get picked up. Also added wsimg / isteam to
+    // the trusted-host fallback. Without this, every GoDaddy restaurant
+    // with an image-only menu was silently skipped (Ken Ken Sushi etc.).
+    if (
+      !/\.(jpg|jpeg|png|webp|gif)(\?|$|\/)/i.test(u) &&
+      !/squarespace-cdn|wixstatic|images\.unsplash|cloudinary|wsimg\.com|isteam\.wsimg/i.test(u)
+    ) return;
     if (SKIP_PATTERNS.test(u)) return;
     if (seen.has(u)) return;
     seen.add(u);

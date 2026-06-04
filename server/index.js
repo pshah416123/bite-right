@@ -5875,23 +5875,31 @@ app.get('/api/tonight/sessions/:code/pool', async (req, res) => {
       const keyword = sessionCuisines.length > 0
         ? cuisineChipToNearbyKeyword(sessionCuisines[0])
         : '';
+      // Match the Discover pool's 4-source fetch (nearby + text + best-of +
+      // focused-radius). Tonight previously used only nearby+text, which
+      // surfaced fewer results than Discover for the same cuisine — user
+      // noticed "Discover shows lots of ramen, Tonight shows one."
+      const FOCUSED_RADIUS = Math.min(radiusMeters, 3000); // 3km focused refetch
       const fetchMerged = async (kw) => {
         const tq = kw ? `${kw} restaurants` : 'restaurants';
-        const [nearbyRaw, textRaw] = await Promise.all([
+        const bestOfQ = kw ? `best ${kw} near me` : null;
+        const needFocused = radiusMeters > FOCUSED_RADIUS * 1.2;
+        const [nearbyRaw, textRaw, bestOfRaw, focusedRaw] = await Promise.all([
           googlePlacesNearbyRestaurants(lat, lng, radiusMeters, kw || undefined),
           googlePlacesTextSearch(tq, lat, lng, radiusMeters),
+          bestOfQ ? googlePlacesTextSearch(bestOfQ, lat, lng, radiusMeters) : Promise.resolve([]),
+          needFocused ? googlePlacesNearbyRestaurants(lat, lng, FOCUSED_RADIUS, kw || undefined) : Promise.resolve([]),
         ]);
         const mergedMap = new Map();
-        for (const p of nearbyRaw) { if (p.placeId) mergedMap.set(p.placeId, p); }
-        for (const p of textRaw) {
-          if (!p.placeId) continue;
-          const existing = mergedMap.get(p.placeId);
-          if (!existing) { mergedMap.set(p.placeId, p); }
-          else {
-            const richness = (e) =>
-              (e.rating != null ? 1 : 0) + (e.userRatingsTotal != null ? 1 : 0) +
-              (e.priceLevel != null ? 1 : 0) + (e.photoRef ? 1 : 0);
-            if (richness(p) > richness(existing)) mergedMap.set(p.placeId, p);
+        const richness = (e) =>
+          (e.rating != null ? 1 : 0) + (e.userRatingsTotal != null ? 1 : 0) +
+          (e.priceLevel != null ? 1 : 0) + (e.photoRef ? 1 : 0);
+        for (const source of [nearbyRaw, textRaw, bestOfRaw, focusedRaw]) {
+          for (const p of source) {
+            if (!p.placeId) continue;
+            const existing = mergedMap.get(p.placeId);
+            if (!existing) mergedMap.set(p.placeId, p);
+            else if (richness(p) > richness(existing)) mergedMap.set(p.placeId, p);
           }
         }
         return Array.from(mergedMap.values()).filter((p) => isFoodPlace(p.types));

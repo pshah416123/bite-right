@@ -738,6 +738,46 @@ function parseSquarespaceMenu(html) {
 // based parsers see nothing. This parser walks the children, treats h3 as
 // either a section title (when it contains a <strong>) or a dish name
 // (when it doesn't), and pulls the trailing price out of the following <p>.
+// Promotional / operational content that the Squarespace text-block parser
+// will match on (h1/h2 + p pairs) but which is NOT a menu item. Without
+// rejecting these, restaurant homepages with event banners (Cabra Chicago:
+// "Sunday Swim is Back!", "Industry Nights!", "Weekend Brunch", etc.) get
+// classified as dishes. Match against BOTH the name and description so
+// e.g. "Reservations" (name) and "$20 pool pass" (description) both
+// trigger the reject.
+const PROMO_REJECT_RE = new RegExp(
+  [
+    // Events / experiences
+    'sunday\\s?swim', 'industry\\s?night', 'weekend\\s?brunch', 'brunch\\s?hours',
+    'happy\\s?hour', 'grazing\\s?hour', 'lunch\\s?with\\s?us', 'lunch\\s?hours',
+    'trivia\\s?night', 'karaoke\\s?night', 'live\\s?music', 'pool\\s?access',
+    'pool\\s?pass', 'rooftop',
+    // Calls to action / operational
+    'book\\s?(your|a)?\\s?(event|table|reservation)', 'join\\s?us',
+    'private\\s?event', 'private\\s?dining', 'catering',
+    'newsletter', 'sign\\s?up', 'subscribe',
+    // Standalone informational
+    '\\breservations?\\b', '\\bhours\\s?(of\\s?operation)?\\b',
+    'opening\\s?soon', 'gift\\s?card', 'merch(andise)?',
+  ].join('|'),
+  'i',
+);
+
+// Token sets that look like FOOD/DRINK menu content (positive signal).
+// Used as a corroborator when an item has no price — a "name" with one of
+// these tokens looks plausibly like food.
+const FOOD_HINT_RE = /\b(?:chicken|beef|pork|lamb|duck|fish|salmon|tuna|shrimp|crab|lobster|oyster|sushi|tempura|ramen|udon|pasta|pizza|burger|sandwich|salad|soup|bread|cheese|cream|garlic|truffle|vanilla|chocolate|caramel|berry|lemon|lime|miso|soy|teriyaki|tikka|masala|curry|pho|taco|burrito|enchilada|carnitas|guacamole|crudo|ceviche|tartare|carpaccio|risotto|gnocchi|tagliatelle|cocktail|martini|negroni|spritz|aperol|cabernet|chardonnay|pinot|sauvignon|tequila|bourbon|whiskey|mezcal|gin|vodka|amaro|espresso|latte|cappuccino|matcha)\b/i;
+
+function looksPromotional(name, description) {
+  const haystack = `${name || ''} ${description || ''}`;
+  return PROMO_REJECT_RE.test(haystack);
+}
+
+function looksLikeFood(name, description, price) {
+  if (price) return true; // having a price is a strong food signal
+  return FOOD_HINT_RE.test(`${name || ''} ${description || ''}`);
+}
+
 function parseSquarespaceTextMenu(html) {
   try {
     const $ = cheerio.load(html);
@@ -811,14 +851,11 @@ function parseSquarespaceTextMenu(html) {
                 const num = parseFloat(m[1]);
                 if (!Number.isFinite(num) || num < 1 || num > 999) continue;
                 const name = line.slice(0, m.index).replace(/[\s.•·…\-]+$/, '').trim();
-                if (name.length >= 2 && name.length <= 120) {
-                  currentItems.push({
-                    name, description: null,
-                    price: `$${num.toFixed(2)}`,
-                    tags: null, photoUrl: null,
-                  });
+                const priceStr = `$${num.toFixed(2)}`;
+                if (name.length >= 2 && name.length <= 120 && !looksPromotional(name, null)) {
+                  currentItems.push({ name, description: null, price: priceStr, tags: null, photoUrl: null });
                 }
-              } else if (line.length >= 2 && line.length <= 120) {
+              } else if (line.length >= 2 && line.length <= 120 && !looksPromotional(line, null) && looksLikeFood(line, null, null)) {
                 currentItems.push({ name: line, description: null, price: null, tags: null, photoUrl: null });
               }
             }
@@ -848,7 +885,12 @@ function parseSquarespaceTextMenu(html) {
               description = rawText.slice(0, priceMatch.index).replace(/[\s.•·…\-]+$/, '').trim();
             }
           }
-          if (pendingName.length >= 2 && pendingName.length <= 120) {
+          if (
+            pendingName.length >= 2 &&
+            pendingName.length <= 120 &&
+            !looksPromotional(pendingName, description) &&
+            (price || looksLikeFood(pendingName, description, price))
+          ) {
             currentItems.push({
               name: pendingName,
               description: description || null,
@@ -860,11 +902,12 @@ function parseSquarespaceTextMenu(html) {
           pendingName = null;
         }
       });
-      // Trailing name without a <p>
-      if (pendingName) {
+      // Trailing name without a <p>. Only commit if it has a food token —
+      // a bare heading with no description is almost never a menu item.
+      if (pendingName && !looksPromotional(pendingName, null) && looksLikeFood(pendingName, null, null)) {
         currentItems.push({ name: pendingName, description: null, price: null, tags: null, photoUrl: null });
-        pendingName = null;
       }
+      pendingName = null;
     });
     flush();
 
