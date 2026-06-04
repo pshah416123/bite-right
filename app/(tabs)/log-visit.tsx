@@ -16,6 +16,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
+import { FoodAutocomplete } from '~/src/components/FoodAutocomplete';
 import Slider from '@react-native-community/slider';
 import { colors } from '~/src/theme/colors';
 import {
@@ -818,6 +819,15 @@ export default function LogVisitScreen() {
                 </TouchableOpacity>
               )}
             </View>
+
+            {/* Food autocomplete — appears below the input as the user
+                types. Strict food/drink catalog so we never suggest
+                random text. Tap to commit the dish directly. */}
+            <FoodAutocomplete
+              query={dishInput}
+              onPick={(food) => addOrderedDish(food)}
+              style={{ marginTop: 8 }}
+            />
 
             {/* Personal history: dishes you've had here before */}
             {previousDishes.filter((s) => !orderedDishes.some((d) => d.toLowerCase() === s.toLowerCase())).length > 0 && (

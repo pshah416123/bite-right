@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDiscover, type DiscoverSectionItems } from '~/src/hooks/useDiscover';
 import { RestaurantCard } from '~/src/components/RestaurantCard';
 import { FirstVisitTip } from '~/src/components/FirstVisitTip';
+import { FoodAutocomplete } from '~/src/components/FoodAutocomplete';
 import { POPULAR_LOCATIONS, type DiscoverSelectedLocation } from '~/src/components/DiscoverLocationBar';
 import { useSavedRestaurants } from '~/src/context/SavedRestaurantsContext';
 import { useFeedContext } from '~/src/context/FeedContext';
@@ -639,6 +640,24 @@ export default function DiscoverScreen() {
           <Text style={styles.searchAxisHelper}>
             Search restaurants, dishes, or cuisines
           </Text>
+        ) : null}
+
+        {/* Food autocomplete — shows matched dish/drink suggestions while
+            the user is typing in the search bar. Strict food catalog so
+            restaurant names and freeform text never appear here. Tapping
+            a suggestion commits it as the active search. */}
+        {searchFocused && searchInput.trim().length >= 2 ? (
+          <View style={{ paddingHorizontal: 16, marginTop: 6 }}>
+            <FoodAutocomplete
+              query={searchInput}
+              onPick={(food) => {
+                setSearchInput(food);
+                setActiveSearch(food);
+                setSearchFocused(false);
+                searchInputRef.current?.blur();
+              }}
+            />
+          </View>
         ) : null}
 
         {/* ── Search focus panel ── */}
