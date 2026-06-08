@@ -218,7 +218,7 @@ export function RestaurantCard({ item, saved, userCoords }: Props) {
       addToCompare();
       return;
     }
-    router.push(`/(tabs)/restaurant/${encodeURIComponent(restaurant.id)}?payload=${payload}`);
+    router.push(`/restaurant/${encodeURIComponent(restaurant.id)}?payload=${payload}`);
   };
 
   const handleLongPress = () => {

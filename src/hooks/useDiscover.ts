@@ -120,22 +120,41 @@ export function useDiscover(
   const [discoverMode, setDiscoverMode] = useState<DiscoverModeApi>('trending');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Bumped to Date.now() inside refreshLocation. The next discover fetch
+  // reads it, compares against lastFreshFetchRef, and sends fresh=true
+  // exactly once — bypassing the server cache for explicit user-triggered
+  // re-locates without affecting background re-renders.
+  const freshTokenRef = useRef(0);
+  const lastFreshFetchRef = useRef(0);
 
   // Resolve GPS — exposed as a function so callers can re-poll (e.g. when
   // the user taps "Near you" after traveling). Without this, userCoords
   // was captured once on mount and never refreshed; a user who flew from
   // Chicago to Detroit would keep seeing Chicago results even after
   // tapping the GPS option.
+  //
+  // Uses requestForegroundPermissionsAsync (not getForegroundPermissionsAsync)
+  // because on iOS the "active request" path wakes the location service
+  // and forces a fresh fix — the pure status-check path lets iOS hand
+  // back a stale cached position.
+  //
+  // Accuracy is Highest (sub-10m, GPS+wifi+cell) on the explicit user-
+  // triggered path. iOS's "cached fix" tier only goes up to High accuracy
+  // (~10m); requesting Highest forces a brand-new GNSS lock. The 1–2
+  // seconds extra is the cost of an action the user just tapped.
+  //
+  // freshTokenRef bumps on every explicit refresh so the discover fetch
+  // can detect "this re-fetch was triggered by a Near-you tap" and ask
+  // the server to bypass its 5-min cache for that one call. Cache writes
+  // still happen, so subsequent renders at the same spot stay fast.
   const refreshLocation = useCallback(async () => {
     try {
-      const { status } = await Location.getForegroundPermissionsAsync();
+      const { status } = await Location.requestForegroundPermissionsAsync();
       if (status === 'granted') {
-        // Force a fresh reading by ignoring the cached last-known position
-        // (maxAge: 0). On iOS this triggers a new fix; the position may
-        // take 1-2 seconds to arrive after a long stale period.
         const loc = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
+          accuracy: Location.Accuracy.Highest,
         });
+        freshTokenRef.current = Date.now();
         setUserCoords({ lat: loc.coords.latitude, lng: loc.coords.longitude });
       } else {
         setUserCoords({ lat: 41.88, lng: -87.63 });
@@ -160,6 +179,10 @@ export function useDiscover(
     let cancelled = false;
     setLoading(true);
     setError(null);
+    // Consume the fresh-token if it's newer than the last fetch — bypasses
+    // server cache once after refreshLocation was explicitly called.
+    const shouldBypassCache = freshTokenRef.current > lastFreshFetchRef.current;
+    if (shouldBypassCache) lastFreshFetchRef.current = freshTokenRef.current;
 
     getDiscover({
       mode: 'nearby',
@@ -168,6 +191,7 @@ export function useDiscover(
       lng: userCoords.lng,
       radiusMiles: 10,
       cuisine,
+      fresh: shouldBypassCache,
     })
       .then((res) => {
         if (cancelled) return;

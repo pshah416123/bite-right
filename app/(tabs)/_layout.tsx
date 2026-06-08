@@ -68,7 +68,6 @@ export default function TabsLayout() {
       <Tabs.Screen name="profile/visibility" options={{ href: null }} />
       <Tabs.Screen name="profile/blocked-users" options={{ href: null }} />
       <Tabs.Screen name="profile/profile-photo" options={{ href: null }} />
-      <Tabs.Screen name="restaurant/[id]" options={{ href: null }} />
       <Tabs.Screen name="log-visit" options={{ href: null }} />
       <Tabs.Screen name="tonight/join" options={{ href: null }} />
       <Tabs.Screen name="tonight/swipe" options={{ href: null }} />

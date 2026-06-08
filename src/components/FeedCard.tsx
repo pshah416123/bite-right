@@ -140,6 +140,19 @@ function formatAuthorLine(authorLabel: string, taggedUsers?: FeedLog['taggedUser
   return `${authorLabel} and ${names.length} friends`;
 }
 
+// Tagged users come from SOCIAL_PROFILES (the mock seed) and don't carry
+// a Supabase userId, so tapping a tagged name always lands on the demo-
+// profile explainer — same affordance the main author chip uses for seed
+// posts. Real-friend tagging will flow real userIds through and we'll
+// route to /friend/[id] then.
+function showTaggedDemo(userName: string) {
+  Alert.alert(
+    `${userName} is a demo profile`,
+    'These posts seed your feed so it isn’t empty on day one. Invite real friends to see and tap into their actual profiles.',
+    [{ text: 'Got it' }],
+  );
+}
+
 // ─── Single supporting line (social OR note, never both) ────────────────────
 
 function getSupportingLine(log: FeedLog, friendCount: number): string | null {
@@ -376,10 +389,37 @@ export function FeedCard({ log, socialLabel, isHero }: Props) {
                   >
                     <AvatarBadge name={log.userName} avatarUrl={log.userAvatar} size={18} />
                     <Text style={st.authorName} numberOfLines={1}>
-                      {formatAuthorLine(
-                        log.userName === CURRENT_USER_NAME ? 'You' : log.userName,
-                        log.taggedUsers,
-                      )}
+                      {(() => {
+                        const author = log.userName === CURRENT_USER_NAME ? 'You' : log.userName;
+                        const tagged = (log.taggedUsers ?? [])
+                          .map((t) => ({ display: t.displayName || t.userName, key: t.userName }))
+                          .filter((x) => x.display);
+                        if (tagged.length === 0) return author;
+                        if (tagged.length >= 3) return `${author} and ${tagged.length} friends`;
+                        const sep = tagged.length === 1 ? ' and ' : ', ';
+                        return (
+                          <>
+                            {author + sep}
+                            <Text
+                              style={st.authorNameLink}
+                              onPress={() => showTaggedDemo(tagged[0].key)}
+                            >
+                              {tagged[0].display}
+                            </Text>
+                            {tagged.length === 2 ? (
+                              <>
+                                {', and '}
+                                <Text
+                                  style={st.authorNameLink}
+                                  onPress={() => showTaggedDemo(tagged[1].key)}
+                                >
+                                  {tagged[1].display}
+                                </Text>
+                              </>
+                            ) : null}
+                          </>
+                        );
+                      })()}
                     </Text>
                   </TouchableOpacity>
                   {friendVisits.length > 0 && (
@@ -413,22 +453,41 @@ export function FeedCard({ log, socialLabel, isHero }: Props) {
             <Text style={st.sheetTitle}>{log.restaurantName}</Text>
             <Text style={st.sheetSubtitle}>What your circle thinks</Text>
             <ScrollView style={st.sheetScroll} contentContainerStyle={st.sheetScrollContent} showsVerticalScrollIndicator={false}>
-              {socialRows.map((row) => (
-                <View key={row.id} style={st.sheetRow}>
-                  <View style={st.sheetRowHeader}>
-                    <View style={st.sheetRowUser}>
-                      <AvatarBadge name={row.userName} avatarUrl={row.userAvatar} size={32} />
-                      <Text style={st.sheetUserName}>{row.userName}</Text>
+              {socialRows.map((row) => {
+                const isMe = row.userName === CURRENT_USER_NAME;
+                const handlePress = () => {
+                  if (isMe) return;
+                  setSocialSheetOpen(false);
+                  if (row.userId) {
+                    router.push(`/friend/${encodeURIComponent(row.userId)}` as never);
+                  } else {
+                    showTaggedDemo(row.userName);
+                  }
+                };
+                return (
+                  <View key={row.id} style={st.sheetRow}>
+                    <View style={st.sheetRowHeader}>
+                      <TouchableOpacity
+                        style={st.sheetRowUser}
+                        onPress={handlePress}
+                        disabled={isMe}
+                        activeOpacity={0.7}
+                      >
+                        <AvatarBadge name={row.userName} avatarUrl={row.userAvatar} size={32} />
+                        <Text style={[st.sheetUserName, !isMe && st.sheetUserNameLink]}>
+                          {row.userName}
+                        </Text>
+                      </TouchableOpacity>
+                      <View style={st.sheetScorePill}>
+                        <Text style={st.sheetScoreText}>{row.score.toFixed(1)}</Text>
+                      </View>
                     </View>
-                    <View style={st.sheetScorePill}>
-                      <Text style={st.sheetScoreText}>{row.score.toFixed(1)}</Text>
-                    </View>
+                    {row.note ? (
+                      <Text style={st.sheetNote}>{row.note.trim()}</Text>
+                    ) : null}
                   </View>
-                  {row.note ? (
-                    <Text style={st.sheetNote}>{row.note.trim()}</Text>
-                  ) : null}
-                </View>
-              ))}
+                );
+              })}
             </ScrollView>
           </Pressable>
         </Pressable>
@@ -575,6 +634,10 @@ const st = StyleSheet.create({
     fontWeight: '700',
     color: colors.text,
   },
+  authorNameLink: {
+    color: colors.accent,
+    fontWeight: '700',
+  },
   socialDot: {
     marginLeft: 'auto' as any,
     flexShrink: 0,
@@ -695,6 +758,7 @@ const st = StyleSheet.create({
   sheetRowHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   sheetRowUser: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
   sheetUserName: { fontSize: 14, fontWeight: '700', color: colors.text },
+  sheetUserNameLink: { color: colors.accent },
   sheetScorePill: { paddingHorizontal: 9, paddingVertical: 4, borderRadius: 999, backgroundColor: colors.accentSoft },
   sheetScoreText: { fontSize: 12, fontWeight: '800', color: colors.accent },
   sheetNote: { marginTop: 8, fontSize: 13.5, lineHeight: 20, color: colors.text },

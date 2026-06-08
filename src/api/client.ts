@@ -15,17 +15,25 @@ export const apiClient = axios.create({
   timeout: 60000,
 });
 
-// Identity cache — filled by the Supabase auth listener below, read
-// synchronously by the request interceptor. The first version of this
-// awaited supabase.auth.getSession() per request, which stalled cold-start
-// fetches (the detail page came up empty because getRestaurantDetail
-// timed out waiting on the session promise). With the cache, the
-// interceptor is fast + non-blocking.
+// Identity cache — filled by the Supabase auth listener below, read by the
+// request interceptor. The first version awaited supabase.auth.getSession()
+// per request, which stalled cold-start fetches. The cached version that
+// followed was non-blocking but raced: AuthProvider's separate getSession()
+// could resolve and mount FeedProvider before the cache here populated,
+// causing the first /api/feed call to go out unauthenticated and drop the
+// user's friends-only / private logs from the response — testers saw logs
+// "come and go" depending on which getSession() won the race.
+//
+// Compromise: kick off getSession() once at module load and stash the
+// in-flight promise. The interceptor only awaits it when _userId is still
+// null AND the promise hasn't resolved yet — so the first request waits at
+// most a few ms for auth hydration, and every subsequent request is fast.
 let _userId: string | null = null;
 let _userEmail: string | null = null;
+let _authReady: Promise<void> | null = null;
 
 if (supabaseConfigured) {
-  supabase.auth
+  _authReady = supabase.auth
     .getSession()
     .then(({ data }) => {
       const user = data.session?.user;
@@ -43,7 +51,10 @@ if (supabaseConfigured) {
   });
 }
 
-apiClient.interceptors.request.use((config) => {
+apiClient.interceptors.request.use(async (config) => {
+  if (!_userId && _authReady) {
+    await _authReady;
+  }
   if (_userId && config.headers) {
     config.headers['X-User-Id'] = _userId;
     if (_userEmail) config.headers['X-User-Email'] = _userEmail;

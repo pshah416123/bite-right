@@ -6,6 +6,11 @@ export const DISCOVER_CURRENT_USER_NAME = 'You';
 
 export type FriendVisitAtRestaurant = {
   id: string;
+  /** Supabase user id when the visit was authored by a real user. Mock
+   *  seed friends (Maya, Alex, etc.) come through with userId=null, which
+   *  the UI uses to decide whether tapping the name opens the friend
+   *  profile or shows the "demo profile" explainer. */
+  userId?: string | null;
   userName: string;
   userAvatar?: string;
   score: number;
@@ -43,6 +48,7 @@ export function useFriendVisitsAtRestaurant(restaurantId: string): FriendVisitAt
       if (!existing || logTime >= prevTime) {
         byUser.set(key, {
           id: log.id,
+          userId: log.userId ?? null,
           userName: key,
           userAvatar: log.userAvatar,
           score: log.score,

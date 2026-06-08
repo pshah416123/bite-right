@@ -30,7 +30,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { colors } from '~/src/theme/colors';
 import { blockUser, followUser, getUser, getUserLogs, type UserSummary } from '~/src/api/users';
 import { type FeedLog } from '~/src/components/FeedCard';
-import { RestaurantImage } from '~/src/components/RestaurantImage';
+import { EatsCard, EatsListRow, GRID_CARD_W, type VisitGroup } from '~/src/components/ProfileEats';
 
 /** Format an ISO timestamp as "Mon YYYY" (e.g. "Mar 2026"). Returns empty
  *  string on parse failure so the row collapses cleanly. */
@@ -38,6 +38,31 @@ function formatJoinedDate(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
   return d.toLocaleString('en-US', { month: 'short', year: 'numeric' });
+}
+
+// Mirrors the cuisine emoji / DNA chip palette on the own-profile screen
+// (app/(tabs)/profile/index.tsx) so the friend Taste DNA row reads as the
+// same visual language. Kept inline rather than extracted to a shared
+// module: the two screens are the only consumers and the maps are small.
+const CUISINE_EMOJIS: Record<string, string> = {
+  Pizza: '🍕', Italian: '🍝', Japanese: '🍱', Sushi: '🍣',
+  Mexican: '🌮', American: '🍔', Chinese: '🥟', Indian: '🍛',
+  Thai: '🍜', Korean: '🥩', Brunch: '🥞', Seafood: '🦞',
+  BBQ: '🔥', Coffee: '☕', Bakery: '🥐', Mediterranean: '🫒',
+  Vegan: '🥗', Vegetarian: '🥦',
+};
+const DNA_COLORS = [
+  { bg: '#FFF0E8', text: '#FF6B35' },
+  { bg: '#FFFBE8', text: '#D97706' },
+  { bg: '#FFF0F4', text: '#C2185B' },
+  { bg: '#EEF6F0', text: '#2E7D32' },
+];
+function getCuisineEmoji(cuisine: string): string {
+  const lower = cuisine.toLowerCase();
+  for (const [key, emoji] of Object.entries(CUISINE_EMOJIS)) {
+    if (lower.includes(key.toLowerCase())) return emoji;
+  }
+  return '🍽';
 }
 
 export default function FriendProfileScreen() {
@@ -54,6 +79,7 @@ export default function FriendProfileScreen() {
 
   const [cityFilter, setCityFilter] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [eatsView, setEatsView] = useState<'grid' | 'list'>('list');
 
   useEffect(() => {
     if (!userId) return;
@@ -86,6 +112,28 @@ export default function FriendProfileScreen() {
     return Array.from(set).sort();
   }, [logs]);
 
+  // Mirror the own-profile header surfaces — avg score in the stats card
+  // and the Taste DNA chip row — so a friend's profile reads as the same
+  // shape of profile, not a stripped-down variant.
+  const avgScore = useMemo(() => {
+    if (logs.length === 0) return null;
+    const total = logs.reduce((sum, l) => sum + (l.score ?? 0), 0);
+    return total / logs.length;
+  }, [logs]);
+
+  const topCuisines = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const l of logs) {
+      const tag = (l.cuisine ?? '').split(/[·•\-]/)[0]?.trim();
+      if (!tag) continue;
+      counts[tag] = (counts[tag] ?? 0) + 1;
+    }
+    return Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 4)
+      .map(([name]) => name);
+  }, [logs]);
+
   // Apply both filters. Search matches against restaurant name, cuisine,
   // standout dish / dishes, vibe tags, and the note text.
   const filteredLogs = useMemo(() => {
@@ -109,6 +157,39 @@ export default function FriendProfileScreen() {
       return haystack.includes(q);
     });
   }, [logs, cityFilter, searchQuery]);
+
+  // Aggregate per-restaurant — same shape the own-profile screen builds.
+  // Friends with multiple visits to the same place collapse into a single
+  // tile that shows the best score + "N visits" subtitle, instead of one
+  // tile per log.
+  const filteredVisitGroups = useMemo<VisitGroup[]>(() => {
+    const byId: Record<string, VisitGroup> = {};
+    for (const log of filteredLogs) {
+      const k = log.restaurantId;
+      if (!byId[k]) {
+        byId[k] = {
+          restaurantId: k,
+          restaurantName: log.restaurantName,
+          bestScore: log.score,
+          previewPhotoUrl: log.previewPhotoUrl,
+          visitCount: 1,
+          cuisine: log.cuisine,
+          neighborhood: log.neighborhood,
+          note: log.note,
+        };
+      } else {
+        byId[k].visitCount += 1;
+        if (log.score > byId[k].bestScore) {
+          byId[k].bestScore = log.score;
+          if (log.note) byId[k].note = log.note;
+        }
+        if (log.previewPhotoUrl) byId[k].previewPhotoUrl = log.previewPhotoUrl;
+        if (!byId[k].cuisine && log.cuisine) byId[k].cuisine = log.cuisine;
+        if (!byId[k].neighborhood && log.neighborhood) byId[k].neighborhood = log.neighborhood;
+      }
+    }
+    return Object.values(byId).sort((a, b) => b.bestScore - a.bestScore);
+  }, [filteredLogs]);
 
   const handleFollow = async () => {
     if (!userId || followInFlight) return;
@@ -221,6 +302,21 @@ export default function FriendProfileScreen() {
 
         <View style={s.statsCard}>
           <View style={s.stat}>
+            <View style={s.statValueRow}>
+              <Ionicons name="star" size={14} color={colors.accent} style={s.statIcon} />
+              <Text style={[s.statValue, s.statValueAccent]}>
+                {avgScore != null ? avgScore.toFixed(1) : '—'}
+              </Text>
+            </View>
+            <Text style={s.statLabel}>Avg Score</Text>
+          </View>
+          <View style={s.statDivider} />
+          <View style={s.stat}>
+            <Text style={s.statValue}>{logs.length}</Text>
+            <Text style={s.statLabel}>Logs</Text>
+          </View>
+          <View style={s.statDivider} />
+          <View style={s.stat}>
             <Text style={s.statValue}>{user.followerCount ?? 0}</Text>
             <Text style={s.statLabel}>Followers</Text>
           </View>
@@ -229,13 +325,29 @@ export default function FriendProfileScreen() {
             <Text style={s.statValue}>{user.followingCount ?? 0}</Text>
             <Text style={s.statLabel}>Following</Text>
           </View>
-          <View style={s.statDivider} />
-          <View style={s.stat}>
-            <Text style={s.statValue}>{logs.length}</Text>
-            <Text style={s.statLabel}>Logs</Text>
-          </View>
         </View>
       </View>
+
+      {logs.length >= 3 && topCuisines.length > 0 ? (
+        <View style={s.dnaSection}>
+          <Text style={s.dnaLabel}>✨ {user.displayName.split(' ')[0]}'s Taste DNA</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={s.dnaScroll}
+          >
+            {topCuisines.map((cuisine, i) => {
+              const chip = DNA_COLORS[i % DNA_COLORS.length];
+              return (
+                <View key={cuisine} style={[s.dnaChip, { backgroundColor: chip.bg }]}>
+                  <Text style={s.dnaEmoji}>{getCuisineEmoji(cuisine)}</Text>
+                  <Text style={[s.dnaChipText, { color: chip.text }]}>{cuisine}</Text>
+                </View>
+              );
+            })}
+          </ScrollView>
+        </View>
+      ) : null}
 
       {hasAnyLogs ? (
         <View style={s.filtersSection}>
@@ -287,6 +399,24 @@ export default function FriendProfileScreen() {
               })}
             </ScrollView>
           ) : null}
+
+          {/* Grid/list toggle — same widget as the own-profile screen */}
+          <View style={s.viewToggle}>
+            <TouchableOpacity
+              style={[s.viewToggleBtn, eatsView === 'list' && s.viewToggleBtnActive]}
+              onPress={() => setEatsView('list')}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="list" size={16} color={eatsView === 'list' ? colors.accent : colors.textFaint} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[s.viewToggleBtn, eatsView === 'grid' && s.viewToggleBtnActive]}
+              onPress={() => setEatsView('grid')}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="grid" size={16} color={eatsView === 'grid' ? colors.accent : colors.textFaint} />
+            </TouchableOpacity>
+          </View>
         </View>
       ) : null}
     </View>
@@ -313,8 +443,13 @@ export default function FriendProfileScreen() {
         </>
       ) : (
         <FlatList
-          data={filteredLogs}
-          keyExtractor={(l) => l.id}
+          // Re-mount when toggling list↔grid; FlatList can't change
+          // numColumns on a live instance.
+          key={eatsView}
+          data={filteredVisitGroups}
+          keyExtractor={(g) => g.restaurantId}
+          numColumns={eatsView === 'grid' ? 2 : 1}
+          columnWrapperStyle={eatsView === 'grid' ? s.gridRow : undefined}
           // Pass a React element (the result of renderHeader()) instead of
           // the function itself. Passing the function makes FlatList treat
           // it as a component type — and because renderHeader is recreated
@@ -330,43 +465,23 @@ export default function FriendProfileScreen() {
               <Text style={s.emptyBody}>Try a different filter or clear the search.</Text>
             </View>
           }
-          renderItem={({ item }) => {
-            const meta = [item.cuisine, item.neighborhood].filter(Boolean).join(' · ');
-            const note = item.note?.trim() || null;
-            const highScore = (item.score ?? 0) >= 8.0;
-            return (
-              <TouchableOpacity
-                style={s.logRow}
-                onPress={() => router.push(`/(tabs)/restaurant/${encodeURIComponent(item.restaurantId)}?logId=${encodeURIComponent(item.id)}`)}
-                activeOpacity={0.8}
-              >
-                <View style={s.logThumbWrap}>
-                  <RestaurantImage
-                    restaurant={{
-                      id: item.restaurantId,
-                      name: item.restaurantName,
-                      displayImageUrl: item.photo_url ?? null,
-                      previewPhotoUrl: item.previewPhotoUrl ?? null,
-                    }}
-                    aspectRatio={1}
-                    fallbackType="icon"
-                    borderRadius={12}
-                    style={s.logThumb}
-                  />
-                </View>
-                <View style={s.logInfo}>
-                  <Text style={s.logName} numberOfLines={1}>{item.restaurantName}</Text>
-                  {meta ? <Text style={s.logMeta} numberOfLines={1}>{meta}</Text> : null}
-                  {note ? <Text style={s.logNote} numberOfLines={1}>{note}</Text> : null}
-                </View>
-                <View style={[s.logScorePill, highScore && s.logScorePillHigh]}>
-                  <Text style={[s.logScoreText, highScore && s.logScoreTextHigh]}>
-                    {(item.score ?? 0).toFixed(1)}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            );
-          }}
+          renderItem={({ item }) =>
+            eatsView === 'grid' ? (
+              <EatsCard
+                group={item}
+                onPress={() =>
+                  router.push(`/restaurant/${encodeURIComponent(item.restaurantId)}`)
+                }
+              />
+            ) : (
+              <EatsListRow
+                group={item}
+                onPress={() =>
+                  router.push(`/restaurant/${encodeURIComponent(item.restaurantId)}`)
+                }
+              />
+            )
+          }
           contentContainerStyle={s.listContent}
           showsVerticalScrollIndicator={false}
         />
@@ -441,9 +556,37 @@ const s = StyleSheet.create({
     elevation: 2,
   },
   stat: { flex: 1, alignItems: 'center' },
+  statValueRow: { flexDirection: 'row', alignItems: 'center' },
+  statIcon: { marginRight: 4 },
   statValue: { fontSize: 20, fontWeight: '800', color: colors.text },
+  statValueAccent: { color: colors.accent },
   statLabel: { fontSize: 12, color: colors.textMuted, fontWeight: '500', marginTop: 2 },
   statDivider: { width: 1, height: 28, backgroundColor: colors.border, marginHorizontal: 8 },
+
+  // Taste DNA row — mirrors the own-profile chip strip.
+  dnaSection: {
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 12,
+  },
+  dnaLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.text,
+    marginBottom: 8,
+    letterSpacing: -0.1,
+  },
+  dnaScroll: { gap: 8, paddingRight: 16 },
+  dnaChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    marginRight: 8,
+  },
+  dnaEmoji: { fontSize: 14, marginRight: 4 },
+  dnaChipText: { fontSize: 12, fontWeight: '700', letterSpacing: -0.1 },
   followBtn: {
     backgroundColor: colors.accent,
     paddingHorizontal: 18,
@@ -496,33 +639,25 @@ const s = StyleSheet.create({
   emptyTitle: { fontSize: 16, fontWeight: '700', color: colors.text, marginTop: 6 },
   emptyBody: { fontSize: 13, color: colors.textMuted, textAlign: 'center' },
   listContent: { paddingBottom: 32, paddingHorizontal: 16 },
+  gridRow: { gap: 12, marginBottom: 12 },
 
-  // Compact log row — mirrors the EatsListRow on the own-profile screen
-  // so a friend's logs render in the same visual style as the user's own.
-  logRow: {
+  // View toggle — mirrors the own-profile widget exactly.
+  viewToggle: {
     flexDirection: 'row',
+    alignSelf: 'flex-end',
+    backgroundColor: colors.surface,
+    borderRadius: 999,
+    padding: 4,
+    borderWidth: 1,
+    borderColor: colors.border,
+    gap: 4,
+  },
+  viewToggleBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
     alignItems: 'center',
-    paddingVertical: 10,
-    paddingHorizontal: 4,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
-    gap: 12,
+    justifyContent: 'center',
   },
-  logThumbWrap: { width: 48, height: 48, borderRadius: 12, overflow: 'hidden' },
-  logThumb: { width: 48, height: 48 },
-  logInfo: { flex: 1, minWidth: 0 },
-  logName: { fontSize: 15, fontWeight: '700', color: colors.text, letterSpacing: -0.2 },
-  logMeta: { fontSize: 12, fontWeight: '500', color: colors.textMuted, marginTop: 1 },
-  logNote: { fontSize: 12, fontWeight: '500', color: colors.textFaint, fontStyle: 'italic', marginTop: 2 },
-  logScorePill: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 10,
-    backgroundColor: colors.surfaceSoft,
-  },
-  logScorePillHigh: {
-    backgroundColor: colors.accent,
-  },
-  logScoreText: { fontSize: 13, fontWeight: '800', color: colors.text },
-  logScoreTextHigh: { color: '#fff' },
+  viewToggleBtnActive: { backgroundColor: colors.accentSoft },
 });

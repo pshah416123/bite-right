@@ -73,6 +73,14 @@ export async function getDiscover(opts: {
   sortMode?: DiscoverSortMode;
   /** Occasion filter: brunch, lunch, dinner, bars, dessert, coffee, late_night. */
   occasion?: DiscoverOccasion | null;
+  /** Open Now toggle — server filters out places explicitly closed per Google's
+   *  open_now flag. Places with unknown status remain in results. */
+  openNow?: boolean;
+  /** When true, server skips its 5-min discover cache for this one call. Set
+   *  by explicit user re-locate actions (e.g. tapping "Near you") so the
+   *  result reflects the freshly-polled GPS fix, not whatever a previous
+   *  call cached at a coarser rounded grid. Off by default. */
+  fresh?: boolean;
 }): Promise<DiscoverResponse> {
   const params: Record<string, string> = {
     mode: opts.mode,
@@ -83,6 +91,8 @@ export async function getDiscover(opts: {
   if (opts.search && opts.search.trim()) params.search = opts.search.trim();
   if (opts.sortMode && opts.sortMode !== 'best') params.sortMode = opts.sortMode;
   if (opts.occasion) params.occasion = opts.occasion;
+  if (opts.openNow) params.openNow = '1';
+  if (opts.fresh) params.fresh = '1';
   // If we already know lat/lng (e.g. user picked a predefined location),
   // pass it through even for mode=location to avoid backend geocoding.
   if (opts.lat != null && opts.lng != null) {

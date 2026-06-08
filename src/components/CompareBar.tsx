@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   Animated,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -17,7 +18,7 @@ import { SearchOverlay } from './SearchOverlay';
 import { colors } from '../theme/colors';
 
 export function CompareBar() {
-  const { selected, clear, openSheet } = useCompare();
+  const { selected, clear, openSheet, remove } = useCompare();
   const insets = useSafeAreaInsets();
   const slideAnim = useRef(new Animated.Value(0)).current;
   const prevCount = useRef(0);
@@ -64,9 +65,31 @@ export function CompareBar() {
         pointerEvents={visible ? 'auto' : 'none'}
       >
         <View style={styles.bar}>
-          <View style={styles.left}>
-            <Text style={styles.count}>{count} selected</Text>
-          </View>
+          {/* Selected restaurants \u2014 horizontal chip list so users can see
+              exactly what's queued for compare and remove a specific one
+              without nuking the entire selection via Clear. Replaces the
+              old bare "{count} selected" label that hid the actual picks. */}
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.chipsRow}
+            keyboardShouldPersistTaps="handled"
+          >
+            {selected.map((r) => (
+              <View key={r.id} style={styles.chip}>
+                <Text style={styles.chipText} numberOfLines={1}>{r.name}</Text>
+                <TouchableOpacity
+                  onPress={() => remove(r.id)}
+                  hitSlop={6}
+                  activeOpacity={0.7}
+                  style={styles.chipRemove}
+                  accessibilityLabel={`Remove ${r.name}`}
+                >
+                  <Ionicons name="close" size={12} color={colors.textMuted} />
+                </TouchableOpacity>
+              </View>
+            ))}
+          </ScrollView>
 
           <View style={styles.actions}>
             <TouchableOpacity onPress={clear} activeOpacity={0.7} hitSlop={8}>
@@ -114,11 +137,8 @@ const styles = StyleSheet.create({
     zIndex: 100,
   },
   bar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     borderRadius: 16,
     backgroundColor: colors.surface,
     shadowColor: 'rgba(43,33,24,0.15)',
@@ -128,20 +148,43 @@ const styles = StyleSheet.create({
     elevation: 8,
     borderWidth: 1,
     borderColor: colors.border,
-  },
-  left: {
-    flexDirection: 'row',
-    alignItems: 'center',
     gap: 8,
   },
-  count: {
-    fontSize: 14,
+  chipsRow: {
+    gap: 6,
+    paddingVertical: 2,
+    alignItems: 'center',
+  },
+  chip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingLeft: 10,
+    paddingRight: 6,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: colors.surfaceSoft,
+    borderWidth: 1,
+    borderColor: colors.border,
+    maxWidth: 160,
+  },
+  chipText: {
+    fontSize: 12,
     fontWeight: '600',
     color: colors.text,
+    flexShrink: 1,
+  },
+  chipRemove: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   actions: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'flex-end',
     gap: 12,
   },
   clearText: {
