@@ -7479,37 +7479,6 @@ async function buildGooglePlaceDiscover(lat, lng, radiusMiles, userId, cuisineFi
   // DEBUG: tracing La Luna through pipeline — after cuisine post-filter
   _debugTarget('La Luna', recs, 'AFTER_CUISINE_FILTER');
 
-  // ── Name-match prioritization ───────────────────────────────────────
-  // When the search term clearly matches a restaurant's name (substring
-  // or all multi-word tokens), pull that restaurant to the FRONT of
-  // recs. Without this, a user searching "Olive Garden" sees Italian
-  // restaurants ranked by personalization (which scores higher for
-  // smaller / better-rated places) while Olive Garden itself sits in
-  // allNearby far below. Brand-name searches should put the actual
-  // brand first — both top-picks and the dropdown row.
-  if (searchTerm && recs.length > 0) {
-    const lc = searchTerm.toLowerCase();
-    const tokens = lc.split(/\s+/).filter((t) => t.length >= 3);
-    const nameMatchesQuery = (rec) => {
-      const name = (rec.name || '').toLowerCase();
-      if (!name) return false;
-      if (name.includes(lc)) return true;
-      if (tokens.length >= 2 && tokens.every((t) => name.includes(t))) return true;
-      return false;
-    };
-    const nameMatches = [];
-    const rest = [];
-    for (const r of recs) (nameMatchesQuery(r) ? nameMatches : rest).push(r);
-    if (nameMatches.length > 0) {
-      recs = [...nameMatches, ...rest];
-      console.log('[BiteRight][Discover] name-match prioritization', {
-        searchTerm,
-        nameMatches: nameMatches.length,
-        topResult: nameMatches[0]?.name,
-      });
-    }
-  }
-
   // ── Occasion filter ─────────────────────────────────────────────────
   // Maps occasion labels to Google Place types, cuisine labels, and name keywords
   // so we can filter and boost relevant results.
