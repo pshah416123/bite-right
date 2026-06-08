@@ -1030,6 +1030,12 @@ export default function RestaurantScreen() {
     return { ...menu, sections };
   }, [menu]);
 
+  // Fallback when no menu is available: surface dishes mined from Google
+  // reviews. Real signal, no fabrication — beats showing nothing.
+  const peopleOrderDishes = (!filteredMenu && detail?.popularDishesFromReviews?.length)
+    ? detail.popularDishesFromReviews
+    : null;
+
   // Source-confidence map (mirrors server/scripts/auditMenuSources.js). When
   // the source is in the low-confidence tier AND we have popular_dishes
   // from Google reviews, render a "What people love" highlights row ABOVE
@@ -1144,16 +1150,15 @@ export default function RestaurantScreen() {
     </View>
   );
 
-  // Menu block — three possible states now that the "What people order"
-  // popular-dishes fallback was retired. It duplicated the Standout dishes
-  // row higher on the page, which made the same chips appear twice on
-  // restaurants without a parseable menu. Better to show a clear
-  // "Menu coming soon" message and let the Standout dishes block above
-  // carry the dish signal.
+  // Menu block — four possible states:
   //  1. menuLoading                              -> spinner
   //  2. filteredMenu present                     -> full menu
-  //  3. no menu, detail still fetching reviews   -> spinner ("hold on")
-  //  4. no menu and detail returned                -> "Menu coming soon"
+  //  3. no menu but popular-dishes available     -> "What people order" chips
+  //  4. no menu, detail still fetching reviews   -> spinner ("hold on")
+  //  5. no menu and detail returned no dishes    -> "Menu unavailable" message
+  // The detail fetch (which produces popularDishesFromReviews) is independent
+  // of the menu fetch and may finish later. Without state 4 there's a
+  // visible "section disappears" gap.
   const detailStillLoading = !detail && !!id;
   const menuBlock = menuLoading || (!filteredMenu && detailStillLoading) ? (
     <View style={styles.section}>
@@ -1162,13 +1167,25 @@ export default function RestaurantScreen() {
     </View>
   ) : filteredMenu ? (
     <MenuTemplate menu={filteredMenu} restaurantName={restaurantName} />
+  ) : peopleOrderDishes ? (
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>What people order</Text>
+      <Text style={styles.sectionSubtitle}>From recent Google reviews</Text>
+      <View style={styles.peopleOrderRow}>
+        {peopleOrderDishes.map((d) => (
+          <View key={d.name} style={styles.peopleOrderChip}>
+            <Text style={styles.peopleOrderText}>{d.name}</Text>
+          </View>
+        ))}
+      </View>
+    </View>
   ) : (
     <View style={styles.section}>
       <Text style={styles.sectionTitle}>Menu</Text>
       <Text style={styles.sectionSubtitle}>
         {menu?.loadError === 'timeout'
           ? 'Menu is taking longer than usual to load.'
-          : 'Menu coming soon.'}
+          : `Menu unavailable — try the restaurant${'’'}s website or social.`}
       </Text>
       {menu?.loadError ? (
         <TouchableOpacity
@@ -2012,6 +2029,7 @@ const styles = StyleSheet.create({
   sayingText: { fontSize: 12, fontWeight: '600', color: colors.text },
   sayingTextBig: { fontSize: 13, fontWeight: '700', color: colors.accent },
   sayingCount: { fontSize: 11, color: colors.textMuted, marginLeft: 2 },
+  peopleOrderRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   highlightsSection: {
     marginTop: 18,
     marginHorizontal: 0,
@@ -2051,6 +2069,13 @@ const styles = StyleSheet.create({
   },
   highlightChipText: { fontSize: 13, fontWeight: '700', color: colors.text },
   highlightChipCount: { fontSize: 11, fontWeight: '600', color: colors.textMuted },
+  peopleOrderChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: colors.accentSoft,
+  },
+  peopleOrderText: { fontSize: 13, fontWeight: '600', color: colors.accent },
   socialSummarySection: {
     marginTop: 18,
     paddingVertical: 14,

@@ -1641,19 +1641,9 @@ async function resolveRestaurantCardImage(restaurantId, placeId, logPreviewPhoto
 
 // 0) Health check (so the app can show setup hints)
 app.get('/api/health', (req, res) => {
-  // Lazy reference so the multiLocationTelemetry symbol (declared later
-  // alongside the menu pipeline imports) doesn't matter for /health
-  // ordering. typeof guards a not-yet-defined value during boot.
-  const ml = typeof multiLocationTelemetry !== 'undefined' ? multiLocationTelemetry : null;
   res.json({
     ok: true,
     googleConfigured: !!GOOGLE_PLACES_API_KEY,
-    multiLocation: ml ? {
-      detected: ml.detected,
-      pickedUrl: ml.pickedUrl,
-      recovered: ml.recovered,
-      sinceMs: Date.now() - ml.resetAt,
-    } : null,
   });
 });
 
@@ -4853,18 +4843,6 @@ function getChainMenu(restaurantName) {
 // 6) Menu endpoint — returns structured menu data, photos, or empty state
 // ─── Menu cache + quality helpers ───────────────────────────────────────────
 const { extractMenuFromUrl, scoreMenu, assignMenuGroups } = require('./menuExtractors');
-const { detectMultiLocationSite, pickBestLocationUrl } = require('./multiLocation');
-
-// In-process counters for the multi-location pipeline step. Lightweight
-// telemetry so we can spot-check how often the new step is firing and
-// what fraction of detections actually yield a usable menu. Surfaced via
-// the existing /api/health endpoint below.
-const multiLocationTelemetry = {
-  detected: 0,
-  pickedUrl: 0,
-  recovered: 0,
-  resetAt: Date.now(),
-};
 const { extractDishesWithLLM, extractMenuFromReviewsWithLLM } = require('./menuLlm');
 
 const MENU_QUALITY_THRESHOLD = 50;
@@ -5337,86 +5315,6 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
             }
           }
         } catch { /* ignore URL parse errors */ }
-      }
-
-      // 1c.5. Multi-location site detection + retry. A meaningful slice of
-      // sites that return zero items aren't broken — they're location
-      // pickers (e.g. restaurantgroup.com/locations). Detect that pattern,
-      // pick the URL most likely to match this restaurant's actual
-      // city/neighborhood/zip, and re-run the scrape against that page.
-      // Only fires when the prior steps yielded nothing AND the homepage
-      // looks like a location selector — so successful single-location
-      // scrapes are unaffected.
-      if (!menuSections && homepageHtml) {
-        const detection = detectMultiLocationSite(homepageHtml, websiteUrl);
-        if (detection.isMultiLocation) {
-          const picked = pickBestLocationUrl(detection.candidateLinks, {
-            address: info?.address,
-            city: info?.city,
-            neighborhood: info?.neighborhood,
-            state: info?.state,
-            zip: info?.zip,
-          });
-          console.log('[BiteRight][MultiLoc] detected', {
-            restaurantId,
-            websiteUrl,
-            candidates: detection.candidateLinks.length,
-            signals: detection.signals,
-            picked: picked?.url || null,
-            pickedLabel: picked?.label || null,
-          });
-          multiLocationTelemetry.detected += 1;
-          // Mirror the detection into rawData so the cache row carries
-          // a record of why we routed where we did (audit-friendly).
-          result.multiLocation = {
-            detected: true,
-            candidates: detection.candidateLinks.length,
-            picked: picked?.url || null,
-            signals: detection.signals,
-          };
-          if (picked?.url) {
-            multiLocationTelemetry.pickedUrl += 1;
-            try {
-              // Fetch the picked location URL once and run the same
-              // sequence the homepage path uses: provider detection,
-              // menu-link follow, generic scrape. Reusing the scrape
-              // primitives keeps the new path honest with the rest of
-              // the pipeline (any extractor fix propagates here too).
-              const { data: locHtml } = await axios.get(picked.url, {
-                timeout: 10000,
-                headers: SCRAPE_HEADERS,
-                maxRedirects: 5,
-                responseType: 'text',
-              });
-              if (typeof locHtml === 'string') {
-                menuSections = await tryThirdPartyMenuProviders(locHtml, picked.url);
-                if (!menuSections) {
-                  const locMenuUrl = findMenuUrl(locHtml, picked.url);
-                  if (locMenuUrl && locMenuUrl !== picked.url) {
-                    menuSections = await scrapeMenuFromUrl(locMenuUrl);
-                  }
-                }
-                if (!menuSections) menuSections = await scrapeMenuFromUrl(picked.url);
-                if (!menuSections) menuSections = parseMenuHtml(locHtml);
-              }
-              if (menuSections && menuSections.length > 0) {
-                multiLocationTelemetry.recovered += 1;
-                result.multiLocation.recovered = true;
-                console.log('[BiteRight][MultiLoc] recovered menu from location URL', {
-                  restaurantId, locationUrl: picked.url,
-                });
-              } else {
-                console.log('[BiteRight][MultiLoc] location URL returned no items', {
-                  restaurantId, locationUrl: picked.url,
-                });
-              }
-            } catch (err) {
-              console.log('[BiteRight][MultiLoc] location fetch error', {
-                restaurantId, locationUrl: picked.url, error: err?.message,
-              });
-            }
-          }
-        }
       }
 
       // 1d. Detect third-party menu providers (SinglePlatform, Popmenu, etc.)
