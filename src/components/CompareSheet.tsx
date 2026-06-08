@@ -589,7 +589,7 @@ export function CompareSheet() {
         imageUrl: r.imageUrl ?? null,
         previewPhotoUrl: r.imageUrl ?? null,
       }));
-      router.push(`/restaurant/${encodeURIComponent(r.id)}?payload=${payload}`);
+      router.push(`/(tabs)/restaurant/${encodeURIComponent(r.id)}?payload=${payload}`);
     },
     [closeSheet, router],
   );

@@ -580,7 +580,7 @@ export default function TonightScreen() {
   /** User picks a place from the shortlist → navigate to detail (the real "decision" moment). */
   const handlePickFromShortlist = useCallback((card: TonightCardModel) => {
     setShortlistOpen(false);
-    router.push(`/restaurant/${encodeURIComponent(card.restaurant.id)}`);
+    router.push(`/(tabs)/restaurant/${encodeURIComponent(card.restaurant.id)}`);
   }, [router]);
 
   const removeFromShortlist = useCallback((id: string) => {

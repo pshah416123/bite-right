@@ -22,7 +22,7 @@ export function SavedRestaurantListCard({ item, tags, onRemove }: Props) {
 
   return (
     <View style={styles.wrap}>
-      <Link href={`/restaurant/${placeId}`} asChild>
+      <Link href={`/(tabs)/restaurant/${placeId}`} asChild>
         <TouchableOpacity style={styles.card} activeOpacity={0.8}>
           <RestaurantImage
             restaurant={{

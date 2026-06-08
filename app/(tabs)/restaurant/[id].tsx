@@ -772,80 +772,26 @@ export default function RestaurantScreen() {
     </View>
   );
 
-  // Tap a friend's name to open their profile. Mock seed friends (no
-  // userId — Maya, Alex, etc.) get the same "demo profile" explainer that
-  // FeedCard.handleAuthorPress shows, so the affordance is consistent
-  // across surfaces.
-  const openFriendProfile = (userId: string | null | undefined, userName: string) => {
-    if (userId) {
-      router.push(`/friend/${encodeURIComponent(userId)}` as never);
-      return;
-    }
-    Alert.alert(
-      `${userName} is a demo profile`,
-      'These posts seed your feed so it isn’t empty on day one. Invite real friends to see and tap into their actual profiles.',
-      [{ text: 'Got it' }],
-    );
-  };
-
   const friendsBar = friendVisits.length > 0 ? (
     <View style={styles.friendsSection}>
       <View style={styles.friendAvatarsRow}>
         {friendVisits.slice(0, 3).map((fv, i) => (
-          <TouchableOpacity
-            key={fv.id}
-            onPress={() => openFriendProfile(fv.userId, fv.userName)}
-            activeOpacity={0.7}
-            style={[styles.friendAvatarRing, { marginLeft: i === 0 ? 0 : -10 }]}
-          >
+          <View key={fv.id} style={[styles.friendAvatarRing, { marginLeft: i === 0 ? 0 : -10 }]}>
             {fv.userAvatar ? (
               <Image source={{ uri: fv.userAvatar }} style={styles.friendAvatarImg} />
             ) : (
               <Text style={styles.friendAvatarInitial}>{fv.userName[0]}</Text>
             )}
-          </TouchableOpacity>
+          </View>
         ))}
       </View>
       <View style={styles.friendsTextWrap}>
         <Text style={styles.friendsText}>
-          {friendVisits.length === 1 ? (
-            <>
-              <Text
-                style={styles.friendsTextLink}
-                onPress={() => openFriendProfile(friendVisits[0].userId, friendVisits[0].userName)}
-              >
-                {friendVisits[0].userName}
-              </Text>
-              {' has been here'}
-            </>
-          ) : friendVisits.length === 2 ? (
-            <>
-              <Text
-                style={styles.friendsTextLink}
-                onPress={() => openFriendProfile(friendVisits[0].userId, friendVisits[0].userName)}
-              >
-                {friendVisits[0].userName}
-              </Text>
-              {' + '}
-              <Text
-                style={styles.friendsTextLink}
-                onPress={() => openFriendProfile(friendVisits[1].userId, friendVisits[1].userName)}
-              >
-                {friendVisits[1].userName}
-              </Text>
-              {' have been here'}
-            </>
-          ) : (
-            <>
-              <Text
-                style={styles.friendsTextLink}
-                onPress={() => openFriendProfile(friendVisits[0].userId, friendVisits[0].userName)}
-              >
-                {friendVisits[0].userName}
-              </Text>
-              {` + ${friendVisits.length - 1} friends have been here`}
-            </>
-          )}
+          {friendVisits.length === 1
+            ? `${friendVisits[0].userName} has been here`
+            : friendVisits.length === 2
+              ? `${friendVisits[0].userName} + ${friendVisits[1].userName} have been here`
+              : `${friendVisits[0].userName} + ${friendVisits.length - 1} friends have been here`}
         </Text>
         {friendAvgScore != null && (
           <Text style={styles.friendsAvgText}>
@@ -862,24 +808,15 @@ export default function RestaurantScreen() {
     <View style={styles.regularsSection}>
       {regulars.slice(0, 3).map((fv) => (
         <View key={`reg-${fv.id}`} style={styles.regularRow}>
-          <TouchableOpacity
-            style={styles.regularAvatar}
-            onPress={() => openFriendProfile(fv.userId, fv.userName)}
-            activeOpacity={0.7}
-          >
+          <View style={styles.regularAvatar}>
             {fv.userAvatar ? (
               <Image source={{ uri: fv.userAvatar }} style={styles.regularAvatarImg} />
             ) : (
               <Text style={styles.regularAvatarInitial}>{fv.userName[0]}</Text>
             )}
-          </TouchableOpacity>
+          </View>
           <Text style={styles.regularText}>
-            <Text
-              style={[styles.regularName, styles.friendsTextLink]}
-              onPress={() => openFriendProfile(fv.userId, fv.userName)}
-            >
-              {fv.userName}
-            </Text>
+            <Text style={styles.regularName}>{fv.userName}</Text>
             {(fv.visitCount ?? 1) >= 5
               ? ` has been here ${fv.visitCount}× \u{1F525}`
               : ` keeps coming back — ${fv.visitCount} visits`}
@@ -950,27 +887,18 @@ export default function RestaurantScreen() {
       <Text style={styles.socialProofTitle}>What your friends said</Text>
       {visibleQuotes.map((fv) => (
           <View key={fv.id} style={styles.quoteRow}>
-            <TouchableOpacity
-              style={styles.quoteAvatarSmall}
-              onPress={() => openFriendProfile(fv.userId, fv.userName)}
-              activeOpacity={0.7}
-            >
+            <View style={styles.quoteAvatarSmall}>
               {fv.userAvatar ? (
                 <Image source={{ uri: fv.userAvatar }} style={styles.quoteAvatarImg} />
               ) : (
                 <Text style={styles.quoteAvatarInitialSmall}>{fv.userName[0]}</Text>
               )}
-            </TouchableOpacity>
+            </View>
             <View style={styles.quoteBubble}>
               <Text style={styles.quoteText} numberOfLines={3}>"{fv.note}"</Text>
               <View style={styles.quoteFooter}>
                 <Text style={styles.quoteAuthor}>
-                  <Text
-                    style={styles.friendsTextLink}
-                    onPress={() => openFriendProfile(fv.userId, fv.userName)}
-                  >
-                    {fv.userName}
-                  </Text>
+                  {fv.userName}
                   {(fv.visitCount ?? 1) > 1 ? ` · ${fv.visitCount}x` : ''}
                 </Text>
                 <View style={[styles.quoteScorePill, fv.score >= 8.0 && styles.quoteScorePillHigh]}>
@@ -1218,7 +1146,7 @@ export default function RestaurantScreen() {
             style={styles.afterCard}
             activeOpacity={0.85}
             onPress={() => router.push({
-              pathname: '/restaurant/[id]',
+              pathname: '/(tabs)/restaurant/[id]',
               params: {
                 id: spot.restaurantId,
                 payload: encodeURIComponent(JSON.stringify({
@@ -1595,7 +1523,7 @@ export default function RestaurantScreen() {
               <TouchableOpacity
                 style={styles.fullDetailCta}
                 activeOpacity={0.7}
-                onPress={() => router.push(`/restaurant/${encodeURIComponent(id!)}`)}
+                onPress={() => router.push(`/(tabs)/restaurant/${encodeURIComponent(id!)}`)}
               >
                 <Text style={styles.fullDetailCtaText}>View full restaurant →</Text>
                 <Ionicons name="arrow-forward" size={16} color={colors.accent} />
@@ -1648,7 +1576,7 @@ export default function RestaurantScreen() {
               <TouchableOpacity
                 style={styles.fullDetailCta}
                 activeOpacity={0.7}
-                onPress={() => router.push(`/restaurant/${encodeURIComponent(id!)}`)}
+                onPress={() => router.push(`/(tabs)/restaurant/${encodeURIComponent(id!)}`)}
               >
                 <Text style={styles.fullDetailCtaText}>View full restaurant →</Text>
                 <Ionicons name="arrow-forward" size={16} color={colors.accent} />
@@ -1863,7 +1791,6 @@ const styles = StyleSheet.create({
   friendAvatarInitial: { fontSize: 14, fontWeight: '700', color: colors.text },
   friendsTextWrap: { flex: 1 },
   friendsText: { fontSize: 14, fontWeight: '600', color: '#6B4226' },
-  friendsTextLink: { color: colors.accent, fontWeight: '700' },
   friendsAvgText: { marginTop: 2, fontSize: 11.5, fontWeight: '600', color: colors.textMuted },
 
   // Regulars (friends who've been 3+ times)

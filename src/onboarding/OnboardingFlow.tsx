@@ -63,14 +63,6 @@ export function OnboardingFlow({ onDone }: Props) {
         <Text style={styles.subtitle}>Your Taste, Perfected</Text>
       </View>
       <View style={styles.body}>
-        <View style={styles.pitchCard}>
-          <Text style={styles.pitchHeadline}>Stop scrolling through thousands of reviews.</Text>
-          <Text style={styles.pitchBody}>
-            ByteRite is algorithm-based. As you log restaurants you love, we learn your
-            taste and match you with people who order like you do — then surface the
-            places they swear by. The more you use it, the sharper the recommendations.
-          </Text>
-        </View>
         <TouchableOpacity
           style={styles.primaryBtn}
           activeOpacity={0.85}
@@ -213,15 +205,8 @@ export function OnboardingFlow({ onDone }: Props) {
         </Text>
       </View>
       <View style={styles.body}>
-        <View style={styles.pitchCard}>
-          <Text style={styles.pitchBody}>
-            Friends sharpen your recommendations even faster — ByteRite weighs the
-            places people with similar taste actually return to, so you skip the
-            review-scrolling and get straight to spots you'll love.
-          </Text>
-        </View>
         <Text style={styles.cardBody}>
-          You can search and follow friends from Profile
+          You can search and follow friends from Profile 
           {'>'} Settings any time.
         </Text>
       </View>
@@ -375,26 +360,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     color: colors.text,
-  },
-  pitchCard: {
-    borderRadius: 18,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    marginBottom: 18,
-  },
-  pitchHeadline: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: colors.text,
-    marginBottom: 8,
-  },
-  pitchBody: {
-    fontSize: 13,
-    lineHeight: 19,
-    color: colors.textMuted,
   },
 });
 

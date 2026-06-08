@@ -196,7 +196,7 @@ export default function TonightMatchesScreen() {
                 section.title === 'Perfect Matches' && styles.perfectCard,
               ]}
               activeOpacity={0.85}
-              onPress={() => router.push(`/restaurant/${encodeURIComponent(item.restaurantId)}`)}
+              onPress={() => router.push(`/(tabs)/restaurant/${encodeURIComponent(item.restaurantId)}`)}
             >
               <RestaurantImage
                 restaurant={{

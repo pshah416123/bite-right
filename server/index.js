@@ -105,57 +105,6 @@ const app = express();
 const PORT = process.env.PORT || 4000;
 const GOOGLE_PLACES_API_KEY = (process.env.GOOGLE_PLACES_API_KEY || '').trim() || undefined;
 const YELP_API_KEY = process.env.YELP_API_KEY;
-
-// ── In-memory TTL caches for Google-cost-heavy endpoints ──────────────
-// Discover fires 4 billable Google calls (Nearby + Text + Best-of +
-// Focused-Nearby). Without caching, every UI interaction that mutates
-// search/filter state pays for all four. Five-minute TTL keyed by the
-// normalized request shape kills duplicate spend from re-renders, back
-// navigation, filter toggles, and (especially) the beta variant's
-// live-discover-preview-while-typing flow.
-const DISCOVER_CACHE_TTL_MS = 5 * 60 * 1000;
-const AUTOCOMPLETE_CACHE_TTL_MS = 5 * 60 * 1000;
-const DISCOVER_CACHE_MAX = 500;
-const AUTOCOMPLETE_CACHE_MAX = 500;
-
-function makeTtlCache(maxSize) {
-  const map = new Map();
-  return {
-    get(key) {
-      const entry = map.get(key);
-      if (!entry) return undefined;
-      if (entry.expiresAt < Date.now()) {
-        map.delete(key);
-        return undefined;
-      }
-      // LRU touch
-      map.delete(key);
-      map.set(key, entry);
-      return entry.value;
-    },
-    set(key, value, ttlMs) {
-      if (map.has(key)) map.delete(key);
-      if (map.size >= maxSize) {
-        const oldestKey = map.keys().next().value;
-        if (oldestKey !== undefined) map.delete(oldestKey);
-      }
-      map.set(key, { value, expiresAt: Date.now() + ttlMs });
-    },
-  };
-}
-
-const discoverCache = makeTtlCache(DISCOVER_CACHE_MAX);
-const autocompleteCache = makeTtlCache(AUTOCOMPLETE_CACHE_MAX);
-
-// Round coords to ~11m grid (4 decimals). Tight enough that a user
-// walking a block lands on a different cache key — so "Near you" actually
-// refetches when they've moved — while still absorbing repaint/re-render
-// chatter from the same physical spot. Previous 3-decimal (110m) grid
-// was too lossy: testers tapping "Near you" mid-travel kept hitting the
-// cached result from their starting location.
-function roundCoord(n) {
-  return Number.isFinite(n) ? Math.round(n * 10000) / 10000 : n;
-}
 /** Public base URL for absolute image URLs in API responses (no trailing slash). */
 const PUBLIC_API_URL = (process.env.PUBLIC_API_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
 
@@ -297,8 +246,7 @@ async function getRestaurantInfo(restaurantId) {
       : null;
   if (candidatePlaceId && GOOGLE_PLACES_API_KEY) {
     try {
-      // Only needs name + types for cuisine inference — Basic SKU is plenty.
-      const details = await googlePlaceDetails(candidatePlaceId, PLACE_FIELDS_TYPES_ONLY);
+      const details = await googlePlaceDetails(candidatePlaceId);
       if (details) {
         const cuisine = coalesceCuisine({
           types: details.types || [],
@@ -691,32 +639,14 @@ function extractWhatPeopleAreSaying(reviews) {
     .map(([phrase, count]) => ({ phrase: titleCase(phrase), mentionCount: count }));
 }
 
-// Place Details billing SKUs (2026):
-//   Basic     ($17/1k): place_id, name, address, geometry, photos, types, url
-//   Contact   (+$3/1k):  phone, opening_hours, website
-//   Atmosphere(+$5/1k):  rating, user_ratings_total, price_level, reviews
-//
-// Caller-tuned field sets — each request pays only for the SKUs it
-// actually needs. The original single-fields-string default fetched
-// everything on every call, which meant geocoding lookups and photo-
-// fallback resolutions were paying Atmosphere rates ($5/1k) for fields
-// they immediately discarded. Constants below name the common shapes
-// so call sites read clearly and stay aligned with what they use.
-const PLACE_FIELDS_FULL = 'name,formatted_address,geometry,photos,website,url,international_phone_number,opening_hours,price_level,rating,user_ratings_total,reviews';
-const PLACE_FIELDS_NO_ATMOSPHERE = 'name,formatted_address,geometry,photos,website,url,international_phone_number,opening_hours,types';
-const PLACE_FIELDS_PHOTOS_ONLY = 'name,photos,types';
-const PLACE_FIELDS_GEOCODE = 'name,formatted_address,geometry';
-const PLACE_FIELDS_REVIEWS_ONLY = 'name,reviews';
-const PLACE_FIELDS_TYPES_ONLY = 'name,types';
-
-async function googlePlaceDetails(placeId, fields = PLACE_FIELDS_FULL) {
+async function googlePlaceDetails(placeId) {
   if (!GOOGLE_PLACES_API_KEY) return null;
 
   const url = 'https://maps.googleapis.com/maps/api/place/details/json';
   const params = {
     place_id: placeId,
     key: GOOGLE_PLACES_API_KEY,
-    fields,
+    fields: 'name,formatted_address,geometry,photos,website,url,international_phone_number,opening_hours,price_level,rating,user_ratings_total,reviews',
   };
 
   const { data } = await axios.get(url, { params });
@@ -1657,15 +1587,6 @@ app.get('/api/restaurants/autocomplete', async (req, res) => {
   const lat = req.query.lat != null ? parseFloat(req.query.lat) : undefined;
   const lng = req.query.lng != null ? parseFloat(req.query.lng) : undefined;
 
-  // Cache by query + rounded region. Users frequently delete and re-type
-  // the same prefix; without this each repaint was a billed Autocomplete
-  // call. TTL 5 min — Google's index doesn't churn fast enough to matter.
-  const cacheKey = `${query.toLowerCase()}|${roundCoord(lat)}|${roundCoord(lng)}`;
-  const cached = autocompleteCache.get(cacheKey);
-  if (cached) {
-    return res.json(cached);
-  }
-
   try {
     const predictions = await googlePlacesAutocomplete(query, lat, lng);
     const simplified = predictions.map((p) => ({
@@ -1677,7 +1598,6 @@ app.get('/api/restaurants/autocomplete', async (req, res) => {
     if (simplified.length === 0 && GOOGLE_PLACES_API_KEY) {
       console.log('[BiteRight] Google returned 0 results. Check server terminal for any REQUEST_DENIED or error_message above.');
     }
-    autocompleteCache.set(cacheKey, simplified, AUTOCOMPLETE_CACHE_TTL_MS);
     res.json(simplified);
   } catch (err) {
     console.error('[BiteRight] Autocomplete error', err.message);
@@ -1698,8 +1618,7 @@ app.post('/api/restaurants/select', async (req, res) => {
     // Re-resolve image if existing restaurant has none (e.g. was created before Google key was set)
     if (restaurant && !restaurant.displayImageUrl && GOOGLE_PLACES_API_KEY) {
       try {
-        // Only the photo reference is consumed — skip reviews/contact/atmosphere.
-        const details = await googlePlaceDetails(placeId, PLACE_FIELDS_PHOTOS_ONLY);
+        const details = await googlePlaceDetails(placeId);
         if (details) {
           const photoRef = selectBestPlacePhotoReference(details.photos);
           if (photoRef) {
@@ -1726,10 +1645,7 @@ app.post('/api/restaurants/select', async (req, res) => {
     }
 
     if (!restaurant) {
-      // Creating the record uses name/address/geometry/website/phone/hours
-      // /photos/types/url — no reviews or rating needed at write time
-      // (the detail endpoint hits those later when actually rendered).
-      const details = await googlePlaceDetails(placeId, PLACE_FIELDS_NO_ATMOSPHERE);
+      const details = await googlePlaceDetails(placeId);
       if (!details) {
         return res.status(500).json({ error: 'Failed to fetch place details' });
       }
@@ -3012,7 +2928,7 @@ app.get('/api/restaurants/:id/photo', async (req, res) => {
     const placeId = restaurant.googlePlaceId || restaurant.placeId;
     if (placeId) {
       try {
-        const details = await googlePlaceDetails(placeId, PLACE_FIELDS_PHOTOS_ONLY);
+        const details = await googlePlaceDetails(placeId);
         if (details?.photos?.length) {
           const best = selectBestPlacePhotoReference(details.photos);
           if (best) {
@@ -3071,7 +2987,7 @@ app.post('/api/restaurants/:id/next-photo', async (req, res) => {
   }
 
   try {
-    const details = await googlePlaceDetails(placeId, PLACE_FIELDS_PHOTOS_ONLY);
+    const details = await googlePlaceDetails(placeId);
     if (!details?.photos?.length) {
       return res.status(404).json({ error: 'No photos available from Google' });
     }
@@ -3277,43 +3193,6 @@ const DRINK_SECTION_RE = /^(cocktails?|beers?|wines?|wine list|ciders?|spirits?|
  */
 const JUNK_ITEM_RE = /\b(career|hiring|apply|employment|invest|community|support|flexible|flexibility|pathway|scholarship|leadership|closed on|our mission|our story|our team|our values|our company|wellbeing|well-being|mental health|professional development|team member|diversity|inclusion|franchise|contact us|get in touch|download|subscribe|newsletter|privacy|terms of|follow us|connect with|social media|next stop|learn more|read more|find a location|mobile app|gift card|rewards program|sign up|log in|register|create account|amenit(y|ies)|delivery partner|other location|nearest|proud to be|membership|operator|owner)\b/i;
 
-// Modifier / topping lines that small-business menus inline beside real
-// items — surfaced verbatim by the PDF / generic-DOM parsers when they
-// can't distinguish "Mushroom +.75" (an add-on) from a dish. Rebecca's
-// Family Restaurant in Northville was hit hard: its menu shipped
-// "Cheese +.50 / Bleu and Feta +", "Mushroom +.75 | Jalapeño +", and
-// fragments like "with Bacon + Cheese" as full items priced in the $25–$75
-// range. The signal is unambiguous — a "+" in the price position or a
-// leading "with"/"add"/"extra" — so we filter rather than try to repair.
-const MODIFIER_ITEM_RE = /(?:^|\s)(?:\+\s*\$?\.?\d|\+\s*\d+\.\d{2}\b|\|\s*\+|\/\s*[A-Z][a-z]+\s*\+)|^(?:with|without|w\/|w\/o|add|extra|sub|substitute|served with|comes with|side of|choice of|your choice|all\s+(?:burgers|sandwiches|wraps)\s+(?:come|served)|toppings?:)\s+/i;
-
-// Restaurant-policy / meta boilerplate that gets pulled in when a PDF's
-// footer / disclaimer paragraph is treated as a menu line. Patterns are
-// distinct enough from real dish names that a substring match is safe.
-const BOILERPLATE_ITEM_RE = /\b(service\s+fee|may\s+be\s+charged|subject\s+to\s+(?:change|availability)|carry[-\s]?out\s+orders?|prices?\s+(?:subject\s+to|may)|menu\s+version|last\s+updated|all\s+prices|tax\s+(?:not\s+)?included|please\s+ask|consuming\s+raw|18%\s+gratuity|gratuity\s+(?:added|included)|split\s+(?:plate|check)\s+(?:fee|charge)|cash\s+only|no\s+(?:checks|substitutions)|ask\s+your\s+server|while\s+supplies\s+last)\b/i;
-
-// "Bowl - 4.99 | Cup - 4.29 | Quart" — the price tier IS the name. We see
-// this when the parser merges a size/price descriptor row with the next
-// item. Heuristic: at least two numeric prices separated by '|' or '/' in
-// the name field itself.
-const PRICE_DESCRIPTOR_NAME_RE = /\b\d+\.\d{2}\s*[|\/].*\d+\.\d{2}\b|\b\d+\.\d{2}\s*[|\/]\s*(?:cup|bowl|quart|pint|small|medium|large)\b/i;
-
-// Bare modifier-word names: items whose name is *just* a trigger word
-// like "Add", "Extra", "Side", with no dish content following. Umai's
-// "SPICY CAJUN ROLL" section shipped four separate items all literally
-// named "Add" at $1.00 — clearly add-on pricing rows whose label got
-// truncated to the trigger word. Distinct from MODIFIER_ITEM_RE because
-// that pattern requires content after the trigger ("add bacon", "with
-// cheese"); this matches when the trigger stands alone.
-const BARE_MODIFIER_NAME_RE = /^(?:add|extra|sub|substitute|side|sides?|option|options|topping|toppings|sauce|sauces|dressing|dressings|condiment|condiments|modifier|modifiers|choice|choices|your choice|select|pick|comes with|served with|w\/?o?|with|without)$/i;
-
-// A description that's nothing but a header label ("Toppings:", "Add-ons:",
-// "Sides:") means the row underneath is a list of modifiers being pinned
-// to the wrong dish. Rebecca's surfaced "tomato, onions and pickles" as
-// a $10.49 item with description "Toppings:" — clearly a stranded modifier
-// label, not a dish.
-const LABEL_DESCRIPTION_RE = /^(?:toppings?|add[-\s]?ons?|sides?|mods?|options?|extras?|sauces?|dressings?|condiments?|substitutions?|choose\s+\d+|pick\s+\d+|select\s+\d+)\s*:?\s*$/i;
-
 // Merchandise (apparel, accessories, gift sets, home goods) — restaurants
 // with online shops often surface these as "menu" items when their /menu page
 // links to the shop. Levain's bakery menu was getting polluted with
@@ -3346,16 +3225,6 @@ function isJunkItem(item) {
   if (MERCH_ITEM_RE.test(name)) return true;
   if (PERSON_NAME_RE.test(name.trim())) return true;
   if (PERSON_POSSESSIVE_RE.test(name.trim())) return true;
-  if (MODIFIER_ITEM_RE.test(name)) return true;
-  if (BARE_MODIFIER_NAME_RE.test(name.trim())) return true;
-  if (BOILERPLATE_ITEM_RE.test(name) || BOILERPLATE_ITEM_RE.test(desc)) return true;
-  if (PRICE_DESCRIPTOR_NAME_RE.test(name)) return true;
-  // Trailing-modifier glyphs like "Cheese +" or "Jalapeño +" — an
-  // operator with nothing after it is an add-on, not a dish.
-  if (/[+|\/]\s*$/.test(name.trim())) return true;
-  // Stranded modifier-label description ("Toppings:") — the row is a
-  // topping list misattached to a dish.
-  if (desc && LABEL_DESCRIPTION_RE.test(desc.trim())) return true;
   return false;
 }
 
@@ -3364,59 +3233,6 @@ function looksLikeFood(item) {
   if (FOOD_HINT_RE.test(text)) return true;
   if (item.price) return true; // priced items are usually food
   return false;
-}
-
-// Section-title sanitizer — strips trailing artifacts that bleed in when
-// the parser merges a section heading with the adjacent price row. Umai's
-// "SMOKED SAKE SMOKED SALMON 7" lost the trailing "7"; same pattern hits
-// any menu where headings are loose-spaced from their prices. Conservative:
-// only strips digits/prices/glyphs at the very end and never touches the
-// real title text. Returns the cleaned title (or the original if nothing
-// matched, so legit titles like "Pizza by the Slice 1.99" — where the
-// number IS the meaning — aren't mangled).
-function cleanSectionTitle(rawTitle) {
-  if (!rawTitle || typeof rawTitle !== 'string') return rawTitle;
-  let t = rawTitle.trim();
-  // Strip trailing standalone numeric (price or digit), repeatedly.
-  // e.g. "SECTION 7" → "SECTION"; "SECTION $5.00 7" → "SECTION".
-  // Don't strip numbers that are part of a word, only space-prefixed ones.
-  let prev = t;
-  for (let i = 0; i < 3; i++) {
-    t = t.replace(/\s+\$?\d+(?:\.\d{1,2})?\s*$/, '').trim();
-    if (t === prev) break;
-    prev = t;
-  }
-  // Strip trailing dangling glyphs.
-  t = t.replace(/[+|\/\-•·,]\s*$/, '').trim();
-  // If we ate the whole title, give up and return original.
-  return t.length >= 2 ? t : rawTitle;
-}
-
-// Item-description sanitizer — nulls out descriptions that are clearly
-// sub-option lists rather than prose. Umai's "scallop" item came with a
-// description of "KYU OR AVOCADO MAKI cucumber OR SLICED AVOCADO": two
-// ALL-CAPS "OR" alternations chaining options together, no real
-// sentence structure. Heuristic: 2+ uppercase OR/AND tokens used as
-// separators, with mostly uppercase content around them. Real prose
-// descriptions ("served with rosemary or garlic aioli") wouldn't have
-// the uppercase OR + uppercase tokens pattern.
-function cleanItemDescription(rawDesc) {
-  if (!rawDesc || typeof rawDesc !== 'string') return rawDesc;
-  const desc = rawDesc.trim();
-  if (!desc) return null;
-  // Count uppercase-only " OR " / " AND " separators (the suspect pattern).
-  const upperConjunctions = (desc.match(/\s(?:OR|AND)\s/g) || []).length;
-  if (upperConjunctions >= 2) {
-    // Confirm by checking that the description is mostly uppercase tokens
-    // (≥60% of word characters are uppercase). Avoids false positives on
-    // a normal sentence that happens to include an emphatic "OR".
-    const letters = desc.match(/[A-Za-z]/g) || [];
-    if (letters.length > 0) {
-      const upperCount = letters.filter((c) => c >= 'A' && c <= 'Z').length;
-      if (upperCount / letters.length >= 0.6) return null;
-    }
-  }
-  return desc;
 }
 
 function validateMenuQuality(sections) {
@@ -3433,13 +3249,7 @@ function validateMenuQuality(sections) {
     .filter((s) => !JUNK_SECTION_RE.test(s.title || ''))
     .map((s) => ({
       ...s,
-      title: cleanSectionTitle(s.title),
-      items: (s.items || [])
-        .filter((item) => !isJunkItem(item))
-        .map((item) => ({
-          ...item,
-          description: cleanItemDescription(item.description),
-        })),
+      items: (s.items || []).filter((item) => !isJunkItem(item)),
     }))
     .filter((s) => s.items.length > 0);
 
@@ -5045,54 +4855,6 @@ function computeIsOpenNowFromPeriods(periods) {
   return false;
 }
 
-// Admin-only — force a fresh re-scrape of a restaurant's menu on the
-// next read by deleting its cached row. Useful while iterating on parser
-// fixes; without this we'd have to wait out the 30-day success-TTL
-// before a stale broken scrape gets re-attempted.
-//
-// Auth: shared secret in DEBUG_ADMIN_TOKEN env var (set on Render), sent
-// as X-Debug-Token header. Endpoint is a no-op when the env var isn't
-// set, so leaving it unset in production keeps it inert.
-//
-// Accepts either a restaurant_id (internal `rest_*`) or a Google Place ID
-// (`ChIJ...`); the latter is resolved to a restaurant_id before deletion.
-app.post('/api/debug/invalidate-menu/:idOrPlaceId', async (req, res) => {
-  if (!process.env.DEBUG_ADMIN_TOKEN) {
-    return res.status(403).json({ error: 'debug endpoints disabled' });
-  }
-  const token = req.headers['x-debug-token'];
-  if (token !== process.env.DEBUG_ADMIN_TOKEN) {
-    return res.status(401).json({ error: 'unauthorized' });
-  }
-  if (!supabaseConfigured) {
-    return res.status(503).json({ error: 'Supabase not configured' });
-  }
-
-  const idOrPlaceId = req.params.idOrPlaceId;
-  let restaurantId = idOrPlaceId;
-  if (idOrPlaceId.startsWith('ChIJ') || idOrPlaceId.startsWith('Eh')) {
-    try {
-      const restaurant = await findRestaurantByPlaceIdAsync(idOrPlaceId);
-      if (restaurant?.restaurantId) restaurantId = restaurant.restaurantId;
-    } catch {
-      // Fall through with original id; if it's not a real restaurant_id
-      // either, the delete just returns 0 rows.
-    }
-  }
-
-  const { error, count } = await supabase
-    .from('restaurant_menus')
-    .delete({ count: 'exact' })
-    .eq('restaurant_id', restaurantId);
-
-  if (error) {
-    console.error('[debug] invalidate-menu error', error.message);
-    return res.status(500).json({ error: error.message });
-  }
-  console.log('[debug] menu cache invalidated', { restaurantId, deletedRows: count ?? 0 });
-  return res.json({ ok: true, restaurantId, deletedRows: count ?? 0 });
-});
-
 app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
   const restaurantId = req.params.restaurantId;
 
@@ -5477,36 +5239,6 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
       }
     }
 
-    // Synthesize a "Popular dishes" section from cached
-    // popular_dishes_from_reviews. Returns the sections array (one
-    // section) when at least 3 dishes are available, or null otherwise.
-    // Shared by Priority 4 (photos-AND-dishes case) and Priority 4.5
-    // (no-photos-but-dishes case) so the two fallback paths don't drift.
-    const buildPopularDishesSections = async () => {
-      try {
-        const detail = await readCachedDetail(restaurantId);
-        const cachedDishes = detail?.popular_dishes;
-        if (!Array.isArray(cachedDishes) || cachedDishes.length < 3) return null;
-        const items = cachedDishes
-          .filter((d) => d && typeof d.name === 'string' && d.name.trim().length >= 2)
-          .slice(0, 10)
-          .map((d) => ({
-            name: d.name.trim(),
-            description: typeof d.mentionCount === 'number' && d.mentionCount > 1
-              ? `Mentioned in ${d.mentionCount} reviews`
-              : null,
-            price: null,
-            tags: null,
-            photoUrl: null,
-          }));
-        if (items.length < 3) return null;
-        return [{ title: 'Popular dishes', items, group: 'food' }];
-      } catch (err) {
-        console.warn('[BiteRight] menu: popular_dishes fallback failed', err.message);
-        return null;
-      }
-    };
-
     // ── Priority 4: Google Places menu photos as visual backup ──
     // When no structured menu is found, try to get menu-type photos from Google.
     if (placeId && GOOGLE_PLACES_API_KEY) {
@@ -5528,26 +5260,6 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
             height: p.height || 600,
           }));
           if (photos.length > 0) {
-            // Before shipping a photos-only payload (empty menu, available=false),
-            // see if we have cached popular_dishes for this restaurant. If yes,
-            // populate sections from those dishes AND keep the photos attached —
-            // user gets a useful dish list instead of an empty screen, with the
-            // raw photos still available for zoom. Switches source to
-            // 'popular_dishes' so the client can label this distinctly from a
-            // true extracted menu.
-            const popularSections = await buildPopularDishesSections();
-            if (popularSections) {
-              result.sections = popularSections;
-              result.menuPhotos = photos;
-              result.source = 'popular_dishes';
-              console.log('[BiteRight] menu: photos+popular_dishes fallback', {
-                restaurantId,
-                photoCount: photos.length,
-                dishCount: popularSections[0].items.length,
-              });
-              return res.json(await finalize('popular_dishes', null));
-            }
-
             // Photos-only result: don't run quality scoring (no items to score),
             // but still write a row to cache so we don't refetch every request.
             result.menuPhotos = photos;
@@ -5565,18 +5277,43 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
       }
     }
 
-    // ── Priority 4.5: ALREADY-CACHED popular_dishes (no-photos branch) ──
-    // Reached when Priority 4 didn't fire (no placeId, no Google photos, or
-    // the photo lookup threw). Same fallback, just without photos to attach.
+    // ── Priority 4.5: ALREADY-CACHED popular_dishes ─────────────────
+    // Before paying for a fresh Claude call (Priority 5), check if we
+    // already mined popular dishes for this restaurant in the detail
+    // endpoint. The source-quality audit showed 8.2% of restaurants
+    // have zero extracted items but ≥3 popular_dishes already in
+    // restaurant_details_cache — zero-cost wins we'd otherwise show
+    // as "Menu unavailable" while perfectly good data sits two tables
+    // over. Synthesized as a single "Popular dishes" section so the
+    // user sees real dishes they can decide from.
     if (placeId) {
-      const popularSections = await buildPopularDishesSections();
-      if (popularSections) {
-        result.sections = popularSections;
-        result.source = 'popular_dishes';
-        console.log('[BiteRight] menu: using cached popular_dishes from reviews', {
-          restaurantId, dishCount: popularSections[0].items.length,
-        });
-        return res.json(await finalize('popular_dishes', null));
+      try {
+        const cachedDetailForFallback = await readCachedDetail(restaurantId);
+        const cachedDishes = cachedDetailForFallback?.popular_dishes;
+        if (Array.isArray(cachedDishes) && cachedDishes.length >= 3) {
+          const items = cachedDishes
+            .filter((d) => d && typeof d.name === 'string' && d.name.trim().length >= 2)
+            .slice(0, 10)
+            .map((d) => ({
+              name: d.name.trim(),
+              description: typeof d.mentionCount === 'number' && d.mentionCount > 1
+                ? `Mentioned in ${d.mentionCount} reviews`
+                : null,
+              price: null,
+              tags: null,
+              photoUrl: null,
+            }));
+          if (items.length >= 3) {
+            result.sections = [{ title: 'Popular dishes', items, group: 'food' }];
+            result.source = 'llm';
+            console.log('[BiteRight] menu: using cached popular_dishes from reviews', {
+              restaurantId, dishCount: items.length,
+            });
+            return res.json(await finalize('llm', null));
+          }
+        }
+      } catch (err) {
+        console.warn('[BiteRight] menu: cached popular_dishes fallback failed', err.message);
       }
     }
 
@@ -5793,8 +5530,7 @@ async function geocodeAutocomplete(query) {
       const results = [];
       for (const pred of predictions.slice(0, 5)) {
         try {
-          // Geocoding only needs geometry + address — pure Basic SKU.
-          const details = await googlePlaceDetails(pred.place_id, PLACE_FIELDS_GEOCODE);
+          const details = await googlePlaceDetails(pred.place_id);
           if (details?.geometry?.location) {
             const loc = details.geometry.location;
             const label = pred.description || details.formatted_address || query.trim();
@@ -6896,7 +6632,7 @@ async function attachImageAndPlaceId(rec, userId, ctx) {
   // serve via /api/place-photo?ref=… — no DB record needed.
   if (!finalImageUrl && placeId && GOOGLE_PLACES_API_KEY) {
     try {
-      const details = await googlePlaceDetails(placeId, PLACE_FIELDS_PHOTOS_ONLY);
+      const details = await googlePlaceDetails(placeId);
       const photoRef = selectBestPlacePhotoReference(details?.photos || []);
       if (photoRef) {
         finalImageUrl = toAbsoluteImageUrl(`/api/place-photo?ref=${encodeURIComponent(photoRef)}&maxW=800`);
@@ -7280,17 +7016,6 @@ async function buildGooglePlaceDiscover(lat, lng, radiusMiles, userId, cuisineFi
     const searchLower = searchTerm.toLowerCase();
     const expanded = SEARCH_ALIASES[searchLower] || [searchLower];
     const strictMode = STRICT_CUISINE_SEARCH.has(searchLower);
-    // Tokenized matching for multi-word queries (e.g. "caesar salad",
-    // "vodka rigatoni"). When the query is multi-word, require ALL tokens
-    // to appear in the target string regardless of order/contiguity —
-    // catches "Rigatoni alla Vodka" for a "vodka rigatoni" search.
-    const queryTokens = searchLower.split(/\s+/).filter((t) => t.length >= 3);
-    const isMultiWord = queryTokens.length >= 2;
-    const matchesAllTokens = (text) => {
-      if (!text) return false;
-      const lower = text.toLowerCase();
-      return queryTokens.every((t) => lower.includes(t));
-    };
 
     // Evidence-first filter: when a restaurant's cached menu OR Google's
     // popular_dishes_from_reviews already contains the searched item, we
@@ -7305,22 +7030,16 @@ async function buildGooglePlaceDiscover(lat, lng, radiusMiles, userId, cuisineFi
       candidateIds.length ? batchReadCachedDetails(candidateIds) : Promise.resolve(new Map()),
     ]);
 
-    const matchesTarget = (text) => {
-      if (!text) return false;
-      const lower = text.toLowerCase();
-      if (expanded.some((a) => lower.includes(a))) return true;
-      if (isMultiWord && matchesAllTokens(lower)) return true;
-      return false;
-    };
     const hasMenuOrDishEvidence = (rec) => {
       // Cached menu items — strongest signal
       const menu = menuMap.get(rec.restaurantId);
       const sections = menu?.structured_data?.sections;
       if (Array.isArray(sections)) {
         for (const sec of sections) {
-          if (matchesTarget(sec?.title)) return 'menu_section';
+          if (sec?.title && expanded.some((a) => sec.title.toLowerCase().includes(a))) return 'menu_section';
           for (const it of (sec?.items || [])) {
-            if (matchesTarget(it?.name)) return 'menu_item';
+            const itName = (it?.name || '').toLowerCase();
+            if (itName && expanded.some((a) => itName.includes(a))) return 'menu_item';
           }
         }
       }
@@ -7328,7 +7047,8 @@ async function buildGooglePlaceDiscover(lat, lng, radiusMiles, userId, cuisineFi
       const detail = detailMap.get(rec.restaurantId);
       if (Array.isArray(detail?.popular_dishes)) {
         for (const d of detail.popular_dishes) {
-          if (matchesTarget(d?.name)) return 'popular_dish';
+          const dName = (d?.name || '').toLowerCase();
+          if (dName && expanded.some((a) => dName.includes(a))) return 'popular_dish';
         }
       }
       return null;
@@ -7344,11 +7064,8 @@ async function buildGooglePlaceDiscover(lat, lng, radiusMiles, userId, cuisineFi
 
       // 2. Loose mode: if Google's text-search returned this for our
       // query, trust Google's relevance ranking — UNLESS this is a
-      // narrow strict-cuisine search OR a specific multi-word dish
-      // search ("caesar salad", "vodka rigatoni"), where the user
-      // wants the dish actually present on a menu / in popular_dishes,
-      // not just a Google name-match.
-      if (!strictMode && !isMultiWord && rec._fromSearchQuery) { trustGoogleHits++; return true; }
+      // narrow strict-cuisine search where false positives are common.
+      if (!strictMode && rec._fromSearchQuery) { trustGoogleHits++; return true; }
 
       // 3. Fallback: name/type/cuisine haystack match.
       const haystack = [
@@ -7360,9 +7077,7 @@ async function buildGooglePlaceDiscover(lat, lng, radiusMiles, userId, cuisineFi
         .filter(Boolean)
         .join(' ')
         .toLowerCase();
-      if (expanded.some((alias) => haystack.includes(alias))) return true;
-      if (isMultiWord && matchesAllTokens(haystack)) return true;
-      return false;
+      return expanded.some((alias) => haystack.includes(alias));
     });
     console.log('[BiteRight][Discover] search relevance filter', {
       searchTerm,
@@ -7420,20 +7135,6 @@ async function buildGooglePlaceDiscover(lat, lng, radiusMiles, userId, cuisineFi
         after: recs.length,
       });
     }
-  }
-
-  // ── Open Now filter ───────────────────────────────────────────────
-  // Filter to places currently open per Google's open_now flag. Keeps
-  // places where the flag is unknown (null) because Nearby Search doesn't
-  // populate open_now for every result — strict-mode would erase too
-  // many otherwise-valid options. Only drops explicit isOpenNow=false.
-  if (openNowOnly) {
-    const beforeOpen = recs.length;
-    recs = recs.filter((r) => r.isOpenNow !== false);
-    console.log('[BiteRight][Discover] open-now filter', {
-      before: beforeOpen,
-      after: recs.length,
-    });
   }
 
   // ── Sort mode: override ranking order ─────────────────────────────
@@ -7562,17 +7263,6 @@ app.get('/api/discover', async (req, res) => {
   const searchQuery = (req.query.search || '').trim() || null;
   const sortMode = (req.query.sortMode || 'best').toLowerCase();
   const occasion = (req.query.occasion || '').trim().toLowerCase() || null;
-  // openNow=1 → keep only places Google reports as currently open. We
-  // drop only isOpenNow===false (explicit closed) so places where Google
-  // hasn't returned a status — small chains, takeout-only, etc. — stay
-  // in the pool. Strict drop-everything-unknown filter was too lossy.
-  const openNowOnly = req.query.openNow === '1' || req.query.openNow === 'true';
-  // fresh=1 → skip the cache read for this request (still writes the
-  // fresh response back to cache for subsequent reads). Set by the client
-  // when the user explicitly invokes a re-locate (e.g. tapping "Near
-  // you"); never set on background re-renders. Bypasses the staleness
-  // window without nuking the cache layer itself.
-  const bypassCache = req.query.fresh === '1' || req.query.fresh === 'true';
   let lat = parseFloat(req.query.lat);
   let lng = parseFloat(req.query.lng);
 
@@ -7596,34 +7286,6 @@ app.get('/api/discover', async (req, res) => {
 
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
     return res.status(400).json({ error: 'lat and lng required for mode=nearby, or use mode=location with query' });
-  }
-
-  // Discover fires 4 billable Google calls per fire (Nearby + Text +
-  // Best-of + Focused-Nearby). Cache the assembled response by the
-  // normalized request shape so repeated UI interactions — filter
-  // toggles, re-renders, beta variant's live-discover-on-keystroke,
-  // back navigation — reuse the same result instead of paying again.
-  // Personalization (userId) is part of the key so per-user ranking
-  // isn't shared across users. The user's saved/feedback state can
-  // change within the TTL, but the impact is bounded: a stale 5-min
-  // cache may show one slightly out-of-order suggestion, vs. real
-  // dollars being burned without it.
-  const cacheKey = [
-    mode,
-    roundCoord(lat),
-    roundCoord(lng),
-    radiusMiles,
-    userId,
-    cuisineQuery || '',
-    searchQuery || '',
-    sortMode,
-    occasion || '',
-    openNowOnly ? '1' : '0',
-    (req.query.query || '').trim().toLowerCase(),
-  ].join('|');
-  const cachedDiscover = bypassCache ? null : discoverCache.get(cacheKey);
-  if (cachedDiscover) {
-    return res.json(cachedDiscover);
   }
 
   if (mode === 'location') {
@@ -7659,7 +7321,6 @@ app.get('/api/discover', async (req, res) => {
         sortMode,
         occasion,
       });
-      discoverCache.set(cacheKey, payload, DISCOVER_CACHE_TTL_MS);
       return res.json(payload);
     } catch (err) {
       console.error('[BiteRight][Discover] location nearby search error', err.message, err.stack);
@@ -7677,7 +7338,6 @@ app.get('/api/discover', async (req, res) => {
         sortMode,
         occasion,
       });
-      discoverCache.set(cacheKey, payload, DISCOVER_CACHE_TTL_MS);
       return res.json(payload);
     } catch (err) {
       console.error('[BiteRight][Discover] nearby search error', err.message, err.stack);
@@ -7781,7 +7441,7 @@ app.get('/api/discover', async (req, res) => {
     mapWithConcurrency(sections.allNearby || [], attach),
   ]);
 
-  const fallbackPayload = {
+  res.json({
     isColdStart: result.isColdStart,
     discoverMode: result.discoverMode || 'trending',
     sections: {
@@ -7793,9 +7453,7 @@ app.get('/api/discover', async (req, res) => {
     recommendations: allNearby,
     location: { lat, lng },
     radiusMiles,
-  };
-  discoverCache.set(cacheKey, fallbackPayload, DISCOVER_CACHE_TTL_MS);
-  res.json(fallbackPayload);
+  });
 });
 
 // ── GET /api/nearby-after — "Next stop" smart recommendations near a restaurant ───

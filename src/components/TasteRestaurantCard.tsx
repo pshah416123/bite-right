@@ -30,7 +30,7 @@ export function TasteRestaurantCard({ item }: Props) {
 
   return (
     <Link
-      href={`/restaurant/${encodeURIComponent(item.id)}?payload=${item.detailPayload}`}
+      href={`/(tabs)/restaurant/${encodeURIComponent(item.id)}?payload=${item.detailPayload}`}
       asChild
     >
       <TouchableOpacity style={styles.card} activeOpacity={0.88}>

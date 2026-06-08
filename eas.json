@@ -23,19 +23,6 @@
         "autoIncrement": true
       }
     },
-    "beta": {
-      "distribution": "store",
-      "channel": "beta",
-      "env": {
-        "APP_VARIANT": "beta",
-        "EXPO_PUBLIC_API_URL": "https://bite-right.onrender.com",
-        "EXPO_PUBLIC_SUPABASE_URL": "https://wgobcofdggncoofuzdyt.supabase.co",
-        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_VkdqgV3e5mLJG8wW8xzx6Q_fKXWLQ53"
-      },
-      "ios": {
-        "autoIncrement": true
-      }
-    },
     "production": {
       "distribution": "store",
       "channel": "production",
@@ -53,11 +40,6 @@
     "production": {
       "ios": {
         "ascAppId": "6774369140"
-      }
-    },
-    "beta": {
-      "ios": {
-        "ascAppId": "REPLACE_WITH_BETA_APP_ID"
       }
     }
   }

@@ -18,25 +18,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDiscover, type DiscoverSectionItems } from '~/src/hooks/useDiscover';
 import { RestaurantCard } from '~/src/components/RestaurantCard';
 import { FirstVisitTip } from '~/src/components/FirstVisitTip';
-import { searchFoodCatalog } from '~/src/data/foodCatalog';
+import { FoodAutocomplete } from '~/src/components/FoodAutocomplete';
 import { POPULAR_LOCATIONS, type DiscoverSelectedLocation } from '~/src/components/DiscoverLocationBar';
 import { useSavedRestaurants } from '~/src/context/SavedRestaurantsContext';
 import { useFeedContext } from '~/src/context/FeedContext';
 import { colors } from '~/src/theme/colors';
 import { apiClient } from '~/src/api/client';
 import { getDiscover, type DiscoverRecommendation, type DiscoverSections, type DiscoverSortMode, type DiscoverOccasion } from '~/src/api/discover';
-import { fetchAutocomplete, type AutocompleteSuggestion } from '~/src/api/restaurants';
-import { useRouter } from 'expo-router';
 import type { DiscoverItem } from '~/src/components/RestaurantCard';
 import Slider from '@react-native-community/slider';
-import Constants from 'expo-constants';
-
-// Beta-variant flag — set by app.config.js when APP_VARIANT=beta is in
-// the build env. Gates experimental UX (live restaurant dropdown sourced
-// from the discover endpoint + saved-bookmark indicator) so testers on
-// the parallel TestFlight build see the new search experience while
-// production users keep the current three-section dropdown.
-const IS_BETA_VARIANT = (Constants.expoConfig?.extra as { appVariant?: string } | undefined)?.appVariant === 'beta';
 
 // ─── Cuisine chips (dynamically ordered — "For you" first, then by popularity) ─
 // \u2500\u2500\u2500 Personalized chip ordering \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
@@ -285,47 +275,11 @@ export default function DiscoverScreen() {
   }, [feedItems]);
 
   // ── Search ─────────────────────────────────────────────────────────────
-  const router = useRouter();
   const [searchInput, setSearchInput] = useState('');
   const [activeSearch, setActiveSearch] = useState('');
   const [searchFocused, setSearchFocused] = useState(false);
   const searchInputRef = useRef<TextInput>(null);
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Restaurant autocomplete results — populated alongside the food
-  // catalog suggestions so the dropdown can offer both axes (dish/cuisine
-  // and named restaurants). Debounced separately from activeSearch since
-  // this fires the autocomplete API, not the heavier discover search.
-  const [restaurantSuggestions, setRestaurantSuggestions] = useState<AutocompleteSuggestion[]>([]);
-  const restaurantAutoReqRef = useRef(0);
-
-  // Three-way classification of the active query: cuisine labels, dish
-  // names, and live restaurant matches. Pre-bucketed and labeled in the
-  // dropdown so a query like "thai" reads as cuisine (Thai) vs. dish
-  // (Pad Thai, Thai Iced Tea) vs. restaurant (every place with "Thai" in
-  // the name) — instead of all three blurred into one ambiguous list.
-  const cuisineMatches = useMemo(() => {
-    const q = searchInput.trim().toLowerCase();
-    if (q.length < 2) return [] as { label: string; emoji: string }[];
-    const results: { label: string; emoji: string }[] = [];
-    for (const [label, chip] of Object.entries(CHIP_CATALOG)) {
-      const lower = label.toLowerCase();
-      if (lower.startsWith(q) || lower.includes(q)) {
-        results.push({ label, emoji: chip.emoji });
-      }
-      if (results.length >= 4) break;
-    }
-    return results;
-  }, [searchInput]);
-
-  const dishMatches = useMemo(() => {
-    const q = searchInput.trim();
-    if (q.length < 2) return [] as string[];
-    const cuisineSet = new Set(cuisineMatches.map((c) => c.label.toLowerCase()));
-    // Drop dishes that exact-match a cuisine label so "Tacos" doesn't
-    // appear in both sections.
-    return searchFoodCatalog(q, 8).filter((d) => !cuisineSet.has(d.toLowerCase()));
-  }, [searchInput, cuisineMatches]);
 
   useEffect(() => {
     if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
@@ -334,20 +288,11 @@ export default function DiscoverScreen() {
     return () => { if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current); };
   }, [searchInput]);
 
-  // Counter bumped on every explicit "Near you" tap. Used as a dependency
-  // in the overlay-fetch effect so that effect re-runs even when coords
-  // are unchanged, and passes fresh=true to bypass the server's discover
-  // cache for one call. Pairs with the useDiscover hook's own
-  // freshTokenRef for the base-sections fetch.
-  const [freshLocateCount, setFreshLocateCount] = useState(0);
-  const lastFreshOverlayRef = useRef(0);
-
   // ── Filters ────────────────────────────────────────────────────────────
   const [sortMode, setSortMode] = useState<DiscoverSortMode>('best');
   const [selectedPrices, setSelectedPrices] = useState<number[]>([]);
   const [radiusMiles, setRadiusMiles] = useState<number | null>(null); // null = use default
   const [selectedOccasion, setSelectedOccasion] = useState<DiscoverOccasion | null>(null);
-  const [openNowOnly, setOpenNowOnly] = useState(false);
   const [activeVibeIndex, setActiveVibeIndex] = useState<number | null>(null);
   const [pendingRadius, setPendingRadius] = useState(5);
   const radiusSlideAnim = useRef(new Animated.Value(0)).current;
@@ -377,90 +322,6 @@ export default function DiscoverScreen() {
     }
   }, [userCoords, radiusMiles]);
 
-  // Restaurant autocomplete — runs alongside the food-catalog dropdown so
-  // the search panel can offer named restaurants, not just dishes and
-  // cuisines. Only fires while the search bar is focused and the query
-  // has ≥2 chars so we don't burn API calls on cleared / unfocused state.
-  useEffect(() => {
-    const trimmed = searchInput.trim();
-    if (!searchFocused || trimmed.length < 2) {
-      setRestaurantSuggestions([]);
-      return;
-    }
-    const reqId = ++restaurantAutoReqRef.current;
-    const t = setTimeout(async () => {
-      try {
-        const results = await fetchAutocomplete(trimmed, userCoords ?? null);
-        if (restaurantAutoReqRef.current !== reqId) return;
-        setRestaurantSuggestions(results.slice(0, 5));
-      } catch {
-        if (restaurantAutoReqRef.current !== reqId) return;
-        setRestaurantSuggestions([]);
-      }
-    }, 250);
-    return () => clearTimeout(t);
-  }, [searchInput, searchFocused, userCoords]);
-
-  // Beta variant — live restaurant preview powered by the same discover
-  // endpoint the rest of the screen uses. The Google autocomplete band
-  // above only matches restaurant NAMES, so "shawarma" surfaces nothing
-  // useful. The discover endpoint does evidence-based matching against
-  // menu items + popular_dishes, so it returns actual restaurants that
-  // serve the dish. Tester (sister) requested this UX side-by-side with
-  // production to compare.
-  const [discoverPreview, setDiscoverPreview] = useState<DiscoverItem[]>([]);
-  const discoverPreviewReqRef = useRef(0);
-  useEffect(() => {
-    if (!IS_BETA_VARIANT) return;
-    const trimmed = searchInput.trim();
-    // Min length 3 + 600ms debounce — discover preview fires 4 billable
-    // Google calls per request, so we want to commit only when the user
-    // has clearly settled on a query. Bumped from 2/350ms to cut the
-    // mid-typing fires (e.g. "th"→"tha"→"thai" used to fire 3 separate
-    // backends; now waits for "thai" to settle). Cache hits on repeat
-    // queries are free regardless.
-    if (!searchFocused || trimmed.length < 3 || !userCoords) {
-      setDiscoverPreview([]);
-      return;
-    }
-    const reqId = ++discoverPreviewReqRef.current;
-    const t = setTimeout(async () => {
-      try {
-        const res = await getDiscover({
-          mode: 'nearby',
-          userId: 'default',
-          lat: userCoords.lat,
-          lng: userCoords.lng,
-          radiusMiles: 10,
-          search: trimmed,
-        });
-        if (discoverPreviewReqRef.current !== reqId) return;
-        const items = sectionsToItems(res.sections);
-        const top = [
-          ...items.topPicksForYou,
-          ...items.becauseYouLiked,
-          ...items.trendingWithSimilarUsers,
-          ...items.allNearby,
-        ];
-        // Dedup by restaurant id, cap at 5
-        const seen = new Set<string>();
-        const deduped: DiscoverItem[] = [];
-        for (const it of top) {
-          const key = it.restaurant.placeId ?? it.restaurant.id;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          deduped.push(it);
-          if (deduped.length >= 5) break;
-        }
-        setDiscoverPreview(deduped);
-      } catch {
-        if (discoverPreviewReqRef.current !== reqId) return;
-        setDiscoverPreview([]);
-      }
-    }, 600);
-    return () => clearTimeout(t);
-  }, [searchInput, searchFocused, userCoords]);
-
   const effectiveRadius = radiusMiles ?? defaultRadius(userCoords?.lat, userCoords?.lng);
 
   // ── Location override ──────────────────────────────────────────────────
@@ -484,7 +345,7 @@ export default function DiscoverScreen() {
   const [overlayResults, setOverlayResults] = useState<DiscoverSectionItems>(EMPTY_SECTIONS);
   const [overlayLoading, setOverlayLoading] = useState(false);
 
-  const needsOverlay = Boolean(activeSearch || customLocation || sortMode !== 'best' || radiusMiles != null || selectedOccasion || openNowOnly);
+  const needsOverlay = Boolean(activeSearch || customLocation || sortMode !== 'best' || radiusMiles != null || selectedOccasion);
 
   // Single unified fetch when search, location, sort, or radius changes
   useEffect(() => {
@@ -499,9 +360,6 @@ export default function DiscoverScreen() {
     let cancelled = false;
     setOverlayLoading(true);
 
-    const shouldBypassCache = freshLocateCount > lastFreshOverlayRef.current;
-    if (shouldBypassCache) lastFreshOverlayRef.current = freshLocateCount;
-
     getDiscover({
       mode: customLocation ? 'location' : 'nearby',
       userId: 'default',
@@ -512,8 +370,6 @@ export default function DiscoverScreen() {
       search: activeSearch || undefined,
       sortMode,
       occasion: selectedOccasion,
-      openNow: openNowOnly,
-      fresh: shouldBypassCache,
     })
       .then((res) => {
         if (cancelled) return;
@@ -527,7 +383,7 @@ export default function DiscoverScreen() {
       });
 
     return () => { cancelled = true; };
-  }, [needsOverlay, activeSearch, effectiveCoords, customLocation, sortMode, effectiveRadius, selectedOccasion, openNowOnly, freshLocateCount]);
+  }, [needsOverlay, activeSearch, effectiveCoords, customLocation, sortMode, effectiveRadius, selectedOccasion]);
 
   // ── Geo autocomplete ───────────────────────────────────────────────────
   useEffect(() => {
@@ -677,7 +533,7 @@ export default function DiscoverScreen() {
     visibleSections.trendingWithSimilarUsers.length > 0 ||
     visibleSections.allNearby.length > 0;
 
-  const hasActiveFilters = selectedPrices.length > 0 || sortMode !== 'best' || selectedOccasion != null || openNowOnly || (radiusMiles != null && radiusMiles !== defaultRadius(userCoords?.lat, userCoords?.lng));
+  const hasActiveFilters = selectedPrices.length > 0 || sortMode !== 'best' || selectedOccasion != null || (radiusMiles != null && radiusMiles !== defaultRadius(userCoords?.lat, userCoords?.lng));
 
   const clearAllFilters = () => {
     setSortMode('best');
@@ -685,7 +541,6 @@ export default function DiscoverScreen() {
     setRadiusMiles(null);
     setSelectedOccasion(null);
     setActiveVibeIndex(null);
-    setOpenNowOnly(false);
   };
 
   // ── Dynamic headings (personality-driven) ─────────────────────────────
@@ -788,147 +643,21 @@ export default function DiscoverScreen() {
           </Text>
         ) : null}
 
-        {/* Three-section labeled autocomplete: Cuisines / Dishes / Restaurants.
-            Disambiguates queries like "thai" (cuisine) from "Pad Thai"
-            (dish) from "Bangkok Thai Kitchen" (restaurant). Each section
-            renders only when it has matches so the dropdown stays compact
-            on narrow queries. */}
+        {/* Food autocomplete — shows matched dish/drink suggestions while
+            the user is typing in the search bar. Strict food catalog so
+            restaurant names and freeform text never appear here. Tapping
+            a suggestion commits it as the active search. */}
         {searchFocused && searchInput.trim().length >= 2 ? (
-          <View style={{ paddingHorizontal: 16, marginTop: 6, gap: 8 }}>
-            {cuisineMatches.length > 0 ? (
-              <View style={styles.suggestionsCard}>
-                <Text style={styles.suggestionGroupLabel}>Cuisines</Text>
-                {cuisineMatches.map((c) => (
-                  <TouchableOpacity
-                    key={c.label}
-                    style={styles.suggestionRow}
-                    onPress={() => {
-                      setSearchInput(c.label);
-                      setActiveSearch(c.label);
-                      setSearchFocused(false);
-                      searchInputRef.current?.blur();
-                    }}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={styles.suggestionEmoji}>{c.emoji}</Text>
-                    <Text style={styles.suggestionPrimary} numberOfLines={1}>{c.label}</Text>
-                    <Text style={styles.suggestionMeta}>Cuisine</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            ) : null}
-
-            {dishMatches.length > 0 ? (
-              <View style={styles.suggestionsCard}>
-                <Text style={styles.suggestionGroupLabel}>Dishes</Text>
-                {dishMatches.map((food) => (
-                  <TouchableOpacity
-                    key={food}
-                    style={styles.suggestionRow}
-                    onPress={() => {
-                      setSearchInput(food);
-                      setActiveSearch(food);
-                      setSearchFocused(false);
-                      searchInputRef.current?.blur();
-                    }}
-                    activeOpacity={0.7}
-                  >
-                    <Ionicons name="restaurant-outline" size={16} color={colors.textMuted} />
-                    <Text style={styles.suggestionPrimary} numberOfLines={1}>{food}</Text>
-                    <Text style={styles.suggestionMeta}>Dish</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            ) : null}
-
-            {/* Beta variant only — restaurants that actually serve the
-                searched dish, ranked by the same discover endpoint as the
-                main page. Each row also shows a bookmark icon when the
-                restaurant is in the user's saved list. */}
-            {IS_BETA_VARIANT && discoverPreview.length > 0 ? (
-              <View style={styles.suggestionsCard}>
-                <Text style={styles.suggestionGroupLabel}>
-                  Places that serve "{searchInput.trim()}"
-                </Text>
-                {discoverPreview.map((it) => {
-                  const r = it.restaurant;
-                  const key = r.placeId ?? r.id;
-                  const saved = isSaved(key);
-                  const meta = [r.cuisine, r.neighborhood].filter(Boolean).join(' · ');
-                  return (
-                    <TouchableOpacity
-                      key={key}
-                      style={styles.suggestionRow}
-                      onPress={() => {
-                        setSearchFocused(false);
-                        searchInputRef.current?.blur();
-                        const payload = encodeURIComponent(JSON.stringify(r));
-                        router.push(`/restaurant/${encodeURIComponent(key)}?payload=${payload}`);
-                      }}
-                      activeOpacity={0.7}
-                    >
-                      <Ionicons name="restaurant" size={16} color={colors.accent} />
-                      <View style={styles.suggestionStack}>
-                        <Text style={styles.suggestionPrimary} numberOfLines={1}>{r.name}</Text>
-                        {meta ? (
-                          <Text style={styles.suggestionSubtext} numberOfLines={1}>{meta}</Text>
-                        ) : null}
-                      </View>
-                      {saved ? (
-                        <Ionicons
-                          name="bookmark"
-                          size={14}
-                          color={colors.accent}
-                          accessibilityLabel="Saved"
-                        />
-                      ) : null}
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            ) : null}
-
-            {restaurantSuggestions.length > 0 ? (
-              <View style={styles.suggestionsCard}>
-                <Text style={styles.suggestionGroupLabel}>Restaurants</Text>
-                {restaurantSuggestions.map((s) => {
-                  const saved = isSaved(s.placeId);
-                  return (
-                    <TouchableOpacity
-                      key={s.placeId}
-                      style={styles.suggestionRow}
-                      onPress={() => {
-                        setSearchFocused(false);
-                        searchInputRef.current?.blur();
-                        const payload = encodeURIComponent(
-                          JSON.stringify({ id: s.placeId, name: s.name, cuisine: '' }),
-                        );
-                        router.push(`/restaurant/${encodeURIComponent(s.placeId)}?payload=${payload}`);
-                      }}
-                      activeOpacity={0.7}
-                    >
-                      <Ionicons name="storefront-outline" size={16} color={colors.textMuted} />
-                      <View style={styles.suggestionStack}>
-                        <Text style={styles.suggestionPrimary} numberOfLines={1}>{s.name}</Text>
-                        {s.address ? (
-                          <Text style={styles.suggestionSubtext} numberOfLines={1}>{s.address}</Text>
-                        ) : null}
-                      </View>
-                      {IS_BETA_VARIANT && saved ? (
-                        <Ionicons
-                          name="bookmark"
-                          size={14}
-                          color={colors.accent}
-                          accessibilityLabel="Saved"
-                        />
-                      ) : (
-                        <Text style={styles.suggestionMeta}>Restaurant</Text>
-                      )}
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            ) : null}
+          <View style={{ paddingHorizontal: 16, marginTop: 6 }}>
+            <FoodAutocomplete
+              query={searchInput}
+              onPick={(food) => {
+                setSearchInput(food);
+                setActiveSearch(food);
+                setSearchFocused(false);
+                searchInputRef.current?.blur();
+              }}
+            />
           </View>
         ) : null}
 
@@ -995,19 +724,6 @@ export default function DiscoverScreen() {
         {!searchFocused && (
           <View style={styles.sortRow}>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.sortTabs}>
-              {/* Open Now toggle — first in the row so it's the closest
-                  fix when users are hungry and don't want to discover
-                  closed places. Filters server-side using Google's open_now
-                  flag against the user's current phone time. */}
-              <TouchableOpacity
-                style={[styles.sortTab, openNowOnly && styles.sortTabActive]}
-                onPress={() => setOpenNowOnly((v) => !v)}
-                activeOpacity={0.7}
-              >
-                <Text style={[styles.sortTabText, openNowOnly && styles.sortTabTextActive]}>
-                  {'\u{1F7E2}'} Open now
-                </Text>
-              </TouchableOpacity>
               {VIBE_CHIPS.map((chip, i) => {
                 const active = activeVibeIndex === i;
                 return (
@@ -1199,11 +915,6 @@ export default function DiscoverScreen() {
               onPress={() => {
                 setCustomLocation(null);
                 setLocationInput('');
-                // Bump the fresh counter BEFORE kicking off the GPS poll
-                // so both the base hook and the overlay fetch see fresh=
-                // true on the round of fetches that follow refreshLocation
-                // updating userCoords.
-                setFreshLocateCount((n) => n + 1);
                 refreshLocation().catch(() => { /* permission denied or transient */ });
                 closeLocationSheet();
               }}
@@ -1427,52 +1138,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: colors.textMuted,
     letterSpacing: -0.1,
-  },
-  suggestionsCard: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: colors.border,
-    paddingVertical: 6,
-  },
-  suggestionGroupLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 0.4,
-    color: colors.textMuted,
-    textTransform: 'uppercase',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-  },
-  suggestionRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-  },
-  suggestionStack: { flex: 1, minWidth: 0 },
-  suggestionEmoji: { fontSize: 16, width: 20, textAlign: 'center' },
-  suggestionPrimary: {
-    flex: 1,
-    fontSize: 14,
-    fontWeight: '700',
-    color: colors.text,
-    letterSpacing: -0.1,
-  },
-  suggestionSubtext: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: colors.textMuted,
-    marginTop: 1,
-  },
-  suggestionMeta: {
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 0.4,
-    textTransform: 'uppercase',
-    color: colors.textFaint,
-    marginLeft: 8,
   },
 
   // Focus panel (shown when search bar is active)
