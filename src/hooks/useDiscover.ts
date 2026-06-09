@@ -128,13 +128,19 @@ export function useDiscover(
   // tapping the GPS option.
   const refreshLocation = useCallback(async () => {
     try {
-      const { status } = await Location.getForegroundPermissionsAsync();
+      // requestForegroundPermissionsAsync — not getForegroundPermissionsAsync —
+      // because on iOS the "active request" path wakes the location service
+      // and triggers a fresh GPS fix. The pure status-check path lets iOS
+      // hand back a stale cached position from hours ago.
+      const { status } = await Location.requestForegroundPermissionsAsync();
       if (status === 'granted') {
-        // Force a fresh reading by ignoring the cached last-known position
-        // (maxAge: 0). On iOS this triggers a new fix; the position may
-        // take 1-2 seconds to arrive after a long stale period.
+        // Accuracy.Highest forces a brand-new GNSS lock. Balanced lets iOS
+        // satisfy with a cached Significant-Location-Change position that
+        // can be hundreds of miles old when the user has traveled since
+        // app launch. The 1–2 seconds extra is the cost of an action the
+        // user explicitly tapped.
         const loc = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
+          accuracy: Location.Accuracy.Highest,
         });
         setUserCoords({ lat: loc.coords.latitude, lng: loc.coords.longitude });
       } else {
