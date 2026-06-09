@@ -116,30 +116,37 @@ export default function FindFriendsScreen() {
   };
 
   const renderUser = ({ item }: { item: UserSummary }) => {
+    // Don't nest TouchableOpacity inside TouchableOpacity — RN's nested
+    // touch handlers swallow the inner press intermittently (some
+    // platforms surface only the outer onPress). Split into two
+    // siblings that each own their own touch area: tapping the
+    // avatar/name pushes the friend's profile; tapping Follow follows.
     return (
-      <TouchableOpacity
-        style={styles.userRow}
-        activeOpacity={0.8}
-        onPress={() => router.push(`/friend/${item.id}` as any)}
-      >
-        <View style={styles.avatar}>
-          <Text style={styles.avatarInitial}>{(item.displayName || item.username)[0] ?? '·'}</Text>
-        </View>
-        <View style={styles.userMeta}>
-          <Text style={styles.userName}>{item.displayName}</Text>
-          <Text style={styles.userHandle}>@{item.username}</Text>
-        </View>
+      <View style={styles.userRow}>
         <TouchableOpacity
-          onPress={(e) => {
-            e.stopPropagation();
-            toggleFollow(item);
-          }}
+          style={styles.userTapArea}
+          activeOpacity={0.7}
+          onPress={() => router.push(`/friend/${item.id}` as any)}
+        >
+          <View style={styles.avatar}>
+            <Text style={styles.avatarInitial}>{(item.displayName || item.username)[0] ?? '·'}</Text>
+          </View>
+          <View style={styles.userMeta}>
+            <Text style={styles.userName}>{item.displayName}</Text>
+            <Text style={styles.userHandle}>@{item.username}</Text>
+          </View>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={() => toggleFollow(item)}
           style={styles.followBtn}
-          activeOpacity={0.8}
+          activeOpacity={0.7}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          accessibilityRole="button"
+          accessibilityLabel={`Follow ${item.displayName}`}
         >
           <Text style={styles.followBtnText}>Follow</Text>
         </TouchableOpacity>
-      </TouchableOpacity>
+      </View>
     );
   };
 
@@ -361,6 +368,11 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
+  },
+  userTapArea: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   avatar: {
     width: 36,

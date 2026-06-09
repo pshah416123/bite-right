@@ -27,6 +27,13 @@ import { apiClient } from '~/src/api/client';
 import { getDiscover, type DiscoverRecommendation, type DiscoverSections, type DiscoverSortMode, type DiscoverOccasion } from '~/src/api/discover';
 import type { DiscoverItem } from '~/src/components/RestaurantCard';
 import Slider from '@react-native-community/slider';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+// Storage key for the user's chosen location. Persisted to AsyncStorage
+// so that switching tabs, opening a restaurant detail, or cold-starting
+// the app doesn't reset the location back to "Nearby". The only things
+// that clear it are an explicit "Near you" tap or picking a new city.
+const DISCOVER_LOCATION_STORAGE_KEY = 'biteright_discover_customLocation';
 
 // ─── Cuisine chips (dynamically ordered — "For you" first, then by popularity) ─
 // \u2500\u2500\u2500 Personalized chip ordering \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
@@ -325,7 +332,39 @@ export default function DiscoverScreen() {
   const effectiveRadius = radiusMiles ?? defaultRadius(userCoords?.lat, userCoords?.lng);
 
   // ── Location override ──────────────────────────────────────────────────
+  // customLocation is persisted to AsyncStorage on every change and
+  // hydrated once on mount. The hydration ref prevents the initial
+  // null -> stored state transition from triggering a save (which would
+  // be a no-op but also pointless), AND prevents the load from racing
+  // with an immediate user action that sets a new location.
   const [customLocation, setCustomLocation] = useState<DiscoverSelectedLocation | null>(null);
+  const customLocationHydratedRef = useRef(false);
+  useEffect(() => {
+    let cancelled = false;
+    AsyncStorage.getItem(DISCOVER_LOCATION_STORAGE_KEY)
+      .then((raw) => {
+        if (cancelled) return;
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw) as DiscoverSelectedLocation;
+            if (parsed && typeof parsed.label === 'string' && typeof parsed.lat === 'number' && typeof parsed.lng === 'number') {
+              setCustomLocation(parsed);
+            }
+          } catch { /* corrupt entry — ignore */ }
+        }
+      })
+      .catch(() => {})
+      .finally(() => { customLocationHydratedRef.current = true; });
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
+    if (!customLocationHydratedRef.current) return;
+    if (customLocation) {
+      AsyncStorage.setItem(DISCOVER_LOCATION_STORAGE_KEY, JSON.stringify(customLocation)).catch(() => {});
+    } else {
+      AsyncStorage.removeItem(DISCOVER_LOCATION_STORAGE_KEY).catch(() => {});
+    }
+  }, [customLocation]);
   const [locationPickerOpen, setLocationPickerOpen] = useState(false);
   const [locationInput, setLocationInput] = useState('');
   const [geoSuggestions, setGeoSuggestions] = useState<GeoSuggestion[]>([]);

@@ -303,17 +303,23 @@ export default function RestaurantScreen() {
       });
   }, [id, detailRefreshKey]);
 
-  // Skip menu + nearby fetches in social context (friend post view)
+  // Menu + nearby fetches always fire. Previously they were skipped
+  // when viewing from a friend's log (isFromFriendPost) so the screen
+  // could render a truncated "preview" with a "View full restaurant"
+  // CTA — but the user is already on the restaurant page; the truncation
+  // forced a second tap to see the real content. Now the restaurant
+  // view is identical regardless of how the user arrived, and the
+  // friend's activity is shown as the compact supporting card below.
   useEffect(() => {
-    if (!id || isFromFriendPost) return;
+    if (!id) return;
     setMenuLoading(true);
     getRestaurantMenu(id)
       .then((m) => setMenu(m))
       .finally(() => setMenuLoading(false));
-  }, [id, isFromFriendPost, menuRefreshKey]);
+  }, [id, menuRefreshKey]);
 
   useEffect(() => {
-    if (!detail || isFromFriendPost) return;
+    if (!detail) return;
     if (detail.lat == null || detail.lng == null) return;
     getNearbyAfterSpots(detail.lat as number, detail.lng as number).then((res) => {
       // Filter out the current restaurant from "Next stop" suggestions
@@ -322,7 +328,7 @@ export default function RestaurantScreen() {
         s.restaurantId !== id && s.name.toLowerCase() !== currentName
       ));
     }).catch(() => {});
-  }, [detail, isFromFriendPost]);
+  }, [detail]);
 
   useEffect(() => {
     let cancelled = false;
@@ -958,43 +964,11 @@ export default function RestaurantScreen() {
     return { ...menu, sections };
   }, [menu]);
 
-  // Source-confidence map (mirrors server/scripts/auditMenuSources.js). When
-  // the source is in the low-confidence tier AND we have popular_dishes
-  // from Google reviews, render a "What people love" highlights row ABOVE
-  // the menu so the user gets a verified shortlist alongside the noisy
-  // extracted menu. Source >= 80 means the extraction is structured /
-  // first-party and we don't need the safety net.
-  const SOURCE_CONFIDENCE: Record<string, number> = {
-    chain_curated: 95, toast: 95, popmenu: 92, square: 92, chownow: 90,
-    bentobox: 90, spotapps: 88, lettuce: 88, squarespace: 85,
-    squarespace_text: 78, dine_wp: 82, next_data: 85, json_ld: 82,
-    dom_item_name: 75, wix: 70, wordpress: 65, generic_scrape: 55,
-    yelp_menu: 60, pdf: 55, page_image_ocr: 50, google_photo_ocr: 45,
-    llm: 40, photos: 30,
-  };
-  const menuSourceConfidence = menu?.source ? (SOURCE_CONFIDENCE[menu.source] ?? 50) : 0;
-  const showHighlights = !!filteredMenu
-    && menuSourceConfidence < 70
-    && Array.isArray(detail?.popularDishesFromReviews)
-    && (detail?.popularDishesFromReviews?.length ?? 0) >= 3;
-  const highlightsBlock = showHighlights ? (
-    <View style={styles.highlightsSection}>
-      <Text style={styles.highlightsTitle}>{'✨'} What people love here</Text>
-      <Text style={styles.highlightsSubtitle}>
-        From recent Google reviews — the menu below was auto-extracted and may have gaps.
-      </Text>
-      <View style={styles.highlightsRow}>
-        {(detail?.popularDishesFromReviews ?? []).slice(0, 5).map((d) => (
-          <View key={d.name} style={styles.highlightChip}>
-            <Text style={styles.highlightChipText}>{d.name}</Text>
-            {d.mentionCount > 1 ? (
-              <Text style={styles.highlightChipCount}>{' · '}{d.mentionCount}</Text>
-            ) : null}
-          </View>
-        ))}
-      </View>
-    </View>
-  ) : null;
+  // "What people love here" highlights block removed — it duplicated the
+  // Standout dishes row higher on the page (same Google-review-mined
+  // popular_dishes data), which made the same chips appear twice on
+  // restaurants with low-confidence menu sources. Standout dishes already
+  // carries this signal in a more prominent place.
 
   // "What people are saying" — descriptor+noun phrases mined from Google
   // reviews ("great pizza", "cozy atmosphere"). Renders as a chip cloud
@@ -1368,96 +1342,25 @@ export default function RestaurantScreen() {
               <Text style={styles.restaurantName} numberOfLines={2}>{restaurantName}</Text>
 
               {/* Your rating — prominent */}
-              <View style={styles.visitedRatingRow}>
-                <Text style={styles.visitedRatingScore}>{log.score.toFixed(1)}</Text>
-                <View>
-                  <Text style={styles.visitedRatingLabel}>{isOwnLog ? 'Your rating' : `${logOwnerName}'s rating`}</Text>
-                  {log.highlight ? (
-                    <Text style={styles.visitedRatingHighlight}>{log.highlight.charAt(0).toUpperCase() + log.highlight.slice(1)}</Text>
-                  ) : null}
-                </View>
-              </View>
+              {/* Match score is now the prominent element (see matchRowLarge
+                  block below). Friend's rating moved into a compact card
+                  further down the page. */}
 
               {/* Match score — secondary */}
               {matchScorePercent != null && matchScorePercent > 0 && (
-                <Text style={styles.matchTextSecondary}>{'\u2728'} {matchScorePercent}% match</Text>
+                <View style={styles.matchRowLarge}>
+                  <Text style={styles.matchTextLarge}>{'\u2728'} {matchScorePercent}% match for you</Text>
+                </View>
               )}
 
               {infoLine}
             </View>
 
-            {/* Poster's quick take — shown when viewing someone else's log from feed */}
-            {!isOwnLog && log.note ? (
-              <View style={styles.posterQuoteWrap}>
-                <View style={styles.posterQuoteRow}>
-                  {log.userAvatar ? (
-                    <Image source={{ uri: log.userAvatar }} style={styles.posterAvatar} />
-                  ) : (
-                    <View style={[styles.posterAvatar, styles.posterAvatarFallback]}>
-                      <Text style={styles.posterAvatarInitial}>{logOwnerName[0]?.toUpperCase() ?? '?'}</Text>
-                    </View>
-                  )}
-                  <View style={styles.posterQuoteBody}>
-                    <Text style={styles.posterName}>{logOwnerName}</Text>
-                    <Text style={styles.posterNote}>{log.note}</Text>
-                  </View>
-                </View>
-              </View>
-            ) : null}
-
             {friendsBar}
             {regularsBlock}
             {actionButtons}
 
-            {/* Tagged friends — "You went with Casey, Riley" */}
-            {log.taggedUsers && log.taggedUsers.length > 0 ? (
-              <View style={styles.section}>
-                <Text style={styles.sectionTitle}>
-                  {isOwnLog ? 'You went with' : `${logOwnerName} went with`}
-                </Text>
-                <Text style={styles.dishItem}>
-                  {log.taggedUsers.map((t) => t.displayName || t.userName).join(', ')}
-                </Text>
-              </View>
-            ) : null}
-
-            {/* Own-log note (caption). For other people's logs this is shown
-                in the posterQuote block above; for own logs we surface it
-                here so the user sees what they wrote. */}
-            {isOwnLog && log.note ? (
-              <View style={styles.section}>
-                <Text style={styles.sectionTitle}>What you said</Text>
-                <Text style={styles.dishItem}>{log.note}</Text>
-              </View>
-            ) : null}
-
-            {/* Visit count — only meaningful when ≥ 2 */}
-            {log.visitCount && log.visitCount > 1 ? (
-              <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Visits</Text>
-                <Text style={styles.dishItem}>
-                  {isOwnLog
-                    ? `You've been here ${log.visitCount} times`
-                    : `${logOwnerName} has been here ${log.visitCount} times`}
-                </Text>
-              </View>
-            ) : null}
-
-            {/* Dishes */}
-            {log.dishes && log.dishes.length > 0 ? (
-              <View style={styles.section}>
-                <Text style={styles.sectionTitle}>{isOwnLog ? 'Dishes you tried' : `Dishes ${logOwnerName} tried`}</Text>
-                <View style={styles.dishList}>
-                  {log.dishes.map((d, i) => (
-                    <Text key={i} style={styles.dishItem}>
-                      {'\u00B7'} {d}
-                    </Text>
-                  ))}
-                </View>
-              </View>
-            ) : null}
-
-            {/* Vibe */}
+            {/* Vibe — restaurant identity surfaces before review content. */}
             {log.vibeTags && log.vibeTags.length > 0 ? (
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Vibe</Text>
@@ -1471,46 +1374,86 @@ export default function RestaurantScreen() {
               </View>
             ) : null}
 
-            {/* Your notes / recent posts — skip when poster quote already shows the note */}
-            {recentPosts.length > 0 && !isFromFriendPost && (
-              <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Your posts</Text>
-                {recentPosts.map((p) => (
-                  <View key={p.id} style={styles.postRow}>
-                    <View style={styles.postAvatar}>
-                      <Text style={styles.postAvatarInitial}>{p.userName[0] ?? '\u00B7'}</Text>
-                    </View>
-                    <View style={styles.postMeta}>
-                      <Text style={styles.postUser}>{p.userName}</Text>
-                      {p.note ? <Text style={styles.postNote} numberOfLines={2}>{p.note}</Text> : null}
-                    </View>
-                  </View>
-                ))}
-              </View>
-            )}
-
-            {/* Section order mirrors the not-visited flow so both states
-                read consistently: details → dishes → friends-said →
-                public reviews → tips → menu → next stop. */}
-            {!isFromFriendPost && detailsBlock}
+            {/* Restaurant-first section order: details → popular dishes →
+                compact friend activity card → friends said → public
+                reviews → tips → menu → next stop. */}
+            {detailsBlock}
             {standoutDishesBlock}
-            {!isFromFriendPost && friendQuotesBlock}
-            {!isFromFriendPost && whatPeopleAreSayingBlock}
-            {!isFromFriendPost && id && <QuickTipsBlock restaurantId={id} />}
-            {!isFromFriendPost && socialProofBlock}
-            {!isFromFriendPost && highlightsBlock}
-            {!isFromFriendPost && menuBlock}
-            {!isFromFriendPost && afterSpotsBlock}
-            {isFromFriendPost && (
-              <TouchableOpacity
-                style={styles.fullDetailCta}
-                activeOpacity={0.7}
-                onPress={() => router.push(`/restaurant/${encodeURIComponent(id!)}`)}
-              >
-                <Text style={styles.fullDetailCtaText}>View full restaurant →</Text>
-                <Ionicons name="arrow-forward" size={16} color={colors.accent} />
-              </TouchableOpacity>
-            )}
+
+            {/* Compact friend activity card. Replaces five separate top-of-
+                page sections (poster quote, "What you said", "Visits",
+                "Dishes {Friend} tried", "Your posts") with one supporting
+                block. Same data sources, ~30% less vertical space, friend
+                reads as context not lead. "Ordered" replaces the awkward
+                "Dishes Friend tried" copy. */}
+            <View style={styles.friendActivityCard}>
+              <View style={styles.friendActivityHeader}>
+                {!isOwnLog && log.userAvatar ? (
+                  <Image source={{ uri: log.userAvatar }} style={styles.friendActivityAvatar} />
+                ) : (
+                  <View style={[styles.friendActivityAvatar, styles.friendActivityAvatarFallback]}>
+                    <Text style={styles.friendActivityAvatarInitial}>
+                      {(isOwnLog ? 'Y' : (logOwnerName[0] ?? '?')).toUpperCase()}
+                    </Text>
+                  </View>
+                )}
+                <View style={styles.friendActivityHeaderBody}>
+                  <Text style={styles.friendActivityName}>
+                    {isOwnLog ? 'You visited' : `${logOwnerName} visited`}
+                    {log.visitCount && log.visitCount > 1
+                      ? ` · ${log.visitCount} times`
+                      : ''}
+                  </Text>
+                  <View style={styles.friendActivityRatingRow}>
+                    <Ionicons name="star" size={13} color={colors.accent} />
+                    <Text style={styles.friendActivityRating}>{log.score.toFixed(1)}</Text>
+                    {log.highlight ? (
+                      <Text style={styles.friendActivityHighlight}>
+                        {' · ' + log.highlight.charAt(0).toUpperCase() + log.highlight.slice(1)}
+                      </Text>
+                    ) : null}
+                  </View>
+                </View>
+              </View>
+
+              {log.note ? (
+                <Text style={styles.friendActivityNote} numberOfLines={4}>{'“'}{log.note}{'”'}</Text>
+              ) : null}
+
+              {log.dishes && log.dishes.length > 0 ? (
+                <View style={styles.friendActivityDishesWrap}>
+                  <Text style={styles.friendActivityDishesLabel}>
+                    {'\u{1F37D}️ '}{isOwnLog ? 'You ordered' : 'Ordered'}
+                  </Text>
+                  <View style={styles.friendActivityDishesList}>
+                    {log.dishes.map((d, i) => (
+                      <Text key={i} style={styles.friendActivityDishItem}>{'• '}{d}</Text>
+                    ))}
+                  </View>
+                </View>
+              ) : null}
+
+              {log.taggedUsers && log.taggedUsers.length > 0 ? (
+                <Text style={styles.friendActivityTagged}>
+                  {isOwnLog ? 'with ' : `${logOwnerName} went with `}
+                  {log.taggedUsers.map((t) => t.displayName || t.userName).join(', ')}
+                </Text>
+              ) : null}
+            </View>
+
+            {/* Restaurant content always renders — identical to the
+                Discover-arrival flow. Previously these blocks were
+                hidden behind isFromFriendPost and replaced with a
+                "View full restaurant" CTA that just re-pushed the same
+                screen without the logId, forcing a redundant tap. The
+                friend's activity is already shown above as a compact
+                supporting card. */}
+            {friendQuotesBlock}
+            {whatPeopleAreSayingBlock}
+            {id ? <QuickTipsBlock restaurantId={id} /> : null}
+            {socialProofBlock}
+            {menuBlock}
+            {afterSpotsBlock}
           </>
         ) : (
           /* ═══════════════════════════════════════════════════════════════
@@ -1545,25 +1488,14 @@ export default function RestaurantScreen() {
                   quick tips       → niche / tactical
                   menu             → deep-browse content
                   next stop        → outbound suggestion */}
-            {!isFromFriendPost && detailsBlock}
+            {detailsBlock}
             {standoutDishesBlock}
             {friendQuotesBlock}
-            {!isFromFriendPost && whatPeopleAreSayingBlock}
-            {id && <QuickTipsBlock restaurantId={id} />}
-            {!isFromFriendPost && socialProofBlock}
-            {!isFromFriendPost && highlightsBlock}
-            {!isFromFriendPost && menuBlock}
-            {!isFromFriendPost && afterSpotsBlock}
-            {isFromFriendPost && (
-              <TouchableOpacity
-                style={styles.fullDetailCta}
-                activeOpacity={0.7}
-                onPress={() => router.push(`/restaurant/${encodeURIComponent(id!)}`)}
-              >
-                <Text style={styles.fullDetailCtaText}>View full restaurant →</Text>
-                <Ionicons name="arrow-forward" size={16} color={colors.accent} />
-              </TouchableOpacity>
-            )}
+            {whatPeopleAreSayingBlock}
+            {id ? <QuickTipsBlock restaurantId={id} /> : null}
+            {socialProofBlock}
+            {menuBlock}
+            {afterSpotsBlock}
           </>
         )}
 
@@ -2119,6 +2051,100 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: colors.textMuted,
     lineHeight: 18,
+  },
+
+  // Compact friend activity card. Designed to feel like supporting context
+  // rather than a review-page header — soft surface, no shadow, modest
+  // typography. Header row stays single-line so the card opens at ~110px
+  // vs the ~220px footprint of the legacy giant-rating + poster-quote
+  // + tagged + dishes + visits stack it replaces.
+  friendActivityCard: {
+    marginTop: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  friendActivityHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  friendActivityAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    overflow: 'hidden',
+  },
+  friendActivityAvatarFallback: {
+    backgroundColor: colors.accentSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  friendActivityAvatarInitial: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  friendActivityHeaderBody: {
+    flex: 1,
+    minWidth: 0,
+  },
+  friendActivityName: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.text,
+    letterSpacing: -0.1,
+  },
+  friendActivityRatingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    marginTop: 2,
+  },
+  friendActivityRating: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.accent,
+  },
+  friendActivityHighlight: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: colors.textMuted,
+  },
+  friendActivityNote: {
+    marginTop: 10,
+    fontSize: 13.5,
+    lineHeight: 19,
+    color: colors.text,
+    fontStyle: 'italic',
+  },
+  friendActivityDishesWrap: {
+    marginTop: 10,
+  },
+  friendActivityDishesLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    marginBottom: 4,
+  },
+  friendActivityDishesList: {
+    gap: 2,
+  },
+  friendActivityDishItem: {
+    fontSize: 13.5,
+    color: colors.text,
+    lineHeight: 19,
+  },
+  friendActivityTagged: {
+    marginTop: 10,
+    fontSize: 12,
+    fontWeight: '500',
+    color: colors.textMuted,
   },
 
   // Details (de-emphasized)

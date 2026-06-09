@@ -2,12 +2,12 @@
  * FriendTagPicker — multi-select friend picker for tagging on a restaurant log.
  *
  * Lightweight UX: a single row of compact name pills + a "+ Add" button that
- * opens a sheet with search. Friends are loaded from SOCIAL_PROFILES (mock).
- * When real friendships ship server-side, swap the source to an API hook —
- * the component contract (`selectedUserNames`, `onChange`) doesn't change.
+ * opens a sheet with search. Friends are loaded from the user's real
+ * following list (the people THEY follow on ByteRite). SOCIAL_PROFILES
+ * stays as a fallback for cold-start dev mode when there's no session.
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Modal,
   Pressable,
@@ -21,8 +21,15 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
 import { SOCIAL_PROFILES } from '../../data/socialProfiles';
+import { getFollowing, type UserSummary } from '../../api/users';
+import { useAuthContext } from '../../context/AuthContext';
 
 const MAX_TAGS = 8;
+
+interface FriendOption {
+  userName: string;     // primary tag key (username — stable across renames)
+  displayName: string;
+}
 
 interface Props {
   selectedUserNames: string[];
@@ -32,11 +39,36 @@ interface Props {
 export function FriendTagPicker({ selectedUserNames, onChange }: Props) {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const auth = useAuthContext();
+  const myId = auth.user?.id ?? null;
 
-  const allFriends = useMemo(
-    () => Object.values(SOCIAL_PROFILES).sort((a, b) => a.displayName.localeCompare(b.displayName)),
-    [],
-  );
+  // Real following list from the server. Falls back to SOCIAL_PROFILES
+  // for testers in dev mode without auth, so the picker stays functional.
+  const [followings, setFollowings] = useState<FriendOption[] | null>(null);
+  useEffect(() => {
+    if (!myId) {
+      setFollowings(null);
+      return;
+    }
+    let cancelled = false;
+    getFollowing(myId)
+      .then((rows: UserSummary[]) => {
+        if (cancelled) return;
+        setFollowings(rows.map((r) => ({ userName: r.username, displayName: r.displayName || r.username })));
+      })
+      .catch(() => { if (!cancelled) setFollowings([]); });
+    return () => { cancelled = true; };
+  }, [myId]);
+
+  const allFriends = useMemo<FriendOption[]>(() => {
+    if (followings && followings.length > 0) {
+      return [...followings].sort((a, b) => a.displayName.localeCompare(b.displayName));
+    }
+    // Dev / mock fallback only when we have no real followings yet.
+    return Object.values(SOCIAL_PROFILES)
+      .map((p) => ({ userName: p.userName, displayName: p.displayName }))
+      .sort((a, b) => a.displayName.localeCompare(b.displayName));
+  }, [followings]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -63,18 +95,20 @@ export function FriendTagPicker({ selectedUserNames, onChange }: Props) {
       <Text style={styles.label}>Who did you go with?</Text>
       <View style={styles.row}>
         {selectedUserNames.map((userName) => {
+          // Look up display name from the fetched followings first,
+          // then fall back to mock profiles, then to the raw username.
+          const opt = allFriends.find((f) => f.userName === userName);
           const profile = SOCIAL_PROFILES[userName];
+          const display = opt?.displayName ?? profile?.displayName ?? userName;
           return (
             <TouchableOpacity
               key={userName}
               style={styles.chip}
               onPress={() => remove(userName)}
               activeOpacity={0.7}
-              accessibilityLabel={`Remove ${profile?.displayName ?? userName}`}
+              accessibilityLabel={`Remove ${display}`}
             >
-              <Text style={styles.chipText} numberOfLines={1}>
-                {profile?.displayName ?? userName}
-              </Text>
+              <Text style={styles.chipText} numberOfLines={1}>{display}</Text>
               <Ionicons name="close" size={13} color={colors.accentText} />
             </TouchableOpacity>
           );

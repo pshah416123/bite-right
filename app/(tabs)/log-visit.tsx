@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } fro
 import {
   ActivityIndicator,
   Image,
+  KeyboardAvoidingView,
   Platform,
   ScrollView,
   StyleSheet,
@@ -487,6 +488,15 @@ export default function LogVisitScreen() {
 
   return (
     <SafeAreaView style={styles.safe}>
+      {/* KeyboardAvoidingView raises the form above the on-screen keyboard
+          on iOS so the field the user is typing into (especially the
+          note + tip fields at the bottom of the long form) doesn't get
+          covered. behavior='padding' adds bottom padding equal to the
+          keyboard height; 'height' is more reliable on Android. */}
+      <KeyboardAvoidingView
+        style={styles.kavWrap}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
       <ScrollView
         ref={scrollRef}
         contentContainerStyle={styles.content}
@@ -927,12 +937,14 @@ export default function LogVisitScreen() {
           <Text style={styles.primaryButtonText}>{isEditMode ? 'Save changes' : 'Save log'}</Text>
         </TouchableOpacity>
       </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
+  kavWrap: { flex: 1 },
   content: { paddingHorizontal: 20, paddingTop: 16, paddingBottom: 120 },
   title: { fontSize: 24, fontWeight: '700', color: colors.text },
   subtitle: { marginTop: 4, marginBottom: 16, fontSize: 13, color: colors.textMuted },

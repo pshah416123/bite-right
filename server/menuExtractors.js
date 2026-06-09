@@ -317,23 +317,129 @@ function parseGenericItemNameMenu(html) {
         }
       }
 
-      // Find section title — nearest preceding heading by DOM walk.
-      let title = 'Menu';
-      const $heading = $el.closest('section, article, div')
-        .prevAll('h1, h2, h3, h4').first();
-      if ($heading.length) {
-        const t = $heading.text().replace(/\s+/g, ' ').trim();
-        if (t && t.length <= 60) title = t;
-      } else {
-        // Try section heading inside the scope
-        const $localHead = $scope.find('h1, h2, h3, h4').first();
-        if ($localHead.length) {
-          const t = $localHead.text().replace(/\s+/g, ' ').trim();
-          if (t && t.length <= 60 && t !== name) title = t;
+      // Find section title — three-pass strategy:
+      //   1. Per-item category field (Webflow Collections, Squarespace
+      //      summary blocks, BentoBox menus, custom React menus all
+      //      attach a category label to each item)
+      //   2. Nearest preceding heading by document-order DOM walk
+      //   3. Fallback to "Menu"
+      //
+      // Why three passes: the previous single-pass logic
+      // ($el.closest('div').prevAll('h1-h4').first()) misclassified every
+      // item on sites where items share a single container (Webflow's
+      // Collection List wrapper is the canonical case). Every item's
+      // closest div was the SAME wrapper, so every item received the
+      // immediately preceding heading — collapsing 50+ menu items into
+      // one section named after whatever heading happened to sit just
+      // above the wrapper (typically the LAST category on the page).
+      // Zarella sent 24 food items to the Dessert tab via this path.
+      let title = null;
+      let titleSource = null;
+
+      // Pass 1: per-item category field on or near the item.
+      const CATEGORY_SELECTORS = [
+        '[class*="category-name"]', '[class*="category-title"]',
+        '[class*="section-name"]', '[class*="section-title"]',
+        '[class*="menu-category"]', '[class*="menu-section"]',
+        '[class*="item-category"]', '[class*="product-category"]',
+        '[data-category]', '[data-section]',
+      ];
+      for (const sel of CATEGORY_SELECTORS) {
+        const $cat = $scope.find(sel).first();
+        if (!$cat.length) continue;
+        const dataCat = $cat.attr('data-category') || $cat.attr('data-section');
+        const textCat = $cat.text().replace(/\s+/g, ' ').trim();
+        const value = (dataCat && dataCat.trim()) || textCat;
+        if (value && value.length >= 2 && value.length <= 60 && value.toLowerCase() !== name.toLowerCase()) {
+          title = value;
+          titleSource = 'per-item-category';
+          break;
         }
       }
+
+      // Pass 2: walk back through document-order siblings + ancestor
+      // siblings to find the nearest preceding heading. Same algorithm
+      // as before but pre-Pass-3 collapse detection below catches the
+      // shared-container failure mode.
+      if (!title) {
+        let $cursor = $el;
+        for (let depth = 0; depth < 8; depth++) {
+          let $prev = $cursor.prev();
+          while ($prev.length) {
+            const tag = ($prev.prop('tagName') || '').toLowerCase();
+            if (/^h[1-5]$/.test(tag)) {
+              const t = $prev.text().replace(/\s+/g, ' ').trim();
+              if (t.length >= 2 && t.length <= 60 && t.toLowerCase() !== name.toLowerCase()) {
+                title = t;
+                titleSource = 'preceding-heading';
+                break;
+              }
+            }
+            const $inner = $prev.find('h1, h2, h3, h4, h5').last();
+            if ($inner.length) {
+              const t = $inner.text().replace(/\s+/g, ' ').trim();
+              if (t.length >= 2 && t.length <= 60 && t.toLowerCase() !== name.toLowerCase()) {
+                title = t;
+                titleSource = 'inner-trailing-heading';
+                break;
+              }
+            }
+            $prev = $prev.prev();
+          }
+          if (title) break;
+          $cursor = $cursor.parent();
+          if (!$cursor.length || $cursor.is('body, html')) break;
+        }
+      }
+
+      if (!title) {
+        title = 'Menu';
+        titleSource = 'default';
+      }
+
+      // Per-item debug logging — gated on DEBUG_MENU_EXTRACT so prod
+      // logs aren't noisy. Set DEBUG_MENU_EXTRACT=1 on Render when
+      // investigating misclassified menus.
+      if (process.env.DEBUG_MENU_EXTRACT) {
+        console.log('[MenuExtract][item]', JSON.stringify({
+          itemName: name,
+          sourceTab: null,
+          sourceSection: title,
+          assignedTab: null,
+          assignedSection: title,
+          titleSource,
+        }));
+      }
+
       pushItem(title, { name, description, price, tags: null, photoUrl: null });
     });
+
+    // ── Shared-container collapse detection ─────────────────────────────
+    // If the page has 3+ distinct h1-h4 headings but our per-item walk
+    // collapsed every item into a SINGLE section, the per-item category
+    // detection failed and the shared-container DOM pattern fooled the
+    // preceding-heading walk. In that case the section title is at best
+    // a guess and at worst (Zarella → "Dessert") actively misleading.
+    // Fall back to a single neutral "Menu" section so downstream
+    // assignMenuGroups doesn't route every food item to a dessert tab.
+    const pageHeadingCount = $('h1, h2, h3, h4').filter((_, h) => {
+      const t = $(h).text().replace(/\s+/g, ' ').trim();
+      return t.length >= 2 && t.length <= 60;
+    }).length;
+    if (orderedTitles.length === 1 && pageHeadingCount >= 3) {
+      const onlyTitle = orderedTitles[0];
+      const allItems = sectionsByTitle.get(onlyTitle) || [];
+      console.log('[MenuExtract] shared-container collapse detected', {
+        collapsedTitle: onlyTitle,
+        itemCount: allItems.length,
+        pageHeadings: pageHeadingCount,
+        action: 'reset-to-Menu',
+      });
+      sectionsByTitle.clear();
+      orderedTitles.length = 0;
+      sectionsByTitle.set('Menu', allItems);
+      orderedTitles.push('Menu');
+    }
 
     const sections = orderedTitles
       .map((title) => ({ title, items: sectionsByTitle.get(title) || [] }))

@@ -856,35 +856,91 @@ const CUISINE_TYPE_MAP = [
   { key: 'dessert_shop', label: 'Dessert' },
 ];
 
-// Comprehensive keyword map — kept in sync with src/utils/cuisineMatch.ts
-const CUISINE_NAME_KEYWORDS = [
-  { re: /\b(?:italian|pizza|pasta|trattoria|osteria|ristorante|gelato|risotto|calzone|focaccia)\b/i, label: 'Italian' },
-  { re: /\b(?:mexican|taco|burrito|cantina|taqueria|enchilada|quesadilla|tamale|elote|churro)\b/i, label: 'Mexican' },
-  { re: /\b(?:chinese|dim sum|dumpling|wonton|szechuan|sichuan|cantonese|chow mein|kung pao|peking)\b/i, label: 'Chinese' },
-  { re: /\b(?:indian|curry|biryani|tandoor|chai|nihari|desi|punjabi|gujarati|masala|naan|dosa|tikka|samosa)\b/i, label: 'Indian' },
-  { re: /\b(?:japanese|sushi|ramen|izakaya|tempura|udon|soba|omakase|teriyaki|yakitori|tonkatsu|matcha)\b/i, label: 'Japanese' },
-  { re: /\b(?:thai|pad thai|tom yum|satay|som tum)\b/i, label: 'Thai' },
-  { re: /\b(?:korean|kimchi|korean bbq|bibimbap|bulgogi|japchae|tteokbokki|kbbq)\b/i, label: 'Korean' },
-  { re: /\b(?:mediterranean|hummus|pita|tahini)\b/i, label: 'Mediterranean' },
-  { re: /\b(?:greek|gyro|souvlaki|moussaka|spanakopita|baklava)\b/i, label: 'Greek' },
-  { re: /\b(?:french|bistro|brasserie|crepe|patisserie|croissant|boulangerie)\b/i, label: 'French' },
-  { re: /\b(?:middle eastern|lebanese|turkish|persian|shawarma|kebab|falafel|hookah|meze)\b/i, label: 'Middle Eastern' },
-  { re: /\b(?:american|diner|grill|wings|cornbread)\b/i, label: 'American' },
-  { re: /\b(?:asian|pan[- ]?asian|fusion)\b/i, label: 'Asian' },
-  { re: /\b(?:steakhouse|steak house|chophouse|prime rib|wagyu)\b/i, label: 'Steakhouse' },
-  { re: /\b(?:seafood|oyster|fish|lobster|crab|shrimp|clam|poke)\b/i, label: 'Seafood' },
-  { re: /\b(?:sushi|omakase|sashimi|nigiri|maki)\b/i, label: 'Sushi' },
-  { re: /\b(?:pizza|pizzeria|deep dish|neapolitan)\b/i, label: 'Pizza' },
-  { re: /\b(?:burger|hamburger|smash burger)\b/i, label: 'Burgers' },
-  { re: /\b(?:bbq|barbecue|smokehouse|brisket|ribs|pulled pork|smoked)\b/i, label: 'BBQ' },
-  { re: /\b(?:dessert|gelato|ice cream|boba|frozen yogurt|cupcake|donut|sweets|cobbler|cookie|milkshake|pastry|cake|pie|candy|fudge|brownie|macaron)\b/i, label: 'Dessert' },
-  { re: /\b(?:breakfast|pancake|waffle|omelette|eggs benedict)\b/i, label: 'Breakfast' },
-  { re: /\b(?:brunch|mimosa|eggs benedict|benedict)\b/i, label: 'Brunch' },
+// Cuisine name keywords — split into STRONG (exclusive to one cuisine,
+// safe to use as a primary signal) and WEAK (shared across cuisines,
+// usable only as a tiebreaker when no stronger signal exists).
+//
+// History: a single CUISINE_NAME_KEYWORDS array included "curry" in
+// the Indian regex. A Thai restaurant whose Google data didn't include
+// the `thai_restaurant` type (only generic `restaurant`/`food`) got
+// labeled Indian because "curry" hit the Indian pattern from the name.
+// Curry is a Thai/Indian/Japanese/Nepalese/Burmese/Caribbean concept;
+// using it as an Indian-only signal was the bug.
+//
+// Rules for STRONG keywords:
+//   - Must be near-exclusively associated with one cuisine in U.S. usage
+//   - Restaurant-naming conventions (e.g. "trattoria" → Italian only)
+//   - Dish names that don't cross cuisine boundaries ("biryani" → Indian,
+//     "pad thai" → Thai, "tonkotsu" → Japanese, "khao soi" → Thai)
+//
+// Rules for WEAK keywords:
+//   - Words that appear across multiple cuisines ("curry", "noodles",
+//     "rice", "soup", "dumpling" sometimes)
+//   - Generic descriptors that aren't cuisine-specific
+//   - Used only when no STRONG signal AND no Google type signal exists,
+//     and even then they vote rather than decide.
+const STRONG_NAME_KEYWORDS = [
+  { re: /\b(?:italian|pizzeria|pasta|trattoria|osteria|ristorante|risotto|focaccia|cacio\s*e\s*pepe|bolognese|carbonara)\b/i, label: 'Italian' },
+  { re: /\b(?:mexican|taqueria|cantina|burrito|enchilada|quesadilla|tamale|elote|churro|carnitas|al\s*pastor|birria|carne\s*asada|aguachile)\b/i, label: 'Mexican' },
+  { re: /\b(?:chinese|dim\s*sum|szechuan|sichuan|cantonese|chow\s*mein|kung\s*pao|peking|mapo|xiao\s*long\s*bao)\b/i, label: 'Chinese' },
+  // "indian" alone is fine — anything self-identifying as Indian is Indian.
+  // "biryani / tandoor / nihari / desi / punjabi / dosa / vada / idli /
+  // chaat / paneer / vindaloo / rogan josh" are unambiguous Indian dish
+  // / regional / style markers. "naan / tikka / masala / samosa / chai"
+  // moved to WEAK because they appear on Pakistani, Bangladeshi,
+  // Nepalese, and even Caribbean menus.
+  { re: /\b(?:indian|biryani|tandoor(?:i)?|nihari|desi|punjabi|gujarati|dosa|vada|idli|chaat|paneer|vindaloo|rogan\s*josh|saag|aloo\s*gobi|chana\s*masala)\b/i, label: 'Indian' },
+  // "thai" obviously. Pad Thai, Tom Yum, Tom Kha, Khao Soi, Som Tum,
+  // Massaman/Panang/Green/Red/Yellow Curry (compound forms), Sticky
+  // Rice (when paired with mango), Larb. Single "curry" stays OUT.
+  { re: /\b(?:thai|pad\s*thai|pad\s*see\s*ew|drunken\s*noodles?|tom\s*yum|tom\s*kha|khao\s*soi|som\s*tum|satay|larb|massaman|panang|green\s*curry|red\s*curry|yellow\s*curry|sticky\s*rice|thai\s*tea|thai\s*iced)\b/i, label: 'Thai' },
+  { re: /\b(?:japanese|izakaya|tempura|udon|soba|omakase|teriyaki|yakitori|tonkatsu|tonkotsu|matcha|donburi|chirashi|sashimi|wagyu|kaiseki)\b/i, label: 'Japanese' },
+  { re: /\b(?:korean|korean\s*bbq|bibimbap|bulgogi|japchae|tteokbokki|kbbq|gochujang|banchan|kimchi|samgyeopsal|galbi)\b/i, label: 'Korean' },
+  { re: /\b(?:vietnamese|pho\b|banh\s*mi|bun\s*bo\s*hue|bun\s*cha|spring\s*rolls?|nuoc\s*cham|com\s*tam)\b/i, label: 'Vietnamese' },
+  { re: /\b(?:mediterranean|hummus|tahini|baba\s*ganoush|tabbouleh|fattoush)\b/i, label: 'Mediterranean' },
+  { re: /\b(?:greek|gyro|souvlaki|moussaka|spanakopita|baklava|dolmas)\b/i, label: 'Greek' },
+  { re: /\b(?:french|bistro|brasserie|crepe|patisserie|croissant|boulangerie|cassoulet|coq\s*au\s*vin|bouillabaisse)\b/i, label: 'French' },
+  { re: /\b(?:middle\s*eastern|lebanese|turkish|persian|shawarma|kebab|falafel|hookah|meze|kibbeh|fattoush)\b/i, label: 'Middle Eastern' },
+  // "Nepalese / Nepali" gets its own signal so Indo-Nepalese spots can
+  // be tagged with both when their data supports it.
+  { re: /\b(?:nepalese|nepali|momo(?:s)?|sel\s*roti|thakali|chow\s*chow)\b/i, label: 'Nepali' },
+  { re: /\b(?:american|diner|wings|cornbread|smashburger)\b/i, label: 'American' },
+  { re: /\b(?:steakhouse|steak\s*house|chophouse|prime\s*rib|porterhouse|ribeye|wagyu)\b/i, label: 'Steakhouse' },
+  { re: /\b(?:seafood|oyster|lobster|crab\s*shack|shrimp\s*boil|poke)\b/i, label: 'Seafood' },
+  { re: /\b(?:sushi|omakase|sashimi|nigiri|maki(?:roll)?)\b/i, label: 'Sushi' },
+  { re: /\b(?:pizza|pizzeria|deep\s*dish|neapolitan|stuffed\s*pizza|by\s*the\s*slice)\b/i, label: 'Pizza' },
+  { re: /\b(?:burger|hamburger|smash\s*burger|cheeseburger)\b/i, label: 'Burgers' },
+  { re: /\b(?:bbq|barbecue|smokehouse|brisket|pulled\s*pork|smoked\s*ribs|burnt\s*ends)\b/i, label: 'BBQ' },
+  { re: /\b(?:dessert|gelato|ice\s*cream|boba|bubble\s*tea|frozen\s*yogurt|cupcake|donut|cobbler|milkshake|pastry|cheesecake|tiramisu|macaron|cannoli)\b/i, label: 'Dessert' },
+  { re: /\b(?:breakfast|pancake|waffle|omelette|frittata|french\s*toast)\b/i, label: 'Breakfast' },
+  { re: /\b(?:brunch|mimosa|eggs\s*benedict)\b/i, label: 'Brunch' },
   { re: /\b(?:vegan|plant[- ]?based)\b/i, label: 'Vegan' },
   { re: /\b(?:vegetarian|veggie)\b/i, label: 'Vegetarian' },
-  { re: /\b(?:bakery|boulangerie|bread|pastry|croissant|scone)\b/i, label: 'Bakery' },
-  { re: /\b(?:coffee|cafe|espresso|roast|latte|cappuccino|barista)\b/i, label: 'Coffee' },
+  { re: /\b(?:bakery|boulangerie|bread\b|patisserie|croissant|scone|sourdough)\b/i, label: 'Bakery' },
+  { re: /\b(?:coffee|cafe|espresso|roastery|latte|cappuccino|barista|cold\s*brew)\b/i, label: 'Coffee' },
 ];
+
+// WEAK signals — recorded for telemetry and used only as a soft hint
+// when nothing stronger exists. The label is intentionally null because
+// the signal alone shouldn't decide cuisine; it just notes "this name
+// has cuisine-shaped vocabulary, look harder if needed."
+const WEAK_NAME_KEYWORDS = [
+  { re: /\bcurry\b/i, hint: 'curry-mention' },              // Thai/Indian/Japanese/Nepalese/Caribbean/Burmese
+  { re: /\bnoodles?\b/i, hint: 'noodle-mention' },           // pan-Asian
+  { re: /\brice\b/i, hint: 'rice-mention' },                 // every cuisine
+  { re: /\bsoup\b/i, hint: 'soup-mention' },                 // pho/ramen/menudo/tom yum/etc.
+  { re: /\bdumpling(?:s)?\b/i, hint: 'dumpling-mention' },   // Chinese/Korean/Japanese/Polish
+  { re: /\b(?:naan|chai|tikka|masala|samosa)\b/i, hint: 'pan-south-asian' }, // Indian/Pakistani/Bangladeshi/Nepalese
+  { re: /\b(?:gelato)\b/i, hint: 'italian-dessert' },        // Italian or dessert shop
+  { re: /\bgrill\b/i, hint: 'grill-mention' },               // every cuisine has a grill
+  { re: /\bkitchen\b/i, hint: 'kitchen-mention' },           // restaurant-shaped name token
+  { re: /\b(?:asian|pan[- ]?asian|fusion)\b/i, hint: 'pan-asian' }, // too broad to pick one
+];
+
+// Backwards-compatible alias for call sites that iterate the legacy
+// constant. Now resolves only to the STRONG list — the WEAK list is
+// consumed separately by deriveCuisinesFromPlace.
+const CUISINE_NAME_KEYWORDS = STRONG_NAME_KEYWORDS;
 
 function mapFoodCategory(types, name) {
   const t = Array.isArray(types) ? types : [];
@@ -910,45 +966,181 @@ function mapFoodCategory(types, name) {
   return '';
 }
 
-/** All cuisine-like labels we can attach to a place (for filtering + cards). */
+/**
+ * Confidence-ranked cuisine derivation.
+ *
+ * Sources, highest to lowest:
+ *   1. Google Places primary cuisine type (e.g. `thai_restaurant`) —
+ *      Google's editorial classification. Highest priority because it's
+ *      curated, locale-aware, and rarely wrong.
+ *   2. Explicit cuisine hint from upstream (e.g. SinglePlatform's
+ *      stated cuisine, the restaurant's own website schema.org marker).
+ *   3. STRONG name-keyword match (taqueria, izakaya, biryani, pad thai,
+ *      tonkotsu — words exclusive to one cuisine).
+ *   4. WEAK name-keyword match (curry, noodles, soup — words shared
+ *      across many cuisines). Recorded for telemetry only; never used
+ *      to assign a cuisine label.
+ *
+ * Returns { labels: string[], primary: string|null, confidence,
+ * sources, weakHints } — labels are ordered with highest-confidence
+ * first so callers that only want one cuisine can take labels[0].
+ *
+ * Conflict handling: a name-keyword (medium) match is silently kept as
+ * a secondary label only if it doesn't conflict with the Google type
+ * label. When Google says Thai and the name has "curry", Thai wins
+ * unambiguously — no Indian leakage.
+ */
 function deriveCuisinesFromPlace(types, name, cuisineHint) {
-  const labels = new Set();
+  const result = deriveCuisinesWithTrace(types, name, cuisineHint);
+  return result.labels;
+}
+
+function deriveCuisinesWithTrace(types, name, cuisineHint) {
   const t = Array.isArray(types) ? types : [];
   const tSet = new Set(t);
-  const n = `${typeof name === 'string' ? name : ''} ${typeof cuisineHint === 'string' ? cuisineHint : ''}`;
+  const nameStr = typeof name === 'string' ? name : '';
+  const hintStr = typeof cuisineHint === 'string' ? cuisineHint : '';
 
+  // Tier 1 — Google Places explicit cuisine types. Highest confidence.
+  const googleLabels = [];
   for (const entry of CUISINE_TYPE_MAP) {
-    if (tSet.has(entry.key)) labels.add(entry.label);
+    if (tSet.has(entry.key)) googleLabels.push(entry.label);
   }
-  for (const entry of CUISINE_NAME_KEYWORDS) {
-    if (entry.re.test(n)) labels.add(entry.label);
+
+  // Tier 2 — upstream cuisine hint. Only counts if it's a real cuisine
+  // (skip "Restaurant"/"Takeout" generic fallbacks). Treated as high
+  // confidence when present.
+  const hintLabel = (() => {
+    if (!hintStr) return null;
+    const trimmed = hintStr.trim();
+    if (!trimmed || /^(restaurant|takeout|food)$/i.test(trimmed)) return null;
+    return trimmed;
+  })();
+
+  // Tier 3 — STRONG name-keyword matches. Medium confidence. Skipped if
+  // the match contradicts a higher-tier label, to prevent "Indian" from
+  // leaking into a Thai restaurant's labels just because its name
+  // happens to contain a south-asian-shaped word.
+  const strongLabels = [];
+  const nameForMatch = `${nameStr} ${hintStr}`;
+  for (const entry of STRONG_NAME_KEYWORDS) {
+    if (entry.re.test(nameForMatch)) strongLabels.push(entry.label);
   }
+
+  // Tier 4 — WEAK name-keyword matches. Recorded but never used as a
+  // cuisine label. Surfaced in the trace so log readers can see "this
+  // name had curry in it but we deliberately didn't assign Indian."
+  const weakHints = [];
+  for (const entry of WEAK_NAME_KEYWORDS) {
+    if (entry.re.test(nameForMatch)) weakHints.push(entry.hint);
+  }
+
+  // Compose label order: Google first, hint second, strong name kw
+  // third — deduped, conflict-suppressed. If a strong keyword would
+  // contradict the Google label (e.g. Google says Thai, keyword says
+  // Indian, and Thai isn't also in the keyword matches), we drop the
+  // keyword label entirely so the cuisine pill reads "Thai" not
+  // "Thai · Indian".
+  const finalLabels = [];
+  const seen = new Set();
+  const add = (l) => {
+    if (!l) return;
+    const key = l.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    finalLabels.push(l);
+  };
+
+  for (const g of googleLabels) add(g);
+  if (hintLabel) add(hintLabel);
+
+  // Conflict suppression: if a strong keyword names a different region
+  // than Google, skip it. We only allow strong keywords when (a)
+  // Google had no cuisine type at all, OR (b) the keyword is among the
+  // labels Google already gave us.
+  if (googleLabels.length === 0) {
+    for (const l of strongLabels) add(l);
+  } else {
+    // Keep keyword labels that AGREE with Google. Drop the ones that
+    // would contradict — e.g. Google said Thai, keyword said Indian:
+    // Indian gets dropped silently. Also keep keyword labels for
+    // non-conflicting axes (Dessert/Bakery/Vegan are compatible with
+    // a regional cuisine).
+    const NON_REGIONAL = new Set(['Dessert', 'Bakery', 'Coffee', 'Vegan', 'Vegetarian', 'Breakfast', 'Brunch', 'Pizza', 'Burgers', 'BBQ', 'Steakhouse', 'Seafood', 'Sushi']);
+    for (const l of strongLabels) {
+      if (NON_REGIONAL.has(l) || googleLabels.includes(l)) add(l);
+      // else: conflict — silently drop. Telemetry below records this.
+    }
+  }
+
+  // mapFoodCategory adds Bakery/Coffee/Dessert when types include
+  // those — keep that behavior.
   const mapped = mapFoodCategory(types, name);
-  if (mapped && mapped !== 'Restaurant' && mapped !== 'Takeout') labels.add(mapped);
+  if (mapped && mapped !== 'Restaurant' && mapped !== 'Takeout') add(mapped);
+  if (finalLabels.includes('Bakery')) add('Dessert');
 
-  if (labels.has('Bakery')) labels.add('Dessert');
-
-  // Enrich with taxonomy parent groups (e.g. Pizza → Italian, BBQ → American)
+  // Taxonomy parents (e.g. Pizza → Italian) — appended at the end so
+  // they don't outrank an explicit Google cuisine.
   const taxonomyGroups = getCuisineGroups(types, name, cuisineHint);
-  for (const g of taxonomyGroups) labels.add(g);
+  for (const g of taxonomyGroups) add(g);
 
-  return Array.from(labels);
+  const confidence = googleLabels.length > 0 ? 'high-google'
+    : hintLabel ? 'high-hint'
+    : strongLabels.length > 0 ? 'medium-strong-keyword'
+    : weakHints.length > 0 ? 'low-weak-only'
+    : 'none';
+
+  const sources = {
+    googleTypes: googleLabels,
+    hint: hintLabel,
+    strongKeywords: strongLabels,
+    weakHints,
+    taxonomy: taxonomyGroups,
+  };
+
+  return { labels: finalLabels, primary: finalLabels[0] || null, confidence, sources };
 }
 
 // Centralized non-empty cuisine label. Use as the final stop on every API
 // response that exposes a `cuisine` string — guarantees the client never
-// has to render an empty pill. Order:
-//   1. derivedCuisines from Google types + name keywords
-//   2. the hint string (if it's not the generic "Restaurant")
-//   3. mapFoodCategory fallback
-//   4. broad type families (bar / cafe / bakery / fast food)
-//   5. "Restaurant" as the last-ditch label
+// has to render an empty pill.
+//
+// Confidence order is now enforced inside deriveCuisinesWithTrace so the
+// returned `primary` already reflects the priority Google > hint > strong
+// name keyword > nothing. This function only adds the bar/cafe/bakery/
+// generic fallback for places where no cuisine signal at all exists.
 function coalesceCuisine({ types, name, hint }) {
-  const derived = deriveCuisinesFromPlace(types || [], name || '', hint || '');
-  if (derived.length) return derived[0];
-  if (typeof hint === 'string' && hint.trim() && hint.trim() !== 'Restaurant') return hint.trim();
-  const mapped = mapFoodCategory(types || [], name || '');
-  if (mapped && mapped !== 'Restaurant') return mapped;
+  const trace = deriveCuisinesWithTrace(types || [], name || '', hint || '');
+
+  // Conflict telemetry — only fires when something looks suspicious.
+  // Set DEBUG_CUISINE=1 on Render to also log non-conflicting cases.
+  const droppedKeywordLabels = trace.sources.strongKeywords.filter(
+    (l) => !trace.labels.includes(l),
+  );
+  if (droppedKeywordLabels.length > 0) {
+    console.log('[BiteRight][CuisineConflict]', JSON.stringify({
+      restaurantName: name,
+      googleCuisine: trace.sources.googleTypes,
+      inferredCuisine: trace.sources.strongKeywords,
+      finalCuisine: trace.labels,
+      confidence: trace.confidence,
+      reason: 'strong-name-keyword-contradicted-google-type',
+      droppedLabels: droppedKeywordLabels,
+    }));
+  } else if (process.env.DEBUG_CUISINE) {
+    console.log('[BiteRight][Cuisine]', JSON.stringify({
+      restaurantName: name,
+      googleCuisine: trace.sources.googleTypes,
+      inferredCuisine: trace.sources.strongKeywords,
+      finalCuisine: trace.labels,
+      confidence: trace.confidence,
+      weakHints: trace.sources.weakHints,
+      reason: 'normal-assignment',
+    }));
+  }
+
+  if (trace.primary) return trace.primary;
+
   const t = new Set(Array.isArray(types) ? types : []);
   if (t.has('bar') || t.has('night_club')) return 'Bar';
   if (t.has('cafe') || t.has('coffee_shop')) return 'Cafe';
@@ -2136,15 +2328,33 @@ function userRowToSummary(row, counts = null) {
 
 async function getFollowCounts(userId) {
   if (!supabaseConfigured) return { followingCount: 0, followerCount: 0 };
-  // accepted friendships involving this user, in either column
+  // Directional follow semantics encoded onto the existing friendships
+  // schema (status + initiated_by):
+  //   status='pending'  — initiated_by follows the other (one-way).
+  //                       The other has NOT followed back yet.
+  //   status='accepted' — mutual; both sides follow each other.
+  //
+  // For user X:
+  //   followingCount = rows where X is in the pair AND
+  //     (status='accepted' OR (status='pending' AND initiated_by = X))
+  //   followerCount  = rows where X is in the pair AND
+  //     (status='accepted' OR (status='pending' AND initiated_by != X))
   const [{ data: asA }, { data: asB }] = await Promise.all([
-    supabase.from('friendships').select('user_a').eq('user_b', userId).eq('status', 'accepted'),
-    supabase.from('friendships').select('user_b').eq('user_a', userId).eq('status', 'accepted'),
+    supabase.from('friendships').select('status, initiated_by').eq('user_a', userId).in('status', ['accepted', 'pending']),
+    supabase.from('friendships').select('status, initiated_by').eq('user_b', userId).in('status', ['accepted', 'pending']),
   ]);
-  const count = (asA?.length ?? 0) + (asB?.length ?? 0);
-  // For now treat the graph as symmetric (mutual follows) — return the same
-  // number for follower + following. When we add directed follows we'll split.
-  return { followingCount: count, followerCount: count };
+  let following = 0;
+  let follower = 0;
+  for (const r of [...(asA || []), ...(asB || [])]) {
+    if (r.status === 'accepted') {
+      following += 1;
+      follower += 1;
+    } else if (r.status === 'pending') {
+      if (r.initiated_by === userId) following += 1;
+      else follower += 1;
+    }
+  }
+  return { followingCount: following, followerCount: follower };
 }
 
 // GET /api/users/me — current user (auto-creates on first call).
@@ -2416,25 +2626,55 @@ app.delete('/api/blocks/:userId', async (req, res) => {
 // GET /api/users/:userId/followers + /following — symmetric friendship graph.
 // Returns the UserSummary for every user with an accepted friendship to the
 // target. Same list for both endpoints today since edges are bidirectional.
-async function getConnectedUsers(userId) {
+// Returns users that the given userId FOLLOWS.
+// (status='accepted' rows: both follow each other → include the other side;
+//  status='pending' rows: only when userId is the initiator → include the
+//  user being followed.)
+async function getFollowingUsers(userId) {
   if (!supabaseConfigured) return [];
   const [asA, asB] = await Promise.all([
-    supabase.from('friendships').select('user_b').eq('user_a', userId).eq('status', 'accepted'),
-    supabase.from('friendships').select('user_a').eq('user_b', userId).eq('status', 'accepted'),
+    supabase.from('friendships').select('user_b, status, initiated_by').eq('user_a', userId).in('status', ['accepted', 'pending']),
+    supabase.from('friendships').select('user_a, status, initiated_by').eq('user_b', userId).in('status', ['accepted', 'pending']),
   ]);
   const ids = new Set();
-  asA.data?.forEach((r) => ids.add(r.user_b));
-  asB.data?.forEach((r) => ids.add(r.user_a));
+  for (const r of asA.data || []) {
+    if (r.status === 'accepted' || r.initiated_by === userId) ids.add(r.user_b);
+  }
+  for (const r of asB.data || []) {
+    if (r.status === 'accepted' || r.initiated_by === userId) ids.add(r.user_a);
+  }
+  if (ids.size === 0) return [];
+  const { data: rows } = await supabase.from('users').select('*').in('id', Array.from(ids));
+  return (rows || []).map((r) => userRowToSummary(r));
+}
+
+// Returns users that FOLLOW the given userId.
+// (status='accepted' rows: both follow each other → include the other side;
+//  status='pending' rows: only when userId is NOT the initiator → include
+//  the initiator.)
+async function getFollowerUsers(userId) {
+  if (!supabaseConfigured) return [];
+  const [asA, asB] = await Promise.all([
+    supabase.from('friendships').select('user_b, status, initiated_by').eq('user_a', userId).in('status', ['accepted', 'pending']),
+    supabase.from('friendships').select('user_a, status, initiated_by').eq('user_b', userId).in('status', ['accepted', 'pending']),
+  ]);
+  const ids = new Set();
+  for (const r of asA.data || []) {
+    if (r.status === 'accepted' || r.initiated_by !== userId) ids.add(r.user_b);
+  }
+  for (const r of asB.data || []) {
+    if (r.status === 'accepted' || r.initiated_by !== userId) ids.add(r.user_a);
+  }
   if (ids.size === 0) return [];
   const { data: rows } = await supabase.from('users').select('*').in('id', Array.from(ids));
   return (rows || []).map((r) => userRowToSummary(r));
 }
 
 app.get('/api/users/:userId/followers', async (req, res) => {
-  res.json(await getConnectedUsers(req.params.userId));
+  res.json(await getFollowerUsers(req.params.userId));
 });
 app.get('/api/users/:userId/following', async (req, res) => {
-  res.json(await getConnectedUsers(req.params.userId));
+  res.json(await getFollowingUsers(req.params.userId));
 });
 
 // GET /api/users/:userId/logs — logs authored by this user, in FeedLog shape.
@@ -2505,9 +2745,16 @@ app.get('/api/users/:userId/logs', async (req, res) => {
   }
 });
 
-// POST /api/follows/:userId — follow another user. Symmetric for now: writes
-// an accepted row to the friendships table (the existing tag system reads
-// from this same table). Idempotent.
+// POST /api/follows/:userId — follow another user. Directional:
+//   - First follow: writes status='pending' with initiated_by=me. The
+//     other user becomes one of MY followings; they gain me as a
+//     follower (notification surface).
+//   - If the other user has already initiated a pending row toward me,
+//     this call flips it to status='accepted' — mutual follow.
+//   - Otherwise no-op (already following, idempotent).
+//
+// Response includes `mutual` so the client can show "Following" vs
+// "Friends" state without an extra round-trip.
 app.post('/api/follows/:userId', async (req, res) => {
   if (!supabaseConfigured) return res.status(503).json({ error: 'Supabase not configured' });
   const myId = getCurrentUserId(req);
@@ -2517,20 +2764,53 @@ app.post('/api/follows/:userId', async (req, res) => {
 
   // Canonical ordering per friendships schema (user_a < user_b lexically).
   const [userA, userB] = myId < otherId ? [myId, otherId] : [otherId, myId];
+
+  const { data: existing } = await supabase
+    .from('friendships')
+    .select('status, initiated_by')
+    .eq('user_a', userA)
+    .eq('user_b', userB)
+    .maybeSingle();
+
+  if (!existing) {
+    const { error } = await supabase
+      .from('friendships')
+      .insert({
+        user_a: userA,
+        user_b: userB,
+        status: 'pending',
+        initiated_by: myId,
+        accepted_at: null,
+      });
+    if (error) {
+      console.error('[follows] insert error', error.message);
+      return res.status(500).json({ error: 'Could not follow' });
+    }
+    return res.json({ ok: true, following: true, mutual: false });
+  }
+
+  if (existing.status === 'accepted') {
+    // Already mutual — no-op.
+    return res.json({ ok: true, following: true, mutual: true });
+  }
+
+  if (existing.initiated_by === myId) {
+    // I've already followed them; they haven't followed back yet.
+    return res.json({ ok: true, following: true, mutual: false });
+  }
+
+  // They followed me previously (pending); this call is me reciprocating.
+  // Flip to accepted (mutual).
   const { error } = await supabase
     .from('friendships')
-    .upsert({
-      user_a: userA,
-      user_b: userB,
-      status: 'accepted',
-      initiated_by: myId,
-      accepted_at: new Date().toISOString(),
-    }, { onConflict: 'user_a,user_b' });
+    .update({ status: 'accepted', accepted_at: new Date().toISOString() })
+    .eq('user_a', userA)
+    .eq('user_b', userB);
   if (error) {
-    console.error('[follows] upsert error', error.message);
+    console.error('[follows] accept error', error.message);
     return res.status(500).json({ error: 'Could not follow' });
   }
-  return res.json({ ok: true, following: true });
+  return res.json({ ok: true, following: true, mutual: true });
 });
 
 app.get('/api/users/:userId/dining-partners', async (req, res) => {
@@ -3070,34 +3350,85 @@ app.get('/api/place-photo', async (req, res) => {
  * Find a menu page URL from a restaurant homepage.
  * Looks for links whose href or text matches common menu patterns.
  */
-function findMenuUrl(html, baseUrl) {
-  const $ = cheerio.load(html);
-  const menuPatterns = /\b(menu|food|dining|our-food|eat|dishes)\b/i;
-  const skipPatterns = /\b(login|signup|account|cart|checkout|contact|career|job|blog|news|press|faq|privacy|terms|instagram|facebook|twitter|yelp|doordash|ubereats|grubhub)\b/i;
+// Menu-link discovery patterns. Expanded beyond the original
+// /menu|food|dining|our-food|eat|dishes/ set to cover meal-period and
+// beverage labels (lunch / dinner / brunch / breakfast / drinks / beer
+// / wine / cocktails / *-list / tasting / prix-fixe), View Menu button
+// language, and common Opentable/Popmenu sub-paths. Without this First
+// Draft Chicago's primary menu link "Lunch & Dinner" was undiscoverable —
+// pattern matched only its sibling "Food Menus" hub page (which yields
+// zero items), and the pipeline gave up.
+const MENU_LINK_PATTERNS = /\b(menu|menus|food|foods|dining|eat|dish|dishes|lunch|dinner|brunch|breakfast|supper|drink|drinks|beverage|beverages|beer|wine|cocktail|cocktails|tasting|prix[\s-]?fixe|carte|to[\s-]?go|view[\s-]?menu|order[\s-]?online)\b/i;
+const MENU_LINK_LIST_SUFFIX = /\b(beer|wine|drink|cocktail|food|wine\s+(?:by\s+the\s+glass|by\s+the\s+bottle))[\s-]?list\b/i;
+const MENU_LINK_SKIP = /\b(login|signup|account|cart|checkout|contact|career|job|blog|news|press|faq|privacy|terms|instagram|facebook|twitter|yelp|doordash|ubereats|grubhub|gift[\s-]?card|merch|shop|store|reservation|book|opentable\.com|resy\.com)\b/i;
 
+/**
+ * Discover ranked menu-link candidates from a page's HTML. Returns an
+ * array of {url, score, reasonDiscovered, anchorText} sorted by score
+ * descending. Empty array when no candidates pass the pattern filter.
+ *
+ * Why a list (vs the single URL findMenuUrl returns): hub pages like
+ * Squarespace's /food-menus are gallery indexes — they fetch fine but
+ * parseMenuHtml returns zero items because the content is sub-menu
+ * links, not dishes. The caller needs to be able to walk down the
+ * candidate list until one yields actual items.
+ */
+function findMenuUrls(html, baseUrl) {
+  const $ = cheerio.load(html);
   const candidates = [];
+  const seen = new Set();
+
   $('a[href]').each((_, el) => {
     const href = $(el).attr('href') || '';
-    const text = $(el).text().replace(/\s+/g, ' ').trim().toLowerCase();
-    if (!href || href === '#' || href.startsWith('mailto:') || href.startsWith('tel:')) return;
-    if (skipPatterns.test(href)) return;
+    const text = $(el).text().replace(/\s+/g, ' ').trim();
+    const textLower = text.toLowerCase();
+    if (!href || href === '#' || /^(mailto|tel|javascript):/i.test(href)) return;
+    if (MENU_LINK_SKIP.test(href) || MENU_LINK_SKIP.test(textLower)) return;
 
     const hrefLower = href.toLowerCase();
-    const isMenuLink = menuPatterns.test(text) || menuPatterns.test(hrefLower);
-    if (!isMenuLink) return;
+    const matchesPath = MENU_LINK_PATTERNS.test(hrefLower) || MENU_LINK_LIST_SUFFIX.test(hrefLower);
+    const matchesText = MENU_LINK_PATTERNS.test(textLower) || MENU_LINK_LIST_SUFFIX.test(textLower);
+    if (!matchesPath && !matchesText) return;
 
-    try {
-      const resolved = new URL(href, baseUrl).href;
-      // Prefer links with "menu" in the path over generic matches
-      const pathScore = hrefLower.includes('/menu') ? 10 : hrefLower.includes('menu') ? 5 : 1;
-      const textScore = text.includes('menu') ? 5 : 1;
-      candidates.push({ url: resolved, score: pathScore + textScore });
-    } catch { /* skip invalid URLs */ }
+    let resolved;
+    try { resolved = new URL(href, baseUrl).href; } catch { return; }
+    if (seen.has(resolved)) return;
+    seen.add(resolved);
+
+    // Scoring — prioritize (a) explicit "view menu" / "/menu" routes,
+    // (b) meal-period pages (lunch/dinner/brunch — these are typically
+    // the actual dish lists), (c) drink/beer/wine lists, (d) generic
+    // menu/food matches. Lower scores still get tried in the fallback
+    // loop, so even weak signals stay in play.
+    let score = 0;
+    let reason = [];
+    if (/\/menus?(?:\/|$|\?)/.test(hrefLower)) { score += 10; reason.push('path=/menu'); }
+    else if (/menus?/i.test(hrefLower)) { score += 5; reason.push('path~menu'); }
+    if (/\b(lunch|dinner|brunch|breakfast|supper)\b/.test(hrefLower) || /\b(lunch|dinner|brunch|breakfast|supper)\b/.test(textLower)) {
+      score += 8; reason.push('meal-period');
+    }
+    if (/\b(beer|wine|cocktail|drink)s?[\s-]?list\b/.test(textLower) || /\b(beer|wine|cocktail|drink)s?[\s-]?list\b/.test(hrefLower)) {
+      score += 6; reason.push('drink-list');
+    }
+    if (/\b(view|see|our|full)[\s-]?menu\b/i.test(textLower)) { score += 6; reason.push('view-menu-button'); }
+    if (/menu/.test(textLower)) score += 3;
+    if (/\bfood\b/.test(textLower)) score += 2;
+    if (score === 0) score = 1; // pattern matched but no scoring rule fired
+
+    candidates.push({ url: resolved, score, reasonDiscovered: reason.join(',') || 'pattern-match', anchorText: text });
   });
 
-  if (candidates.length === 0) return null;
   candidates.sort((a, b) => b.score - a.score);
-  return candidates[0].url;
+  return candidates;
+}
+
+/**
+ * Backwards-compatible top-candidate accessor. New code should call
+ * findMenuUrls() and walk the full list.
+ */
+function findMenuUrl(html, baseUrl) {
+  const list = findMenuUrls(html, baseUrl);
+  return list.length > 0 ? list[0].url : null;
 }
 
 const SCRAPE_HEADERS = {
@@ -3280,6 +3611,14 @@ function validateMenuQuality(sections) {
   return cleaned;
 }
 
+// Section caps — named constants so future readers see the intent and
+// loss points are explicit. Previous inline literals (20 / 3) silently
+// truncated big-chain breakfast cafés (Wildberry-style menus with 15+
+// food categories) and bar-forward concepts (separate Cocktails / Wine
+// / Beer / NA / Coffee sections were capped to 3).
+const MAX_TOTAL_SECTIONS = 50;
+const MAX_DRINK_SECTIONS = 10;
+
 function capMenuSections(sections) {
   if (!sections || sections.length === 0) return sections;
 
@@ -3297,10 +3636,36 @@ function capMenuSections(sections) {
       food.push(s);
     }
   }
-  // Keep all food sections, cap drink sections at 3
-  const result = [...food, ...drink.slice(0, 3)];
-  // Cap total sections at 20
-  return result.slice(0, 20);
+
+  const result = [...food, ...drink.slice(0, MAX_DRINK_SECTIONS)];
+  const droppedDrink = Math.max(0, drink.length - MAX_DRINK_SECTIONS);
+  const droppedTotal = Math.max(0, result.length - MAX_TOTAL_SECTIONS);
+  if (droppedDrink > 0 || droppedTotal > 0) {
+    console.log('[BiteRight][MenuExtract] capMenuSections truncation', {
+      foodSections: food.length,
+      drinkSections: drink.length,
+      droppedDrinkSections: droppedDrink,
+      droppedTotalSections: droppedTotal,
+      maxTotal: MAX_TOTAL_SECTIONS,
+      maxDrink: MAX_DRINK_SECTIONS,
+    });
+  }
+
+  // Per-section telemetry — gated on DEBUG_MENU_EXTRACT so prod logs
+  // stay quiet by default. When investigating a "where did the items
+  // go?" report, set the env var on Render and re-fetch the menu.
+  if (process.env.DEBUG_MENU_EXTRACT) {
+    for (const s of result.slice(0, MAX_TOTAL_SECTIONS)) {
+      console.log('[BiteRight][MenuExtract] section', JSON.stringify({
+        sectionName: s.title || 'Menu',
+        extractedItems: (s.items || []).length,
+        keptItems: (s.items || []).length,
+        discardedItems: 0,
+      }));
+    }
+  }
+
+  return result.slice(0, MAX_TOTAL_SECTIONS);
 }
 
 function detectDietaryTags(text) {
@@ -3569,8 +3934,13 @@ function parseMenuHtml(html) {
   // Detect data-location attribute for SinglePlatform and fetch their hosted page
   // (handled upstream in the endpoint, not here)
 
-  // Remove non-content elements for HTML-based strategies
-  $('style, nav, footer, header, iframe, noscript, svg, form').remove();
+  // Remove non-content elements for HTML-based strategies.
+  // `script` is critical — Soci/chain-location pages (TGI Fridays
+  // /locations/*) embed inline pricing scripts next to each item
+  // (remoteid='…'; pricetag='9.99'; h4_display=…). cheerio's .text()
+  // includes <script> content by default, so without this strip the
+  // raw JS leaks into item descriptions verbatim.
+  $('script, style, nav, footer, header, iframe, noscript, svg, form').remove();
   $('[class*="site-footer"], [class*="site-header"], [class*="cookie-"], [class*="popup"], [class*="modal"], [id*="cookie"]').remove();
 
   const sections = [];
@@ -3620,34 +3990,77 @@ function parseMenuHtml(html) {
       parentMap.get(parentKey).push($container);
     }
 
-    // Process the largest group of siblings (most likely the menu list)
-    let bestGroup = [];
-    for (const [, containers] of parentMap) {
-      if (containers.length > bestGroup.length) bestGroup = containers;
-    }
+    // Process EVERY sibling group, not just the largest. Chain-location
+    // pages (TGI Fridays, Applebee's, Buffalo Wild Wings, etc.) render
+    // each menu section as its own group of repeated item containers
+    // under its own section parent — there are 10-15 distinct groups on
+    // one page. The previous "largest group wins" heuristic kept one
+    // group and threw away every other section (TGI Fridays returned 4
+    // breakfast items out of 120+ items on the page).
+    //
+    // For each group, walk back to find the nearest preceding section
+    // heading and use it as the section title. Groups whose only
+    // heading is "Menu" fall back to that default. Drops empty groups
+    // and groups that look duplicative of an already-extracted one.
+    const groupSections = [];
+    const groupsSortedByCount = Array.from(parentMap.values()).sort((a, b) => b.length - a.length);
 
-    // If we have a decent group, extract items from it
-    if (bestGroup.length >= 2) {
-      // Check for section headings above/around items
-      const $listParent = bestGroup[0].parent();
+    const findSectionTitleFor = ($firstItem) => {
+      // Walk back through previous siblings + parents looking for a
+      // heading (h2/h3/h4/h5) that names this group. Falls back to
+      // ascendant heading then default "Menu".
+      let $cursor = $firstItem;
+      for (let depth = 0; depth < 6; depth++) {
+        let $prev = $cursor.prev();
+        for (let i = 0; i < 6 && $prev.length; i++) {
+          const tag = ($prev.prop('tagName') || '').toLowerCase();
+          if (/^h[1-5]$/.test(tag)) {
+            const t = $prev.text().replace(/\s+/g, ' ').trim();
+            if (t.length >= 2 && t.length < 60 && !SKIP_SECTION_RE.test(t) && !PRICE_RE.test(t)) return t;
+          }
+          $prev = $prev.prev();
+        }
+        const $parent = $cursor.parent();
+        if (!$parent.length || $parent.is('body, html')) break;
+        // Check parent's previous-sibling headings too
+        const $parentPrev = $parent.prev();
+        if ($parentPrev.length) {
+          const ptag = ($parentPrev.prop('tagName') || '').toLowerCase();
+          if (/^h[1-5]$/.test(ptag)) {
+            const t = $parentPrev.text().replace(/\s+/g, ' ').trim();
+            if (t.length >= 2 && t.length < 60 && !SKIP_SECTION_RE.test(t) && !PRICE_RE.test(t)) return t;
+          }
+          // Or a heading INSIDE the parent's previous block
+          const $hInside = $parentPrev.find('h1, h2, h3, h4, h5').first();
+          if ($hInside.length) {
+            const t = $hInside.text().replace(/\s+/g, ' ').trim();
+            if (t.length >= 2 && t.length < 60 && !SKIP_SECTION_RE.test(t) && !PRICE_RE.test(t)) return t;
+          }
+        }
+        $cursor = $parent;
+      }
+      return 'Menu';
+    };
 
-      // Process each item container
-      for (const $item of bestGroup) {
+    for (const group of groupsSortedByCount) {
+      if (group.length < 2) continue;
+
+      const sectionTitle = findSectionTitleFor(group[0]);
+      const groupSection = { title: sectionTitle, items: [] };
+
+      for (const $item of group) {
         const itemText = $item.text().replace(/\s+/g, ' ').trim();
         const priceMatch = itemText.match(PRICE_RE);
         if (!priceMatch) continue;
 
         const price = `$${parseFloat(priceMatch[1]).toFixed(2)}`;
 
-        // Try to isolate name vs description
-        // Look for a heading or bold/strong element as the item name
         const $nameEl = $item.find('h1, h2, h3, h4, h5, h6, strong, b, [class*="name"], [class*="title"], [class*="item-name"], [class*="dish"]').first();
         let name = '';
         let description = '';
 
         if ($nameEl.length) {
           name = $nameEl.text().replace(/\s+/g, ' ').trim();
-          // Description is the remaining text minus name and price
           description = itemText
             .replace(name, '')
             .replace(priceMatch[0], '')
@@ -3655,25 +4068,20 @@ function parseMenuHtml(html) {
             .replace(/^[\s\-–—·|]+/, '')
             .trim();
         } else {
-          // Split at price — name is before, description after
           const priceIdx = itemText.indexOf(priceMatch[0]);
           const before = itemText.substring(0, priceIdx).trim();
           const after = itemText.substring(priceIdx + priceMatch[0].length).trim();
-
-          // Name is typically the first meaningful chunk
           const lines = before.split(/[.\n|–—]/);
           name = (lines[0] || '').trim();
           description = (lines.slice(1).join('. ').trim() || after).replace(/^[\s\-–—·|]+/, '').trim();
         }
 
-        // Clean up: remove prices that leaked into name
         name = name.replace(PRICE_RE, '').replace(/\s+/g, ' ').trim();
 
         if (!name || name.length < 2 || name.length > 120) continue;
-        // Skip items that are clearly not food
         if (/^\d+$/.test(name) || /^(page|home|back|next|previous|copyright)/i.test(name)) continue;
 
-        currentSection.items.push({
+        groupSection.items.push({
           name: name.substring(0, 80),
           description: description && description.length > 2 ? description.substring(0, 200) : null,
           price,
@@ -3681,12 +4089,55 @@ function parseMenuHtml(html) {
           photoUrl: null,
         });
       }
+
+      // Per-group telemetry — structured log so we can debug chain-
+      // location extractions without re-instrumenting.
+      console.log('[BiteRight][MenuExtract] strategy1 group', {
+        sectionName: sectionTitle,
+        rawItemsFound: group.length,
+        extractedItems: groupSection.items.length,
+        discardedItems: group.length - groupSection.items.length,
+      });
+
+      if (groupSection.items.length > 0) groupSections.push(groupSection);
+    }
+
+    // Dedup sections that share a title (same section split across two
+    // sibling groups by the page layout — e.g. a row-of-4 plus a row-of-2).
+    if (groupSections.length > 0) {
+      const merged = new Map();
+      for (const s of groupSections) {
+        const key = s.title.toLowerCase();
+        if (merged.has(key)) {
+          const acc = merged.get(key);
+          for (const it of s.items) {
+            if (!acc.items.some((x) => x.name.toLowerCase() === it.name.toLowerCase())) {
+              acc.items.push(it);
+            }
+          }
+        } else {
+          merged.set(key, { ...s });
+        }
+      }
+      // currentSection becomes the FIRST extracted section; the rest go
+      // straight into the sections array below (we still let Strategy 2
+      // run if the total here is < 3 items — same gate as before).
+      const allSections = Array.from(merged.values());
+      sections.push(...allSections);
+      // Reset currentSection so the "push final section" step below
+      // doesn't double-push the first one. Strategy 2's heading-walk
+      // gate (currentSection.items.length < 3) still works correctly
+      // because we measure across the sections array there too.
+      currentSection = { title: 'Menu', items: [] };
     }
   }
 
   // ─── Strategy 2: Heading-based section walk ───
   // Walk through headings and collect items with prices under each heading
-  if (currentSection.items.length < 3) {
+  // Gate counts items across BOTH currentSection AND the sections array
+  // because Strategy 1 now pushes multiple groups directly to `sections`.
+  const strategy1Total = sections.reduce((n, s) => n + (s.items?.length || 0), 0) + currentSection.items.length;
+  if (strategy1Total < 3) {
     // Reset — strategy 1 didn't yield enough
     currentSection = { title: 'Menu', items: [] };
 
@@ -5030,53 +5481,240 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
         if (typeof resp.data === 'string') homepageHtml = resp.data;
       } catch { /* ignore */ }
 
-      // 1b. Follow menu links found on homepage FIRST (dedicated menu page is better than homepage)
+      // 1b. Walk the full ranked list of menu candidates discovered on
+      // the homepage. Previously we tried only the single top candidate
+      // and gave up if its scrape returned zero items — that strategy
+      // breaks for hub pages (Squarespace /food-menus, Webflow gallery
+      // indexes) where the top URL is a directory of sub-menus, not a
+      // dish list. Now: try each candidate in priority order until one
+      // returns items; for any candidate that returns zero, also follow
+      // ITS internal menu links (one level deep) before moving on.
+      const menuTrace = []; // structured telemetry buffer
       if (homepageHtml) {
-        const menuPageUrl = findMenuUrl(homepageHtml, websiteUrl);
-        if (menuPageUrl && menuPageUrl !== websiteUrl) {
-          console.log('[BiteRight] menu: following menu link', { menuPageUrl });
-          menuSections = await scrapeMenuFromUrl(menuPageUrl);
+        const candidates = findMenuUrls(homepageHtml, websiteUrl);
+        console.log('[BiteRight][MenuTrace] homepage candidates', {
+          websiteUrl,
+          count: candidates.length,
+          top5: candidates.slice(0, 5).map((c) => ({ url: c.url, score: c.score, reason: c.reasonDiscovered, text: c.anchorText })),
+        });
 
-          // If the menu link page didn't have menu items, check if it links deeper
-          if (!menuSections) {
-            try {
-              const { data: subHtml } = await axios.get(menuPageUrl, {
-                timeout: 8000,
-                headers: SCRAPE_HEADERS,
-                maxRedirects: 5,
-                responseType: 'text',
-              });
-              if (typeof subHtml === 'string') {
-                // Check for SinglePlatform embed on the menu page
-                menuSections = await tryThirdPartyMenuProviders(subHtml, menuPageUrl);
-                // Follow deeper menu links
-                if (!menuSections) {
-                  const deeperUrl = findMenuUrl(subHtml, menuPageUrl);
-                  if (deeperUrl && deeperUrl !== menuPageUrl && deeperUrl !== websiteUrl) {
-                    console.log('[BiteRight] menu: following deeper menu link', { deeperUrl });
-                    menuSections = await scrapeMenuFromUrl(deeperUrl);
+        // Walk every top-scoring candidate and AGGREGATE the menus they
+        // yield, rather than bailing on the first successful one.
+        //
+        // The previous logic broke as soon as any single URL returned
+        // ≥1 item, which is the wrong behavior for hospitality / hotel
+        // sites that expose menus as separate links: Bar Pendry has
+        // Food Menu + Cocktail Menu + Social Hour + Late Night each at
+        // their own URL/anchor. The old loop took the 3 items from
+        // Food Menu and stopped — Cocktail/Social Hour/Late Night were
+        // discovered but never fetched, never extracted, never shown.
+        //
+        // New behavior:
+        //   - Keep walking candidates until either (a) we've tried all 6,
+        //     or (b) the aggregate item count crosses a "satisfying" cap.
+        //   - Dedup sections by normalized title so two distinct food
+        //     menus with one shared section ("Appetizers") don't bloat.
+        //   - Tag each contributed section with menuType inferred from
+        //     the anchor text (Cocktail Menu → cocktails, Late Night →
+        //     late_night) so assignMenuGroups places them correctly
+        //     even when the inner section titles are generic.
+        const aggregatedSectionsByKey = new Map();
+        const AGGREGATE_SATURATION = 40; // stop fetching more menus once we have plenty
+        const inferMenuType = (anchor) => {
+          const a = (anchor || '').toLowerCase();
+          if (/\b(cocktail|drink|spirit|liquor|beverage|wine|beer)s?\b/.test(a)) return 'cocktails';
+          if (/\b(brunch)\b/.test(a)) return 'brunch';
+          if (/\b(breakfast|morning)\b/.test(a)) return 'breakfast';
+          if (/\b(lunch)\b/.test(a)) return 'lunch';
+          if (/\b(dinner|supper)\b/.test(a)) return 'dinner';
+          if (/\b(late[- ]?night)\b/.test(a)) return 'dinner';
+          if (/\b(social\s+hour|happy\s+hour)\b/.test(a)) return 'food';
+          if (/\b(dessert|pastry|sweet)\b/.test(a)) return 'dessert';
+          if (/\b(food|kitchen)\b/.test(a)) return 'food';
+          return null;
+        };
+
+        for (const cand of candidates.slice(0, 6)) {
+          if (cand.url === websiteUrl) continue;
+          const aggregateCount = Array.from(aggregatedSectionsByKey.values())
+            .reduce((n, s) => n + (s.items?.length || 0), 0);
+          if (aggregateCount >= AGGREGATE_SATURATION) break;
+
+          const candSections = await scrapeMenuFromUrl(cand.url);
+          const itemCount = candSections ? candSections.reduce((n, s) => n + (s.items?.length || 0), 0) : 0;
+          menuTrace.push({
+            url: cand.url,
+            reasonDiscovered: cand.reasonDiscovered,
+            anchorText: cand.anchorText,
+            menuScore: cand.score,
+            menuType: inferMenuType(cand.anchorText),
+            fetched: true,
+            extractionResult: candSections ? 'sections' : 'null',
+            itemCount,
+            includedInFinalMenu: !!(candSections && itemCount > 0),
+          });
+          console.log('[BiteRight][MenuTrace] candidate result', menuTrace[menuTrace.length - 1]);
+
+          // Aggregate any non-empty sections. Stamp menuType on each so
+          // assignMenuGroups can route them. Dedup by normalized title:
+          // when two candidates ship a section with the same name, keep
+          // the one with more items (the more complete extraction).
+          if (candSections && candSections.length > 0 && itemCount > 0) {
+            const menuType = inferMenuType(cand.anchorText);
+            for (const sec of candSections) {
+              if (!sec.items || sec.items.length === 0) continue;
+              const key = (sec.title || 'Menu').toLowerCase().trim();
+              const incoming = { ...sec, group: menuType || sec.group };
+              const existing = aggregatedSectionsByKey.get(key);
+              if (!existing || (existing.items?.length || 0) < incoming.items.length) {
+                aggregatedSectionsByKey.set(key, incoming);
+              }
+            }
+          }
+
+          // Skip hub-walking when this candidate itself produced items —
+          // hub-walk is only useful when the candidate is empty.
+          if (candSections && candSections.length > 0 && itemCount > 0) continue;
+          // Otherwise: keep the original hub-page handling for this
+          // candidate (re-fetch, try providers, walk deeper). Replace
+          // menuSections reference below with the legacy variable so
+          // existing telemetry still fires.
+          menuSections = candSections;
+
+          // Hub-page handling: candidate fetched but yielded no items.
+          // Re-fetch the page so we can scan for second-level menu
+          // links (the sub-menus inside a hub like /food-menus → /lunch
+          // → /brunch). Also try third-party provider embeds on this
+          // intermediate page in case the hub is actually Popmenu or
+          // SinglePlatform.
+          try {
+            const { data: subHtml } = await axios.get(cand.url, {
+              timeout: 8000,
+              headers: SCRAPE_HEADERS,
+              maxRedirects: 5,
+              responseType: 'text',
+            });
+            if (typeof subHtml === 'string') {
+              const providerSections = await tryThirdPartyMenuProviders(subHtml, cand.url);
+              if (providerSections) {
+                const pCount = providerSections.reduce((n, s) => n + (s.items?.length || 0), 0);
+                menuTrace.push({ url: cand.url, reasonDiscovered: 'third-party-on-hub', fetched: true, extractionResult: 'provider', itemCount: pCount, includedInFinalMenu: true });
+                const menuType = inferMenuType(cand.anchorText);
+                for (const sec of providerSections) {
+                  if (!sec.items || sec.items.length === 0) continue;
+                  const key = (sec.title || 'Menu').toLowerCase().trim();
+                  const incoming = { ...sec, group: menuType || sec.group };
+                  const existing = aggregatedSectionsByKey.get(key);
+                  if (!existing || (existing.items?.length || 0) < incoming.items.length) {
+                    aggregatedSectionsByKey.set(key, incoming);
                   }
                 }
+                continue;
               }
-            } catch { /* ignore */ }
+              const deeper = findMenuUrls(subHtml, cand.url).slice(0, 4);
+              for (const dCand of deeper) {
+                if (dCand.url === cand.url || dCand.url === websiteUrl) continue;
+                const deepSections = await scrapeMenuFromUrl(dCand.url);
+                const dCount = deepSections ? deepSections.reduce((n, s) => n + (s.items?.length || 0), 0) : 0;
+                menuTrace.push({
+                  url: dCand.url,
+                  reasonDiscovered: `deep:${dCand.reasonDiscovered}`,
+                  anchorText: dCand.anchorText,
+                  menuScore: dCand.score,
+                  menuType: inferMenuType(dCand.anchorText || cand.anchorText),
+                  fetched: true,
+                  extractionResult: deepSections ? 'sections' : 'null',
+                  itemCount: dCount,
+                  includedInFinalMenu: !!(deepSections && dCount > 0),
+                });
+                console.log('[BiteRight][MenuTrace] deeper candidate result', menuTrace[menuTrace.length - 1]);
+                // Aggregate deeper hits too — when a hub has e.g. Food
+                // Menu → Lunch Menu and Cocktail Menu → Bar Bites Menu,
+                // both leaves contribute.
+                if (deepSections && deepSections.length > 0 && dCount > 0) {
+                  const menuType = inferMenuType(dCand.anchorText || cand.anchorText);
+                  for (const sec of deepSections) {
+                    if (!sec.items || sec.items.length === 0) continue;
+                    const key = (sec.title || 'Menu').toLowerCase().trim();
+                    const incoming = { ...sec, group: menuType || sec.group };
+                    const existing = aggregatedSectionsByKey.get(key);
+                    if (!existing || (existing.items?.length || 0) < incoming.items.length) {
+                      aggregatedSectionsByKey.set(key, incoming);
+                    }
+                  }
+                  // Walk all deeper candidates; don't bail on first hit.
+                }
+              }
+            }
+          } catch (err) {
+            menuTrace.push({ url: cand.url, reasonDiscovered: cand.reasonDiscovered, fetched: false, extractionResult: 'fetch-error', error: err?.message });
           }
+        }
+
+        // Pull the aggregated map into the menuSections variable that
+        // the rest of the pipeline consumes. When the aggregator has
+        // accumulated at least one section across any number of URLs,
+        // use the aggregated list — this is what surfaces multi-menu
+        // hospitality sites (Bar Pendry: Food + Cocktails + Social Hour
+        // + Late Night) as a single combined menu instead of the
+        // 3-item slice the previous early-break produced.
+        if (aggregatedSectionsByKey.size > 0) {
+          menuSections = Array.from(aggregatedSectionsByKey.values());
+          const totalAgg = menuSections.reduce((n, s) => n + (s.items?.length || 0), 0);
+          console.log('[BiteRight][MenuTrace] aggregated multi-menu', {
+            sectionCount: menuSections.length,
+            totalItems: totalAgg,
+            sources: menuTrace.filter((t) => t.includedInFinalMenu).length,
+          });
         }
       }
 
-      // 1c. Try common menu URL paths
+      // 1c. Try common menu URL paths. Expanded to cover meal-period and
+      // beverage paths used by Squarespace / Webflow / WordPress sites
+      // whose menu navigation doesn't include the literal "menu" word in
+      // the URL (e.g. /lunch, /brunch, /beer-list).
       if (!menuSections) {
-        const commonMenuPaths = ['/menu', '/food', '/our-menu', '/food-menu', '/dining', '/eat'];
+        const commonMenuPaths = [
+          '/menu', '/menus', '/food', '/food-menu', '/food-menus',
+          '/our-menu', '/our-menus', '/dining', '/eat', '/eats',
+          '/lunch', '/dinner', '/brunch', '/breakfast', '/supper',
+          '/lunch-menu', '/dinner-menu', '/brunch-menu',
+          '/drinks', '/drink-menu', '/drink-menus',
+          '/beer-list', '/wine-list', '/cocktails', '/cocktail-menu',
+          '/tasting-menu', '/prix-fixe', '/view-menu',
+        ];
         try {
           const origin = new URL(websiteUrl).origin;
           for (const path of commonMenuPaths) {
             const directUrl = origin + path;
-            menuSections = await scrapeMenuFromUrl(directUrl);
-            if (menuSections && menuSections.length > 0) {
+            const directSections = await scrapeMenuFromUrl(directUrl);
+            const dCount = directSections ? directSections.reduce((n, s) => n + (s.items?.length || 0), 0) : 0;
+            menuTrace.push({
+              url: directUrl,
+              reasonDiscovered: 'common-path',
+              fetched: true,
+              extractionResult: directSections ? 'sections' : 'null',
+              itemCount: dCount,
+            });
+            if (directSections && directSections.length > 0 && dCount > 0) {
+              menuSections = directSections;
               console.log('[BiteRight] menu: found via direct path', { directUrl });
               break;
             }
           }
         } catch { /* ignore URL parse errors */ }
+      }
+
+      // Summary log — surfaces the entire candidate journey so debugging
+      // "why did <restaurant> return no menu" no longer requires
+      // re-instrumenting from scratch.
+      if (!menuSections && menuTrace.length > 0) {
+        console.log('[BiteRight][MenuTrace] EXHAUSTED — no candidate yielded items', {
+          restaurantId,
+          websiteUrl,
+          tried: menuTrace.length,
+          trace: menuTrace,
+        });
       }
 
       // 1d. Detect third-party menu providers (SinglePlatform, Popmenu, etc.)
@@ -5126,29 +5764,72 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
     if (websiteUrl) {
       console.log('[BiteRight] menu: trying Puppeteer render', { restaurantId });
 
-      // Try the website itself, then common menu paths
+      // URL list: website itself, common /menu and /our-menu paths, AND
+      // the top-N ranked menu candidates discovered earlier. Without the
+      // candidate-list expansion, JS-rendered location-aware chains
+      // (Wildberry's /locations/<location>/menu, Backstage-CMS sites,
+      // custom-React menus on non-standard paths) silently failed: the
+      // axios pass returned the JS shell with 0 items, and Puppeteer
+      // tried only /menu and /our-menu (both 404 on chain sites whose
+      // menus live under /locations).
       const urlsToTry = [websiteUrl];
       try {
         const origin = new URL(websiteUrl).origin;
         urlsToTry.push(origin + '/menu', origin + '/our-menu');
-        // Also add any menu link we found earlier
         if (homepageHtml) {
-          const menuLink = findMenuUrl(homepageHtml, websiteUrl);
-          if (menuLink && !urlsToTry.includes(menuLink)) urlsToTry.push(menuLink);
+          // Pull the top 4 ranked candidates from findMenuUrls — covers
+          // location pages, deeper hub-and-spoke routes, multi-menu
+          // hospitality sites that Puppeteer can render.
+          const candidates = findMenuUrls(homepageHtml, websiteUrl);
+          for (const cand of candidates.slice(0, 4)) {
+            if (!urlsToTry.includes(cand.url)) urlsToTry.push(cand.url);
+          }
         }
       } catch { /* ignore */ }
 
+      // Aggregate Puppeteer results across the URL list — for multi-
+      // location chains where each location renders independently, this
+      // lets us combine sections rather than bailing on the first hit.
+      const puppeteerAggregated = new Map();
+      const PUPPETEER_SATURATION = 40;
       for (const tryUrl of urlsToTry) {
-        let puppeteerSections = await renderAndScrapeMenu(tryUrl);
-        if (puppeteerSections && puppeteerSections.length > 0) {
-          puppeteerSections = capMenuSections(puppeteerSections);
-          const totalItems = puppeteerSections.reduce((n, s) => n + s.items.length, 0);
-          if (totalItems >= 2) {
-            result.sections = puppeteerSections;
-            result.source = 'generic_scrape';
-            console.log('[BiteRight] menu: Puppeteer found menu', { restaurantId, url: tryUrl, totalItems });
-            return res.json(await finalize('generic_scrape', tryUrl));
+        const aggregateCount = Array.from(puppeteerAggregated.values())
+          .reduce((n, s) => n + (s.items?.length || 0), 0);
+        if (aggregateCount >= PUPPETEER_SATURATION) break;
+
+        const renderedSections = await renderAndScrapeMenu(tryUrl);
+        const itemCount = renderedSections
+          ? renderedSections.reduce((n, s) => n + (s.items?.length || 0), 0)
+          : 0;
+        console.log('[BiteRight][MenuExtract] puppeteer candidate', {
+          url: tryUrl, sectionCount: renderedSections?.length ?? 0, itemCount,
+        });
+        if (renderedSections && itemCount > 0) {
+          for (const sec of renderedSections) {
+            if (!sec.items || sec.items.length === 0) continue;
+            const key = (sec.title || 'Menu').toLowerCase().trim();
+            const existing = puppeteerAggregated.get(key);
+            if (!existing || (existing.items?.length || 0) < sec.items.length) {
+              puppeteerAggregated.set(key, sec);
+            }
           }
+        }
+      }
+
+      if (puppeteerAggregated.size > 0) {
+        let puppeteerSections = Array.from(puppeteerAggregated.values());
+        puppeteerSections = capMenuSections(puppeteerSections);
+        const totalItems = puppeteerSections.reduce((n, s) => n + s.items.length, 0);
+        if (totalItems >= 2) {
+          result.sections = puppeteerSections;
+          result.source = 'generic_scrape';
+          console.log('[BiteRight] menu: Puppeteer found menu', {
+            restaurantId,
+            urlsTried: urlsToTry.length,
+            sectionsAfterCap: puppeteerSections.length,
+            totalItems,
+          });
+          return res.json(await finalize('generic_scrape', websiteUrl));
         }
       }
     }

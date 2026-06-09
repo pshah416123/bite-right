@@ -296,10 +296,21 @@ function AvatarHeader({
   displayName: string;
   onPress: () => void;
 }) {
+  // Reset the errored flag when avatarUrl changes — without this, once
+  // any URL failed to load, subsequent uploads stayed invisible because
+  // errored stuck at true and the gradient fallback kept rendering even
+  // when the new image was perfectly valid. This is the "I changed my
+  // photo but the old initials/gradient still shows" bug.
   const [errored, setErrored] = useState(false);
+  useEffect(() => { setErrored(false); }, [avatarUrl]);
   const showImage = !!avatarUrl && !errored;
   const node = showImage ? (
     <Image
+      // Cache-bust the URI when it includes a timestamp (our upload path
+      // is <userId>/<Date.now()>.<ext> so each upload has a unique URL).
+      // For overrides that reuse the same URL, the key prop forces React
+      // Native to discard any cached image data tied to the old URI.
+      key={avatarUrl}
       source={{ uri: avatarUrl as string }}
       style={s.avatar}
       onError={() => setErrored(true)}
