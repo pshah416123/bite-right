@@ -113,7 +113,7 @@ export function SearchOverlay({
           JSON.stringify({ id: restaurantId, name: suggestion.name, cuisine: '' }),
         );
         onClose();
-        router.push(`/(tabs)/restaurant/${encodeURIComponent(restaurantId)}?payload=${payload}`);
+        router.push(`/restaurant/${encodeURIComponent(restaurantId)}?payload=${payload}`);
         return;
       }
 
@@ -134,7 +134,7 @@ export function SearchOverlay({
           }),
         );
         onClose();
-        router.push(`/(tabs)/restaurant/${encodeURIComponent(res.restaurantId)}?payload=${payload}`);
+        router.push(`/restaurant/${encodeURIComponent(res.restaurantId)}?payload=${payload}`);
       } catch {
         const payload = encodeURIComponent(
           JSON.stringify({
@@ -146,7 +146,7 @@ export function SearchOverlay({
           }),
         );
         onClose();
-        router.push(`/(tabs)/restaurant/${encodeURIComponent(suggestion.placeId)}?payload=${payload}`);
+        router.push(`/restaurant/${encodeURIComponent(suggestion.placeId)}?payload=${payload}`);
       }
     },
     [router, onClose],

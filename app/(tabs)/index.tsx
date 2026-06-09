@@ -152,9 +152,17 @@ export default function FeedScreen() {
   // or from a detail screen), snap the list to the top. Without this, the
   // feed stayed wherever the user left off — confusing for the "home"
   // screen, which should always present the freshest content first.
+  //
+  // Deferred with requestAnimationFrame so the scroll runs after the
+  // FlatList has remounted/measured. Without the deferral, the call
+  // fires before the ref is fully populated and silently no-ops — so
+  // testers landed at their last scroll position instead of the top.
   useFocusEffect(
     useCallback(() => {
-      listRef.current?.scrollToOffset({ offset: 0, animated: false });
+      const raf = requestAnimationFrame(() => {
+        listRef.current?.scrollToOffset({ offset: 0, animated: false });
+      });
+      return () => cancelAnimationFrame(raf);
     }, []),
   );
 

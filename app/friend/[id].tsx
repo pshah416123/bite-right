@@ -337,7 +337,7 @@ export default function FriendProfileScreen() {
             return (
               <TouchableOpacity
                 style={s.logRow}
-                onPress={() => router.push(`/(tabs)/restaurant/${encodeURIComponent(item.restaurantId)}?logId=${encodeURIComponent(item.id)}`)}
+                onPress={() => router.push(`/restaurant/${encodeURIComponent(item.restaurantId)}?logId=${encodeURIComponent(item.id)}`)}
                 activeOpacity={0.8}
               >
                 <View style={s.logThumbWrap}>

@@ -802,7 +802,7 @@ export default function ProfileScreen() {
                       key={group.restaurantId}
                       group={group}
                       onPress={() =>
-                        router.push(`/(tabs)/restaurant/${encodeURIComponent(group.restaurantId)}`)
+                        router.push(`/restaurant/${encodeURIComponent(group.restaurantId)}`)
                       }
                     />
                   ))}
@@ -815,7 +815,7 @@ export default function ProfileScreen() {
                       key={group.restaurantId}
                       group={group}
                       onPress={() =>
-                        router.push(`/(tabs)/restaurant/${encodeURIComponent(group.restaurantId)}`)
+                        router.push(`/restaurant/${encodeURIComponent(group.restaurantId)}`)
                       }
                     />
                   ))}
@@ -900,7 +900,7 @@ export default function ProfileScreen() {
                     item={item}
                     onPress={() =>
                       router.push(
-                        `/(tabs)/restaurant/${encodeURIComponent(item.restaurantId ?? item.place_id)}`,
+                        `/restaurant/${encodeURIComponent(item.restaurantId ?? item.place_id)}`,
                       )
                     }
                   />
