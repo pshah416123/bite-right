@@ -91,9 +91,20 @@ test('Zuzu — ALL-CAPS dish names without category words must NOT become sectio
   assert(!sectionExists(result, /^shrimp\s?tempura$/i), 'SHRIMP TEMPURA is NOT a section title');
   assert(!sectionExists(result, /^bluefin$/i), 'BLUEFIN is NOT a section title');
   assert(!sectionExists(result, /^jalape/i), 'JALAPEÑO HAMACHI / JALAPEÑO would not become a section');
-  assert(sectionExists(result, /zuzu\s?rolls/i), 'ZUZU ROLLS IS a section (recognized as "rolls" category)');
   assert(hasItem(result, /Gekkeikan/i), 'Gekkeikan dish is captured');
   assert(hasItem(result, /Junmai Daiginjo Joto/i), 'Junmai Daiginjo Joto is captured');
+  // Category-consistency pass: sake items must NOT live under a food
+  // header. With this fixture only sake items get prices (sushi prices
+  // are split across columns), so "Zuzu Rolls" ends up empty/sake-only
+  // and gets relabeled into Sake.
+  const sakeItems = flatten(result).filter((it) =>
+    /Junmai|Gekkeikan|Nigori|Hakutsuru/i.test(it.name),
+  );
+  assert(sakeItems.length >= 4, `sake items survive (got ${sakeItems.length})`);
+  assert(
+    sakeItems.every((it) => /sake|beverage/i.test(it._section)),
+    'all sake items live under a Sake/Beverage section, not under a food header',
+  );
 });
 
 test('Zuzu — mid-section fragments like "Your choice of $2" are rejected', () => {
@@ -137,6 +148,58 @@ test('Single-item sections are dropped or merged into the previous section', () 
   // a fake 1-item section.
   assert(!sectionExists(result, /^lobster\s?tempura$/i), 'no LOBSTER TEMPURA fake section');
   assert(hasItem(result, /Whole Maine Lobster/i), 'Whole Maine Lobster is captured somewhere');
+});
+
+test('Mixed-bleed: food section with one bleed-in sake item hoists the sake', () => {
+  const mixed = [
+    'SUSHI ROLLS',
+    'Spicy Tuna Roll.....14',
+    'California Roll.....10',
+    'Dragon Roll.....18',
+    'Junmai Daiginjo Dassai.....145',  // column-bleed sake item
+    'Rainbow Roll.....20',
+    'DESSERTS',
+    'Mochi Ice Cream.....8',
+    'Green Tea Cake.....9',
+  ].join('\n');
+  const result = parsePdfTextToSections(mixed);
+  assert(result !== null, 'non-null');
+  if (!result) return;
+  console.log('    sections:', sectionTitles(result).join(' | '));
+  const flat = flatten(result);
+  const dassai = flat.find((it) => /Dassai/i.test(it.name));
+  assert(!!dassai, 'Dassai item survived');
+  if (dassai) {
+    assert(/sake|beverage/i.test(dassai._section), `Dassai is under Sake/Beverage section (got "${dassai._section}")`);
+  }
+  assert(
+    flat.some((it) => /Spicy Tuna/i.test(it.name) && /sushi|rolls/i.test(it._section)),
+    'Spicy Tuna Roll stays under Sushi Rolls',
+  );
+  assert(
+    flat.some((it) => /Mochi/i.test(it.name) && /dessert/i.test(it._section)),
+    'Mochi stays under Desserts',
+  );
+});
+
+test('Beverage flavor descriptors like "Light & Dry" are dropped', () => {
+  const flavorText = [
+    'SAKE',
+    'Junmai Ginjo.....45',
+    'Light & Dry.....3',          // tasting note captured with stray price
+    'Daiginjo Premium.....95',
+    'Full & Sweet.....2',          // tasting note captured with stray price
+    'Nigori Hakutsuru.....27',
+  ].join('\n');
+  const result = parsePdfTextToSections(flavorText);
+  assert(result !== null, 'non-null');
+  if (!result) return;
+  const flat = flatten(result);
+  console.log('    items:', flat.map((i) => i.name).join(' | '));
+  assert(!flat.some((it) => /^light\s*&\s*dry$/i.test(it.name)), '"Light & Dry" descriptor dropped');
+  assert(!flat.some((it) => /^full\s*&\s*sweet$/i.test(it.name)), '"Full & Sweet" descriptor dropped');
+  assert(flat.some((it) => /Junmai Ginjo/i.test(it.name)), 'real sake survives');
+  assert(flat.some((it) => /Nigori/i.test(it.name)), 'Nigori survives');
 });
 
 test('Standard well-structured single-column menu still parses correctly', () => {

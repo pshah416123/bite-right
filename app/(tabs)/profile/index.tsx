@@ -17,6 +17,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useFeedContext } from '~/src/context/FeedContext';
 import { useSavedRestaurants } from '~/src/context/SavedRestaurantsContext';
 import { getMe, type UserSummary } from '~/src/api/users';
+import { useAuthContext } from '~/src/context/AuthContext';
 import type { SavedRestaurantItem } from '~/src/api/saved';
 import { getSocialProfile } from '~/src/data/socialProfiles';
 import { RestaurantImage } from '~/src/components/RestaurantImage';
@@ -99,6 +100,7 @@ type VisitGroup = {
 // ── EatsCard ─────────────────────────────────────────────────────────────────
 
 function EatsCard({ group, onPress }: { group: VisitGroup; onPress: () => void }) {
+  const repeat = group.visitCount > 1;
   return (
     <TouchableOpacity style={eats.card} onPress={onPress} activeOpacity={0.88}>
       <RestaurantImage
@@ -114,9 +116,15 @@ function EatsCard({ group, onPress }: { group: VisitGroup; onPress: () => void }
       <View style={eats.scoreBadge}>
         <Text style={eats.scoreText}>{group.bestScore.toFixed(1)}</Text>
       </View>
+      {repeat ? (
+        <View style={eats.visitBadge}>
+          <Ionicons name="repeat" size={10} color="#fff" />
+          <Text style={eats.visitBadgeText}>{group.visitCount}</Text>
+        </View>
+      ) : null}
       <View style={eats.info}>
         <Text style={eats.name} numberOfLines={2}>{group.restaurantName}</Text>
-        {group.visitCount > 1 && (
+        {repeat && (
           <Text style={eats.visits}>{group.visitCount} visits</Text>
         )}
       </View>
@@ -128,6 +136,7 @@ function EatsCard({ group, onPress }: { group: VisitGroup; onPress: () => void }
 
 function EatsListRow({ group, onPress }: { group: VisitGroup; onPress: () => void }) {
   const meta = [group.cuisine, group.neighborhood].filter(Boolean).join(' · ');
+  const repeat = group.visitCount > 1;
   return (
     <TouchableOpacity style={elist.row} onPress={onPress} activeOpacity={0.8}>
       <View style={elist.thumbWrap}>
@@ -140,7 +149,15 @@ function EatsListRow({ group, onPress }: { group: VisitGroup; onPress: () => voi
         />
       </View>
       <View style={elist.info}>
-        <Text style={elist.name} numberOfLines={1}>{group.restaurantName}</Text>
+        <View style={elist.nameRow}>
+          <Text style={elist.name} numberOfLines={1}>{group.restaurantName}</Text>
+          {repeat ? (
+            <View style={elist.visitPill}>
+              <Ionicons name="repeat" size={10} color={colors.accent} />
+              <Text style={elist.visitPillText}>{group.visitCount}</Text>
+            </View>
+          ) : null}
+        </View>
         {meta ? <Text style={elist.meta} numberOfLines={1}>{meta}</Text> : null}
         {group.note ? <Text style={elist.note} numberOfLines={1}>{group.note}</Text> : null}
       </View>
@@ -166,7 +183,18 @@ const elist = StyleSheet.create({
   thumbWrap: { width: 48, height: 48, borderRadius: 12, overflow: 'hidden' },
   thumb: { width: 48, height: 48 },
   info: { flex: 1 },
-  name: { fontSize: 15, fontWeight: '700', color: colors.text, letterSpacing: -0.2 },
+  nameRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  name: { fontSize: 15, fontWeight: '700', color: colors.text, letterSpacing: -0.2, flexShrink: 1 },
+  visitPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 999,
+    backgroundColor: colors.accentSoft,
+  },
+  visitPillText: { fontSize: 11, fontWeight: '700', color: colors.accent },
   meta: { fontSize: 12, fontWeight: '500', color: colors.textMuted, marginTop: 1 },
   note: { fontSize: 12, fontWeight: '500', color: colors.textFaint, fontStyle: 'italic', marginTop: 2 },
   scorePill: {
@@ -203,6 +231,19 @@ const eats = StyleSheet.create({
     paddingVertical: 2,
   },
   scoreText: { fontSize: 10, fontWeight: '800', color: '#fff' },
+  visitBadge: {
+    position: 'absolute',
+    top: 6,
+    left: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    borderRadius: 999,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  visitBadgeText: { fontSize: 10, fontWeight: '800', color: '#fff' },
   info: { padding: 10, paddingTop: 8 },
   name: { fontSize: 13, fontWeight: '700', color: colors.text, lineHeight: 18 },
   visits: { fontSize: 11, color: colors.textMuted, marginTop: 2, fontWeight: '500' },
@@ -354,6 +395,8 @@ export default function ProfileScreen() {
 
   const { items } = useFeedContext();
   const { savedRestaurants } = useSavedRestaurants();
+  const auth = useAuthContext();
+  const myUserId = auth.user?.id ?? null;
   const [me, setMe] = useState<UserSummary | null>(null);
   const [activeTab, setActiveTab] = useState<'eats' | 'saved'>('eats');
   const [eatsView, setEatsView] = useState<'grid' | 'list'>('list');
@@ -386,10 +429,22 @@ export default function ProfileScreen() {
   // demo "You went to Lou Malnati's" entry with no userId, which inflated
   // the self-profile log count by 1. Real logs from /api/feed always carry
   // a userId; the seed never will.
-  const profileLogs = useMemo(
-    () => items.filter((l) => l.userName === profileUserName && (!isSelf || !!l.userId)),
-    [items, profileUserName, isSelf],
-  );
+  //
+  // For the SELF profile, we also include logs where the current user was
+  // tagged (`taggedUsers` contains their userId). Being tagged means they
+  // were actually at that restaurant with the author, so the visit
+  // belongs in "My Eats" alongside their authored logs. The visit-count
+  // grouper below treats tagged and authored visits equally — exactly
+  // what we want for "how many times have I been here?".
+  const profileLogs = useMemo(() => {
+    return items.filter((l) => {
+      if (l.userName === profileUserName && (!isSelf || !!l.userId)) return true;
+      if (isSelf && myUserId && Array.isArray(l.taggedUsers)) {
+        return l.taggedUsers.some((t) => t.userId === myUserId);
+      }
+      return false;
+    });
+  }, [items, profileUserName, isSelf, myUserId]);
 
   const visitGroups = useMemo<VisitGroup[]>(() => {
     const byId: Record<string, VisitGroup> = {};
@@ -614,6 +669,9 @@ export default function ProfileScreen() {
             />
             <View style={s.headerInfo}>
               <Text style={s.displayName}>{displayName}</Text>
+              {isSelf && me?.username ? (
+                <Text style={s.handle} numberOfLines={1}>@{me.username}</Text>
+              ) : null}
               <View style={s.locationRow}>
                 <Text style={s.locationPin}>📍</Text>
                 <Text style={s.locationText}>Chicago, IL</Text>
@@ -1063,6 +1121,12 @@ const s = StyleSheet.create({
     fontWeight: '800',
     color: colors.text,
     marginBottom: 3,
+  },
+  handle: {
+    fontSize: 13,
+    color: colors.textMuted,
+    fontWeight: '500',
+    marginBottom: 4,
   },
   locationRow: {
     flexDirection: 'row',

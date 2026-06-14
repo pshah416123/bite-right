@@ -241,7 +241,8 @@ export interface MenuItem {
 
 export type MenuGroup =
   | 'food' | 'breakfast' | 'brunch' | 'lunch' | 'dinner'
-  | 'cocktails' | 'wine' | 'beer' | 'na' | 'dessert' | 'coffee';
+  | 'cocktails' | 'wine' | 'beer' | 'na' | 'dessert' | 'coffee'
+  | 'drinks';
 
 export interface MenuSection {
   title: string;

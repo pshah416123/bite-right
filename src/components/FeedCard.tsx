@@ -70,8 +70,12 @@ export interface FeedLog {
   visitCount?: number;
   previousRating?: number;
   /** Friends tagged on this log. Drives the social-tagging headline
-   *  ("Pooja went to Girl & the Goat with Maya"). Empty/undefined = no tags. */
-  taggedUsers?: { userName: string; displayName?: string; userAvatar?: string | null }[];
+   *  ("Pooja went to Girl & the Goat with Maya"). Empty/undefined = no tags.
+   *  `userId` is populated by the server (`/api/feed`, `/api/users/:id/logs`)
+   *  so the client can match the current viewer against tag entries
+   *  (e.g. "I was tagged on this log → surface it in my profile"). It's
+   *  optional because legacy local-only logs from FeedContext won't have it. */
+  taggedUsers?: { userId?: string | null; userName: string; displayName?: string; userAvatar?: string | null }[];
 }
 
 interface Props {

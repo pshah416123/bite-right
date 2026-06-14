@@ -3,19 +3,20 @@
  *
  * Sections (top → bottom):
  *   - Avatar + display name + @username + follower/following counts + Follow CTA
- *   - City filter chips (built from logs.city)
- *   - Search input (matches restaurant name, cuisine, dish, vibe tag, note)
+ *   - City filter pill (opens a search sheet, same UX as the own-profile city
+ *     picker — geo autocomplete + the cities the friend actually has logs in)
  *   - List of FeedCards for their visible logs, post-filter
  *
  * Server-side: /api/users/:id/logs enforces the user's visibility setting
  * (public / friends / private). When it returns 0 logs, the empty state
  * shows instead of the filter UI.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Modal,
   ScrollView,
   StyleSheet,
   Text,
@@ -28,9 +29,60 @@ import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter, Stack } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { colors } from '~/src/theme/colors';
-import { blockUser, followUser, getUser, getUserLogs, type UserSummary } from '~/src/api/users';
+import { apiClient } from '~/src/api/client';
+import {
+  blockUser,
+  followUser,
+  getFollowing,
+  getUser,
+  getUserLogs,
+  unfollowUser,
+  type UserSummary,
+} from '~/src/api/users';
 import { type FeedLog } from '~/src/components/FeedCard';
 import { RestaurantImage } from '~/src/components/RestaurantImage';
+import { useAuthContext } from '~/src/context/AuthContext';
+
+// Mirrors getCuisineEmoji on the own-profile screen so a friend's Taste DNA
+// chips look identical to your own. Kept in sync deliberately.
+const CUISINE_EMOJIS: Record<string, string> = {
+  Pizza: '🍕', Italian: '🍝', Japanese: '🍱', Sushi: '🍣',
+  Mexican: '🌮', American: '🍔', Chinese: '🥟', Indian: '🍛',
+  Thai: '🍜', Korean: '🥩', Brunch: '🥞', Seafood: '🦞',
+  BBQ: '🔥', Coffee: '☕', Bakery: '🥐', Mediterranean: '🫒',
+  Vegan: '🥗', Vegetarian: '🥦',
+};
+const DNA_COLORS = [
+  { bg: '#FFF0E8', text: '#FF6B35' },
+  { bg: '#FFFBE8', text: '#D97706' },
+  { bg: '#FFF0F4', text: '#C2185B' },
+  { bg: '#EEF6F0', text: '#2E7D32' },
+];
+function getCuisineEmoji(cuisine: string): string {
+  const lower = cuisine.toLowerCase();
+  for (const [key, emoji] of Object.entries(CUISINE_EMOJIS)) {
+    if (lower.includes(key.toLowerCase())) return emoji;
+  }
+  return '🍽';
+}
+function getCuisineTag(cuisine: string): string {
+  const raw = cuisine?.trim() || '';
+  return raw.split(/[·•\-]/)[0]?.trim() || raw;
+}
+function getTopCuisines(logs: { cuisine: string; score: number }[]): string[] {
+  const map: Record<string, { count: number; sum: number }> = {};
+  for (const log of logs) {
+    const tag = getCuisineTag(log.cuisine);
+    if (!tag) continue;
+    map[tag] = map[tag] ?? { count: 0, sum: 0 };
+    map[tag].count += 1;
+    map[tag].sum += log.score ?? 0;
+  }
+  return Object.entries(map)
+    .sort((a, b) => b[1].count - a[1].count || b[1].sum / b[1].count - a[1].sum / a[1].count)
+    .slice(0, 4)
+    .map(([name]) => name);
+}
 
 /** Format an ISO timestamp as "Mon YYYY" (e.g. "Mar 2026"). Returns empty
  *  string on parse failure so the row collapses cleanly. */
@@ -44,16 +96,65 @@ export default function FriendProfileScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id?: string }>();
   const userId = typeof id === 'string' ? id : Array.isArray(id) ? id[0] : undefined;
+  const auth = useAuthContext();
+  const myUserId = auth.user?.id ?? null;
 
   const [user, setUser] = useState<UserSummary | null>(null);
   const [logs, setLogs] = useState<FeedLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [logsLoading, setLogsLoading] = useState(true);
-  const [following, setFollowing] = useState(false);
+  // null = unknown (initial fetch still in flight); true/false once known.
+  // Used to keep the Follow button disabled until we know the real state so
+  // we never render a stale "Follow" CTA on someone the user already follows.
+  const [following, setFollowing] = useState<boolean | null>(null);
   const [followInFlight, setFollowInFlight] = useState(false);
 
   const [cityFilter, setCityFilter] = useState<string | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
+  // City picker — mirrors the own-profile city sheet so searching a city
+  // (with geo autocomplete) works the same way on someone else's profile.
+  const [citySheetOpen, setCitySheetOpen] = useState(false);
+  const [citySearch, setCitySearch] = useState('');
+  const [citySuggestions, setCitySuggestions] = useState<{ label: string }[]>([]);
+  const [cityGeoLoading, setCityGeoLoading] = useState(false);
+  const cityReqIdRef = useRef(0);
+  const cityCacheRef = useRef<Record<string, { label: string }[]>>({});
+
+  useEffect(() => {
+    if (!citySheetOpen) return;
+    const q = citySearch.trim();
+    if (!q) {
+      setCitySuggestions([]);
+      setCityGeoLoading(false);
+      return;
+    }
+    const key = q.toLowerCase();
+    const cached = cityCacheRef.current[key];
+    if (cached) {
+      setCitySuggestions(cached);
+      setCityGeoLoading(false);
+      return;
+    }
+    setCityGeoLoading(true);
+    const reqId = ++cityReqIdRef.current;
+    const t = setTimeout(async () => {
+      try {
+        const { data } = await apiClient.get<{ results: { label: string }[] }>('/api/geo/autocomplete', {
+          params: { query: q },
+        });
+        if (cityReqIdRef.current !== reqId) return;
+        const results = Array.isArray(data?.results) ? data.results : [];
+        cityCacheRef.current[key] = results;
+        setCitySuggestions(results);
+      } catch {
+        if (cityReqIdRef.current !== reqId) return;
+        setCitySuggestions([]);
+      } finally {
+        if (cityReqIdRef.current !== reqId) return;
+        setCityGeoLoading(false);
+      }
+    }, 300);
+    return () => clearTimeout(t);
+  }, [citySheetOpen, citySearch]);
 
   useEffect(() => {
     if (!userId) return;
@@ -76,6 +177,30 @@ export default function FriendProfileScreen() {
     return () => { cancelled = true; };
   }, [userId]);
 
+  // Resolve whether the logged-in user already follows this person. The
+  // getUser response doesn't carry an isFollowing flag (it's the same
+  // endpoint used in many list contexts), so we derive it by listing the
+  // viewer's followings and checking membership. Without this the CTA
+  // always read "Follow" even on people you had already followed.
+  useEffect(() => {
+    if (!userId || !myUserId) {
+      setFollowing(null);
+      return;
+    }
+    if (myUserId === userId) {
+      setFollowing(false);
+      return;
+    }
+    let cancelled = false;
+    getFollowing(myUserId)
+      .then((rows) => {
+        if (cancelled) return;
+        setFollowing(rows.some((r) => r.id === userId));
+      })
+      .catch(() => { if (!cancelled) setFollowing(false); });
+    return () => { cancelled = true; };
+  }, [userId, myUserId]);
+
   // Unique cities from this user's logs — used to populate the city chip row.
   const cities = useMemo(() => {
     const set = new Set<string>();
@@ -86,35 +211,20 @@ export default function FriendProfileScreen() {
     return Array.from(set).sort();
   }, [logs]);
 
-  // Apply both filters. Search matches against restaurant name, cuisine,
-  // standout dish / dishes, vibe tags, and the note text.
-  const filteredLogs = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    return logs.filter((l) => {
-      if (cityFilter && (l.city ?? '').toLowerCase() !== cityFilter.toLowerCase()) return false;
-      if (!q) return true;
-      const haystack = [
-        l.restaurantName,
-        l.cuisine,
-        l.neighborhood,
-        l.note,
-        l.standoutDish?.name,
-        ...(l.standoutDishes ?? []),
-        ...(l.dishes ?? []),
-        ...(l.vibeTags ?? []),
-      ]
-        .filter((s): s is string => typeof s === 'string')
-        .join(' ')
-        .toLowerCase();
-      return haystack.includes(q);
-    });
-  }, [logs, cityFilter, searchQuery]);
+  const filteredLogs = useMemo(
+    () => (cityFilter
+      ? logs.filter((l) => (l.city ?? '').toLowerCase() === cityFilter.toLowerCase())
+      : logs),
+    [logs, cityFilter],
+  );
 
   const handleFollow = async () => {
-    if (!userId || followInFlight) return;
+    if (!userId || followInFlight || following === null) return;
     setFollowInFlight(true);
     try {
-      const res = await followUser(userId);
+      const res = following
+        ? await unfollowUser(userId)
+        : await followUser(userId);
       setFollowing(!!res.following);
     } catch {
       // ignore
@@ -122,6 +232,19 @@ export default function FriendProfileScreen() {
       setFollowInFlight(false);
     }
   };
+
+  // Derived stats — mirrors what the user's own profile screen computes
+  // so we render the same surface (Avg Score + Taste DNA) on someone
+  // else's profile.
+  const avgScore = useMemo(() => {
+    if (logs.length === 0) return null;
+    const total = logs.reduce((sum, l) => sum + (l.score ?? 0), 0);
+    return total / logs.length;
+  }, [logs]);
+  const topCuisines = useMemo(
+    () => getTopCuisines(logs.map((l) => ({ cuisine: l.cuisine ?? '', score: l.score ?? 0 }))),
+    [logs],
+  );
 
   if (loading) {
     return (
@@ -209,10 +332,13 @@ export default function FriendProfileScreen() {
             style={[s.followBtn, following && s.followBtnFollowing]}
             onPress={handleFollow}
             activeOpacity={0.85}
-            disabled={followInFlight}
+            // Disable while the membership check is in flight (following=null)
+            // so we don't render a tappable "Follow" CTA on someone the user
+            // already follows.
+            disabled={followInFlight || following === null}
           >
             <Text style={[s.followBtnText, following && s.followBtnTextFollowing]}>
-              {following ? 'Following' : 'Follow'}
+              {following === null ? '…' : following ? 'Following' : 'Follow'}
             </Text>
           </TouchableOpacity>
         </View>
@@ -220,6 +346,21 @@ export default function FriendProfileScreen() {
         {user.bio ? <Text style={s.bio}>{user.bio}</Text> : null}
 
         <View style={s.statsCard}>
+          <View style={s.stat}>
+            <View style={s.statValueRow}>
+              <Ionicons name="star" size={14} color={colors.accent} style={s.statIcon} />
+              <Text style={[s.statValue, s.statValueAccent]}>
+                {avgScore != null ? avgScore.toFixed(1) : '—'}
+              </Text>
+            </View>
+            <Text style={s.statLabel}>Avg Score</Text>
+          </View>
+          <View style={s.statDivider} />
+          <View style={s.stat}>
+            <Text style={s.statValue}>{logs.length}</Text>
+            <Text style={s.statLabel}>Logs</Text>
+          </View>
+          <View style={s.statDivider} />
           <View style={s.stat}>
             <Text style={s.statValue}>{user.followerCount ?? 0}</Text>
             <Text style={s.statLabel}>Followers</Text>
@@ -229,64 +370,51 @@ export default function FriendProfileScreen() {
             <Text style={s.statValue}>{user.followingCount ?? 0}</Text>
             <Text style={s.statLabel}>Following</Text>
           </View>
-          <View style={s.statDivider} />
-          <View style={s.stat}>
-            <Text style={s.statValue}>{logs.length}</Text>
-            <Text style={s.statLabel}>Logs</Text>
-          </View>
         </View>
       </View>
 
-      {hasAnyLogs ? (
-        <View style={s.filtersSection}>
-          {/* Search input — matches name, cuisine, dish, tag, note */}
-          <View style={s.searchWrap}>
-            <Ionicons name="search-outline" size={16} color={colors.textMuted} />
-            <TextInput
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              placeholder="Search cuisine, dish, vibe…"
-              placeholderTextColor={colors.textFaint}
-              style={s.searchInput}
-              autoCorrect={false}
-              autoCapitalize="none"
-            />
-            {searchQuery.length > 0 ? (
-              <TouchableOpacity onPress={() => setSearchQuery('')} hitSlop={8}>
-                <Ionicons name="close-circle" size={16} color={colors.textFaint} />
-              </TouchableOpacity>
-            ) : null}
-          </View>
+      {/* Taste DNA — mirrors the own-profile layout so a friend's flavor
+          profile reads the same way as your own. Hidden until they have
+          at least 3 logs so the chip row isn't built on a single visit. */}
+      {topCuisines.length > 0 && logs.length >= 3 ? (
+        <View style={s.dnaSection}>
+          <Text style={s.dnaLabel}>✨ Taste DNA</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={s.dnaScroll}
+          >
+            {topCuisines.map((cuisine, i) => {
+              const chip = DNA_COLORS[i % DNA_COLORS.length];
+              return (
+                <View key={cuisine} style={[s.dnaChip, { backgroundColor: chip.bg }]}>
+                  <Text style={s.dnaEmoji}>{getCuisineEmoji(cuisine)}</Text>
+                  <Text style={[s.dnaChipText, { color: chip.text }]}>{cuisine}</Text>
+                </View>
+              );
+            })}
+          </ScrollView>
+        </View>
+      ) : null}
 
-          {/* City filter chips */}
-          {cities.length > 0 ? (
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={s.chipRow}
-            >
-              <TouchableOpacity
-                style={[s.chip, !cityFilter && s.chipActive]}
-                onPress={() => setCityFilter(null)}
-                activeOpacity={0.7}
-              >
-                <Text style={[s.chipText, !cityFilter && s.chipTextActive]}>All cities</Text>
-              </TouchableOpacity>
-              {cities.map((c) => {
-                const active = cityFilter === c;
-                return (
-                  <TouchableOpacity
-                    key={c}
-                    style={[s.chip, active && s.chipActive]}
-                    onPress={() => setCityFilter(active ? null : c)}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={[s.chipText, active && s.chipTextActive]}>📍 {c}</Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-          ) : null}
+      {hasAnyLogs && cities.length > 0 ? (
+        <View style={s.locationPillRow}>
+          <TouchableOpacity
+            style={[s.locationPill, !!cityFilter && s.locationPillActive]}
+            onPress={() => setCitySheetOpen(true)}
+            activeOpacity={0.8}
+          >
+            <Text style={s.locationPillIcon}>📍</Text>
+            <Text style={[s.locationPillText, !!cityFilter && s.locationPillTextActive]}>
+              {cityFilter ?? 'All Cities'}
+            </Text>
+            <Ionicons name="chevron-down" size={14} color={cityFilter ? '#fff' : colors.textMuted} />
+          </TouchableOpacity>
+          {!!cityFilter && (
+            <TouchableOpacity onPress={() => setCityFilter(null)} activeOpacity={0.7}>
+              <Text style={s.locationClear}>Clear</Text>
+            </TouchableOpacity>
+          )}
         </View>
       ) : null}
     </View>
@@ -315,19 +443,11 @@ export default function FriendProfileScreen() {
         <FlatList
           data={filteredLogs}
           keyExtractor={(l) => l.id}
-          // Pass a React element (the result of renderHeader()) instead of
-          // the function itself. Passing the function makes FlatList treat
-          // it as a component type — and because renderHeader is recreated
-          // on every parent render, FlatList sees a new "component type"
-          // on every keystroke and remounts the entire header. That
-          // remount blurs the TextInput inside the header, causing the
-          // "glitchy" search experience the user reported (keyboard
-          // dismissing, cursor jumping, etc.).
           ListHeaderComponent={renderHeader()}
           ListEmptyComponent={
             <View style={s.emptyFilter}>
               <Text style={s.emptyTitle}>No matches</Text>
-              <Text style={s.emptyBody}>Try a different filter or clear the search.</Text>
+              <Text style={s.emptyBody}>Try a different city filter.</Text>
             </View>
           }
           renderItem={({ item }) => {
@@ -371,6 +491,95 @@ export default function FriendProfileScreen() {
           showsVerticalScrollIndicator={false}
         />
       )}
+
+      <Modal
+        visible={citySheetOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => { setCitySheetOpen(false); setCitySearch(''); }}
+      >
+        <TouchableOpacity
+          style={s.citySheetBackdrop}
+          activeOpacity={1}
+          onPress={() => { setCitySheetOpen(false); setCitySearch(''); }}
+        >
+          <View style={s.citySheet} onStartShouldSetResponder={() => true}>
+            <Text style={s.citySheetTitle}>Filter by City</Text>
+
+            <TextInput
+              style={s.citySheetSearch}
+              placeholder="Search a city..."
+              placeholderTextColor={colors.textFaint}
+              value={citySearch}
+              onChangeText={setCitySearch}
+              autoCapitalize="words"
+              autoCorrect={false}
+            />
+
+            {citySearch.trim().length > 0 && citySuggestions.length > 0 ? (
+              <View style={s.citySuggestionsCard}>
+                {citySuggestions.map((sug, idx) => (
+                  <TouchableOpacity
+                    key={`${sug.label}-${idx}`}
+                    style={[s.citySuggestionRow, idx < citySuggestions.length - 1 && s.citySuggestionRowBorder]}
+                    onPress={() => {
+                      setCityFilter(sug.label);
+                      setCitySheetOpen(false);
+                      setCitySearch('');
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={s.citySuggestionText}>{sug.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            ) : null}
+
+            {citySearch.trim().length > 0 && cityGeoLoading ? (
+              <View style={s.citySuggestionsCard}>
+                <View style={s.citySuggestionRow}>
+                  <Text style={[s.citySuggestionText, { color: colors.textFaint }]}>Searching…</Text>
+                </View>
+              </View>
+            ) : null}
+
+            <TouchableOpacity
+              style={s.citySheetRow}
+              onPress={() => { setCityFilter(null); setCitySheetOpen(false); setCitySearch(''); }}
+              activeOpacity={0.8}
+            >
+              <Text style={[s.citySheetRowText, !cityFilter && s.citySheetRowTextActive]}>
+                All Cities
+              </Text>
+              {!cityFilter && <Ionicons name="checkmark" size={18} color={colors.accent} />}
+            </TouchableOpacity>
+
+            {cities
+              .filter((c) => !citySearch.trim() || c.toLowerCase().includes(citySearch.trim().toLowerCase()))
+              .map((city) => (
+                <TouchableOpacity
+                  key={city}
+                  style={s.citySheetRow}
+                  onPress={() => { setCityFilter(city); setCitySheetOpen(false); setCitySearch(''); }}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[s.citySheetRowText, cityFilter === city && s.citySheetRowTextActive]}>
+                    {city}
+                  </Text>
+                  {cityFilter === city && <Ionicons name="checkmark" size={18} color={colors.accent} />}
+                </TouchableOpacity>
+              ))}
+
+            <TouchableOpacity
+              style={s.citySheetDoneBtn}
+              onPress={() => { setCitySheetOpen(false); setCitySearch(''); }}
+              activeOpacity={0.85}
+            >
+              <Text style={s.citySheetDoneBtnText}>Done</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -441,9 +650,36 @@ const s = StyleSheet.create({
     elevation: 2,
   },
   stat: { flex: 1, alignItems: 'center' },
+  statValueRow: { flexDirection: 'row', alignItems: 'center', gap: 3 },
   statValue: { fontSize: 20, fontWeight: '800', color: colors.text },
+  statValueAccent: { color: colors.accent },
+  statIcon: { marginTop: -1 },
   statLabel: { fontSize: 12, color: colors.textMuted, fontWeight: '500', marginTop: 2 },
   statDivider: { width: 1, height: 28, backgroundColor: colors.border, marginHorizontal: 8 },
+
+  dnaSection: {
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 14,
+  },
+  dnaLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.text,
+    marginBottom: 8,
+    letterSpacing: -0.1,
+  },
+  dnaScroll: { gap: 8, paddingRight: 16 },
+  dnaChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+  },
+  dnaEmoji: { fontSize: 14 },
+  dnaChipText: { fontSize: 13, fontWeight: '700', letterSpacing: -0.1 },
   followBtn: {
     backgroundColor: colors.accent,
     paddingHorizontal: 18,
@@ -455,30 +691,82 @@ const s = StyleSheet.create({
   followBtnText: { color: '#fff', fontSize: 13, fontWeight: '700' },
   followBtnTextFollowing: { color: colors.text },
 
-  filtersSection: { paddingHorizontal: 16, paddingBottom: 8, gap: 10 },
-  searchWrap: {
+  locationPillRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 12,
-    paddingHorizontal: 12,
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingBottom: 8,
   },
-  searchInput: { flex: 1, paddingVertical: 10, fontSize: 14, color: colors.text },
-  chipRow: { gap: 8, paddingVertical: 2, paddingRight: 16 },
-  chip: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+  locationPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
     borderRadius: 999,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
+    backgroundColor: '#fff',
+    borderWidth: 1.5,
     borderColor: colors.border,
   },
-  chipActive: { backgroundColor: colors.accent, borderColor: colors.accent },
-  chipText: { fontSize: 12, fontWeight: '600', color: colors.textMuted },
-  chipTextActive: { color: '#fff' },
+  locationPillActive: { backgroundColor: colors.accent, borderColor: colors.accent },
+  locationPillIcon: { fontSize: 13 },
+  locationPillText: { fontSize: 13, fontWeight: '700', color: colors.text },
+  locationPillTextActive: { color: '#fff' },
+  locationClear: { fontSize: 13, fontWeight: '600', color: colors.accent },
+
+  citySheetBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.28)',
+    justifyContent: 'flex-end',
+  },
+  citySheet: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 24,
+    paddingTop: 20,
+    paddingBottom: 36,
+  },
+  citySheetTitle: { fontSize: 17, fontWeight: '800', color: colors.text, marginBottom: 12 },
+  citySheetSearch: {
+    backgroundColor: colors.bgSoft,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    fontSize: 15,
+    color: colors.text,
+    marginBottom: 12,
+  },
+  citySheetRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.surfaceSoft,
+  },
+  citySheetRowText: { fontSize: 15, fontWeight: '600', color: colors.text },
+  citySheetRowTextActive: { color: colors.accent },
+  citySuggestionsCard: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: colors.surfaceSoft,
+    overflow: 'hidden',
+  },
+  citySuggestionRow: { paddingVertical: 14, paddingHorizontal: 14 },
+  citySuggestionRowBorder: { borderBottomWidth: 1, borderBottomColor: colors.surfaceSoft },
+  citySuggestionText: { fontSize: 15, fontWeight: '700', color: colors.text },
+  citySheetDoneBtn: {
+    marginTop: 20,
+    backgroundColor: colors.accent,
+    borderRadius: 999,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  citySheetDoneBtnText: { fontSize: 16, fontWeight: '800', color: '#fff' },
 
   emptyLogs: {
     flex: 1,

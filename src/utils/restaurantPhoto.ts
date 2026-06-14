@@ -51,7 +51,7 @@ export function getCachedRestaurantPhoto(restaurant: RestaurantImageData): strin
   return getCacheEntry(cacheKey);
 }
 
-interface FetchedImage { url: string | null; reason: 'confident' | 'placeholder-only' | 'placeid-mismatch' | 'not-verified' | 'lookup-failed' | 'not-found' }
+interface FetchedImage { url: string | null; reason: 'confident' | 'placeholder-only' | 'placeid-mismatch' | 'lookup-failed' | 'not-found' }
 
 /**
  * Single API lookup with confidence gate. Used internally by
@@ -74,13 +74,14 @@ async function fetchImageFromApi(
     }>(`/api/restaurants/${encodeURIComponent(idForUrl)}`);
 
     const responsePlaceId = data?.placeId || data?.googlePlaceId || null;
-    const sourceType = data?.displayImageSourceType ?? null;
-    const sourceVerified = sourceType === 'user' || sourceType === 'google' || sourceType === 'override';
     const placeIdMatches = !expectedPlaceId || !responsePlaceId || expectedPlaceId === responsePlaceId;
 
     if (!placeIdMatches) return { url: null, reason: 'placeid-mismatch' };
-    if (!sourceVerified)  return { url: null, reason: 'not-verified' };
 
+    // Accept any URL the server returned, regardless of displayImageSourceType.
+    // The detail page's own fallback ladder shows these URLs happily; gating
+    // them out here is what made restaurants look broken on the Discover list
+    // and made the Next Stop hero disappear after the inline URL errored.
     const url = getProvidedRestaurantImageUrl({
       displayImageUrl: data?.displayImageUrl ?? null,
       imageUrl: data?.imageUrl ?? null,
@@ -141,8 +142,7 @@ export async function getRestaurantFoodPhoto(
     }
     // Don't bail on first failure if there's a googlePlaceId fallback to try.
     if (result.reason === 'lookup-failed' || result.reason === 'placeholder-only') continue;
-    // Hard rejection (placeid-mismatch / not-verified) — try next attempt
-    // but record we tried.
+    // Hard rejection (placeid-mismatch) — try next attempt but record we tried.
   }
 
   setCacheEntry(cacheKey, null);

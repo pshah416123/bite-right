@@ -1462,6 +1462,13 @@ const GROUP_PATTERNS = [
   ['na', /\b(non[- ]alcoholic|mocktail|no\s+booze|soft\s+drink|juice|soda|lemonade|kombucha)\b/i],
   ['coffee', /\b(coffee|espresso|cappuccino|latte|americano|macchiato|chai|tea(?:s)?)\b/i],
   ['dessert', /\b(dessert|sweet(?:s)?|gelato|sorbet|ice\s?cream|pastr(?:y|ies)|cake|tart|pavlova|cheesecake|french\s+toast|monkey\s+bread|beignet|donut|doughnut|cookies?|crepe(?:s)?)\b/i],
+  // Generic-drinks catch-all. Intentionally last among the beverage groups so
+  // sections titled bare "Drinks" / "Beverages" / "Refreshments" don't pull
+  // wine/beer/cocktail/coffee/na items out of their more specific tabs. This
+  // is the IMLI-style menu where the section header is just "DRINKS" and the
+  // items mix alcoholic (Michelada, Mimosa) with non-alcoholic (Horchata,
+  // espresso) — there's no single specific tab they all belong in.
+  ['drinks', /^(?:drinks?|beverages?|refreshments?|libations?)\s*(?:menu|list)?\s*$/i],
 ];
 
 /**

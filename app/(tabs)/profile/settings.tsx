@@ -2,7 +2,7 @@
  * Settings — Account-focused settings screen with iOS grouped list style.
  * Taste preferences are in a separate sub-screen.
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import {
   Alert,
   Linking,
@@ -14,7 +14,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { colors } from '~/src/theme/colors';
@@ -97,16 +97,20 @@ export default function SettingsScreen() {
   const email = user?.email ?? null;
 
   // Pull the user row from the server so Name/Username display the truth,
-  // not stale hardcoded "Pooja" / "@pooja". Refreshes whenever the screen
-  // mounts (returning from edit-name / edit-username).
+  // not stale hardcoded "Pooja" / "@pooja". useFocusEffect (not useEffect)
+  // so the rows refetch every time we return from edit-name / edit-username
+  // / profile-photo — without this the rows kept the value loaded on first
+  // mount and looked like the save had silently failed.
   const [me, setMe] = useState<UserSummary | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    getMe()
-      .then((u) => { if (!cancelled) setMe(u); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, []);
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      getMe()
+        .then((u) => { if (!cancelled) setMe(u); })
+        .catch(() => {});
+      return () => { cancelled = true; };
+    }, []),
+  );
 
   const handleLogOut = () => {
     Alert.alert('Log out?', 'You’ll need to log back in to keep using ByteRite.', [

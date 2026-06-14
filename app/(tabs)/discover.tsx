@@ -825,7 +825,12 @@ export default function DiscoverScreen() {
       />
 
       {/* ── Content ─────────────────────────────────────────────────────── */}
-      {searchFocused ? null : showLoading ? (
+      {/* Only show the full-screen spinner on a true cold load (no cards to
+          show yet). For sort/filter toggles, we already have a list rendered
+          and unmounting it would force every RestaurantImage to remount and
+          flash to placeholder — the "all the pics go away" report. Keep the
+          existing list visible during the refetch instead. */}
+      {searchFocused ? null : (showLoading && !hasAnyCards) ? (
         <View style={styles.centered}>
           <ActivityIndicator size="large" color={colors.accent} />
         </View>
@@ -897,12 +902,18 @@ export default function DiscoverScreen() {
               {activeSearch ? (
                 <View style={styles.emptyWrap}>
                   <Text style={styles.emptyMessage}>
-                    {locationName ? `No "${activeSearch}" results in ${locationName}` : `No results for "${activeSearch}" nearby`}
+                    {`No "${activeSearch}" within ${effectiveRadius < 1 ? effectiveRadius : Math.round(effectiveRadius)} mi${locationName ? ` of ${locationName}` : ''}`}
                   </Text>
-                  <Text style={styles.emptyHint}>Try a different search term or clear your search.</Text>
-                  <TouchableOpacity onPress={() => { setSearchInput(''); setActiveSearch(''); }} style={styles.clearFilterBtn}>
-                    <Text style={styles.clearFilterText}>Clear search</Text>
-                  </TouchableOpacity>
+                  <Text style={styles.emptyHint}>Try a wider radius or a different search.</Text>
+                  <View style={styles.emptyActionsRow}>
+                    <TouchableOpacity onPress={openLocationSheet} style={styles.expandRadiusBtn}>
+                      <Ionicons name="resize-outline" size={14} color="#fff" />
+                      <Text style={styles.expandRadiusText}>Expand radius</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => { setSearchInput(''); setActiveSearch(''); }} style={styles.clearSearchBtn}>
+                      <Text style={styles.clearSearchText}>Clear search</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
               ) : selectedPrices.length > 0 ? (
                 <View style={styles.emptyWrap}>
@@ -1316,9 +1327,29 @@ const styles = StyleSheet.create({
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 24, gap: 12 },
   errorBanner: { backgroundColor: colors.surface, paddingVertical: 8, paddingHorizontal: 20, borderBottomWidth: 1, borderBottomColor: colors.border },
   errorBannerText: { fontSize: 13, color: colors.textMuted, textAlign: 'center' },
-  emptyWrap: { alignItems: 'center', gap: 8 },
-  emptyMessage: { fontSize: 14, color: colors.textMuted, textAlign: 'center' },
+  emptyWrap: { alignItems: 'center', gap: 8, paddingHorizontal: 24 },
+  emptyMessage: { fontSize: 14, color: colors.text, fontWeight: '700', textAlign: 'center' },
   emptyHint: { fontSize: 13, color: colors.textMuted, textAlign: 'center' },
+  emptyActionsRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 6 },
+  expandRadiusBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 20,
+    backgroundColor: colors.accent,
+  },
+  expandRadiusText: { fontSize: 13, fontWeight: '700', color: '#fff' },
+  clearSearchBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 20,
+    backgroundColor: colors.surfaceSoft,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  clearSearchText: { fontSize: 13, fontWeight: '700', color: colors.text },
   clearFilterBtn: { marginTop: 4, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, backgroundColor: colors.accent },
   clearFilterText: { fontSize: 13, fontWeight: '700', color: '#fff' },
   setLocationBtn: { paddingHorizontal: 20, paddingVertical: 10, borderRadius: 20, backgroundColor: colors.accent },

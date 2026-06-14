@@ -34,6 +34,10 @@ const GROUP_LABEL: Record<MenuGroup, string> = {
   na: 'Non-Alcoholic',
   dessert: 'Dessert',
   coffee: 'Coffee & Tea',
+  // Generic catch-all for sections literally titled "Drinks" / "Beverages"
+  // that don't trip a more specific (cocktails/beer/wine/na/coffee) keyword.
+  // Without this they fell through to 'food' and bloated the Main tab.
+  drinks: 'Drinks',
 };
 // Meal-time groups first (in chronological order), then category groups.
 // When a restaurant has both meal-split and the generic 'food' bucket
@@ -41,7 +45,7 @@ const GROUP_LABEL: Record<MenuGroup, string> = {
 // after the meals so the tabs read Breakfast | Brunch | Lunch | Dinner | Food.
 const GROUP_DISPLAY_ORDER: MenuGroup[] = [
   'breakfast', 'brunch', 'lunch', 'dinner', 'food',
-  'cocktails', 'wine', 'beer', 'na', 'dessert', 'coffee',
+  'drinks', 'cocktails', 'wine', 'beer', 'na', 'coffee', 'dessert',
 ];
 
 /** Pick the tab that best matches the current local time. Prefers an

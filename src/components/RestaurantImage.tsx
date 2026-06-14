@@ -156,13 +156,28 @@ export function RestaurantImage({
   const [loading, setLoading] = useState(!initialImage && !!cacheKey);
   const [imageLoaded, setImageLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
+  // Track which restaurant we're currently displaying so we only reset uri
+  // when the entity actually changes — not when the parent re-renders for
+  // unrelated reasons (e.g. a Discover filter toggle re-rendering the list).
+  // Without this, every parent re-render flashed uri to null briefly while
+  // the resolver re-ran, which read as "the pic came and went."
+  const lastInitedCacheKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     primeRestaurantPhotoCache(restaurantSnapshot);
-    setUri(initialImage);
-    setLoading(!initialImage && !!cacheKey);
-    setImageLoaded(false);
-    setFailed(false);
+    // Only initialize state when we're rendering a different restaurant
+    // (cacheKey changed). For re-renders that keep the same entity — e.g.
+    // a Discover filter toggle causing the parent to re-render the same
+    // card — leave the existing uri/loading/failed/imageLoaded alone so
+    // the photo doesn't blink to the placeholder while the resolver
+    // unnecessarily re-runs. The onError and resolver effects below still
+    // own uri transitions for this entity.
+    if (lastInitedCacheKeyRef.current !== cacheKey) {
+      lastInitedCacheKeyRef.current = cacheKey;
+      setUri(initialImage);
+      setLoading(!initialImage && !!cacheKey);
+      setFailed(false);
+    }
   }, [cacheKey, initialImage, restaurantSnapshot]);
 
   useEffect(() => {
@@ -250,9 +265,16 @@ export function RestaurantImage({
         />
       ) : null}
 
+      {/* Skeleton: only while resolving a URI (no URI yet but cache lookup in flight). */}
       {(loading && !showImage) ? <Skeleton borderRadius={borderRadius} /> : null}
 
-      {!showImage ? (
+      {/* Placeholder: render UNDER the <Image> until the image has actually
+          decoded (imageLoaded). The <Image> above will cover it as soon as
+          it paints, but until then we show the gradient placeholder instead
+          of the blank container — eliminates the brief blank flash when a
+          fresh RestaurantImage mounts on navigation (e.g. tapping a Next
+          Stop card into the destination detail screen). */}
+      {(!showImage || !imageLoaded) ? (
         <Placeholder
           restaurant={restaurant}
           fallbackType={fallbackType}

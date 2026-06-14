@@ -177,6 +177,22 @@ export default function RestaurantScreen() {
   const payloadRaw =
     typeof params.payload === 'string' ? params.payload : Array.isArray(params.payload) ? params.payload[0] : undefined;
   const router = useRouter();
+
+  // Tap any friend name/avatar on this screen → open their profile. Mirrors
+  // FeedCard's handleAuthorPress: routes to /friend/[id] for real accounts,
+  // and shows the same explainer for mock-seed users so the tap doesn't
+  // silently no-op.
+  const openFriendProfile = (userId: string | null | undefined, userName: string | null | undefined) => {
+    if (userId) {
+      router.push(`/friend/${encodeURIComponent(userId)}` as never);
+      return;
+    }
+    Alert.alert(
+      `${userName || 'This friend'} is a demo profile`,
+      'These posts seed your feed so it isn’t empty on day one. Invite real friends to see and tap into their actual profiles.',
+      [{ text: 'Got it' }],
+    );
+  };
   const { items: feedItems } = useFeedContext();
   const { saveRestaurant, isSaved } = useSavedRestaurants();
   const { isSelected: isCompareSelected, toggle: toggleCompare } = useCompare();
@@ -681,13 +697,28 @@ export default function RestaurantScreen() {
           googlePlaceId:
             detail?.googlePlaceId ?? detail?.placeId ?? restaurantFromPayload?.googlePlaceId ?? restaurantFromPayload?.placeId ?? null,
           // Wrap every candidate in normalizeRestaurantImageUrl so placehold.co
-          // and empty strings don't stop the ?? fall-through. Without this,
-          // a Next Stop click that lands on a ChIJ id the server doesn't have
-          // detail for can flip the hero image to a placeholder mid-render
-          // even though the payload carried a real URL.
+          // and empty strings don't stop the ?? fall-through.
+          //
+          // Priority: the navigation payload's URL is what the user just saw
+          // on the previous screen (e.g. the Next Stop card they tapped),
+          // and we know it rendered there. Detail's displayImageUrl is only
+          // preferred when its sourceType is explicitly 'user' or 'override'
+          // — those represent a deliberate upload or admin pick that should
+          // win over whatever the inbound payload had. For 'google' or
+          // unknown sources, detail's URL is no more authoritative than the
+          // payload's, and swapping to it can make the picture appear to
+          // vanish mid-render if detail's URL is stale, expired, or
+          // unreachable (the previous bug that the placeholder-normalize
+          // fix only partially addressed).
+          // Always prefer the URL we just rendered on the previous screen —
+          // it loaded successfully there, so it's our safest bet. The
+          // earlier "detail is authoritative when sourceType=user/override"
+          // rule could swap a known-good payload URL for a stale or broken
+          // user-uploaded URL on detail load, which is what made the hero
+          // disappear a second after tapping in from Discover.
           displayImageUrl:
-            normalizeRestaurantImageUrl(detail?.displayImageUrl) ??
             normalizeRestaurantImageUrl(restaurantFromPayload?.displayImageUrl) ??
+            normalizeRestaurantImageUrl(detail?.displayImageUrl) ??
             normalizeRestaurantImageUrl(detail?.imageUrl) ??
             normalizeRestaurantImageUrl(restaurantFromPayload?.imageUrl) ??
             normalizeRestaurantImageUrl(restaurantFromPayload?.previewPhotoUrl) ??
@@ -779,7 +810,11 @@ export default function RestaurantScreen() {
   );
 
   const friendsBar = friendVisits.length > 0 ? (
-    <View style={styles.friendsSection}>
+    <TouchableOpacity
+      style={styles.friendsSection}
+      activeOpacity={0.8}
+      onPress={() => openFriendProfile(friendVisits[0].userId, friendVisits[0].userName)}
+    >
       <View style={styles.friendAvatarsRow}>
         {friendVisits.slice(0, 3).map((fv, i) => (
           <View key={fv.id} style={[styles.friendAvatarRing, { marginLeft: i === 0 ? 0 : -10 }]}>
@@ -805,7 +840,7 @@ export default function RestaurantScreen() {
           </Text>
         )}
       </View>
-    </View>
+    </TouchableOpacity>
   ) : null;
 
   // Regulars callout — surfaces friends who've been 3+ times. Shown right
@@ -813,7 +848,12 @@ export default function RestaurantScreen() {
   const regularsBlock = regulars.length > 0 ? (
     <View style={styles.regularsSection}>
       {regulars.slice(0, 3).map((fv) => (
-        <View key={`reg-${fv.id}`} style={styles.regularRow}>
+        <TouchableOpacity
+          key={`reg-${fv.id}`}
+          style={styles.regularRow}
+          activeOpacity={0.7}
+          onPress={() => openFriendProfile(fv.userId, fv.userName)}
+        >
           <View style={styles.regularAvatar}>
             {fv.userAvatar ? (
               <Image source={{ uri: fv.userAvatar }} style={styles.regularAvatarImg} />
@@ -827,7 +867,7 @@ export default function RestaurantScreen() {
               ? ` has been here ${fv.visitCount}× \u{1F525}`
               : ` keeps coming back — ${fv.visitCount} visits`}
           </Text>
-        </View>
+        </TouchableOpacity>
       ))}
     </View>
   ) : null;
@@ -892,7 +932,12 @@ export default function RestaurantScreen() {
     <View style={styles.socialProofSection}>
       <Text style={styles.socialProofTitle}>What your friends said</Text>
       {visibleQuotes.map((fv) => (
-          <View key={fv.id} style={styles.quoteRow}>
+          <TouchableOpacity
+            key={fv.id}
+            style={styles.quoteRow}
+            activeOpacity={0.85}
+            onPress={() => openFriendProfile(fv.userId, fv.userName)}
+          >
             <View style={styles.quoteAvatarSmall}>
               {fv.userAvatar ? (
                 <Image source={{ uri: fv.userAvatar }} style={styles.quoteAvatarImg} />
@@ -914,7 +959,7 @@ export default function RestaurantScreen() {
                 </View>
               </View>
             </View>
-          </View>
+          </TouchableOpacity>
         ))}
       {hasMoreQuotes && (
         <TouchableOpacity onPress={() => setQuotesExpanded((v) => !v)} activeOpacity={0.7} style={styles.seeAllBtn}>
@@ -1066,11 +1111,7 @@ export default function RestaurantScreen() {
   ) : (
     <View style={styles.section}>
       <Text style={styles.sectionTitle}>Menu</Text>
-      <Text style={styles.sectionSubtitle}>
-        {menu?.loadError === 'timeout'
-          ? 'Menu is taking longer than usual to load.'
-          : 'Menu coming soon.'}
-      </Text>
+      <Text style={styles.sectionSubtitle}>Menu coming soon.</Text>
       {menu?.loadError ? (
         <TouchableOpacity
           style={styles.retryBtn}
@@ -1341,10 +1382,24 @@ export default function RestaurantScreen() {
             <View style={styles.topSection}>
               <Text style={styles.restaurantName} numberOfLines={2}>{restaurantName}</Text>
 
-              {/* Your rating — prominent */}
-              {/* Match score is now the prominent element (see matchRowLarge
-                  block below). Friend's rating moved into a compact card
-                  further down the page. */}
+              {/* Your rating, prominent up top. Restored so the user sees
+                  their own score immediately on a visited place, without
+                  scrolling past Standout Dishes to find the compact
+                  friend-activity card further down. */}
+              <View style={styles.visitedRatingRow}>
+                <Text style={styles.visitedRatingScore}>{log.score.toFixed(1)}</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.visitedRatingLabel}>
+                    {isOwnLog ? 'Your rating' : `${logOwnerName}'s rating`}
+                    {log.visitCount && log.visitCount > 1 ? ` · ${log.visitCount} visits` : ''}
+                  </Text>
+                  {log.highlight ? (
+                    <Text style={styles.visitedRatingHighlight} numberOfLines={1}>
+                      {log.highlight.charAt(0).toUpperCase() + log.highlight.slice(1)}
+                    </Text>
+                  ) : null}
+                </View>
+              </View>
 
               {/* Match score — secondary */}
               {matchScorePercent != null && matchScorePercent > 0 && (
@@ -1380,66 +1435,88 @@ export default function RestaurantScreen() {
             {detailsBlock}
             {standoutDishesBlock}
 
-            {/* Compact friend activity card. Replaces five separate top-of-
-                page sections (poster quote, "What you said", "Visits",
-                "Dishes {Friend} tried", "Your posts") with one supporting
-                block. Same data sources, ~30% less vertical space, friend
-                reads as context not lead. "Ordered" replaces the awkward
-                "Dishes Friend tried" copy. */}
-            <View style={styles.friendActivityCard}>
-              <View style={styles.friendActivityHeader}>
-                {!isOwnLog && log.userAvatar ? (
-                  <Image source={{ uri: log.userAvatar }} style={styles.friendActivityAvatar} />
-                ) : (
-                  <View style={[styles.friendActivityAvatar, styles.friendActivityAvatarFallback]}>
-                    <Text style={styles.friendActivityAvatarInitial}>
-                      {(isOwnLog ? 'Y' : (logOwnerName[0] ?? '?')).toUpperCase()}
-                    </Text>
-                  </View>
-                )}
-                <View style={styles.friendActivityHeaderBody}>
-                  <Text style={styles.friendActivityName}>
-                    {isOwnLog ? 'You visited' : `${logOwnerName} visited`}
-                    {log.visitCount && log.visitCount > 1
-                      ? ` · ${log.visitCount} times`
-                      : ''}
-                  </Text>
-                  <View style={styles.friendActivityRatingRow}>
-                    <Ionicons name="star" size={13} color={colors.accent} />
-                    <Text style={styles.friendActivityRating}>{log.score.toFixed(1)}</Text>
-                    {log.highlight ? (
-                      <Text style={styles.friendActivityHighlight}>
-                        {' · ' + log.highlight.charAt(0).toUpperCase() + log.highlight.slice(1)}
+            {/* Compact friend activity card. For friend visits this carries
+                avatar + "<friend> visited" + their rating + note/dishes/tagged.
+                For OWN visits the header (avatar + "You visited" + rating)
+                duplicates the prominent rating card at the top, so we suppress
+                that header and only render the supporting bits (note / dishes
+                / tagged) if they actually have content. The whole card is
+                dropped on own logs when there's nothing left to show. */}
+            {(() => {
+              const hasNote = !!log.note;
+              const hasDishes = !!log.dishes && log.dishes.length > 0;
+              const hasTagged = !!log.taggedUsers && log.taggedUsers.length > 0;
+              if (isOwnLog && !hasNote && !hasDishes && !hasTagged) return null;
+              return (
+                <View style={styles.friendActivityCard}>
+                  {!isOwnLog ? (
+                    <TouchableOpacity
+                      style={styles.friendActivityHeader}
+                      activeOpacity={0.8}
+                      onPress={() => openFriendProfile(log.userId, logOwnerName)}
+                    >
+                      {log.userAvatar ? (
+                        <Image source={{ uri: log.userAvatar }} style={styles.friendActivityAvatar} />
+                      ) : (
+                        <View style={[styles.friendActivityAvatar, styles.friendActivityAvatarFallback]}>
+                          <Text style={styles.friendActivityAvatarInitial}>
+                            {(logOwnerName[0] ?? '?').toUpperCase()}
+                          </Text>
+                        </View>
+                      )}
+                      <View style={styles.friendActivityHeaderBody}>
+                        <Text style={styles.friendActivityName}>
+                          {`${logOwnerName} visited`}
+                          {log.visitCount && log.visitCount > 1 ? ` · ${log.visitCount} times` : ''}
+                        </Text>
+                        <View style={styles.friendActivityRatingRow}>
+                          <Ionicons name="star" size={13} color={colors.accent} />
+                          <Text style={styles.friendActivityRating}>{log.score.toFixed(1)}</Text>
+                          {log.highlight ? (
+                            <Text style={styles.friendActivityHighlight}>
+                              {' · ' + log.highlight.charAt(0).toUpperCase() + log.highlight.slice(1)}
+                            </Text>
+                          ) : null}
+                        </View>
+                      </View>
+                    </TouchableOpacity>
+                  ) : null}
+
+                  {hasNote ? (
+                    <Text style={styles.friendActivityNote} numberOfLines={4}>{'“'}{log.note}{'”'}</Text>
+                  ) : null}
+
+                  {hasDishes ? (
+                    <View style={styles.friendActivityDishesWrap}>
+                      <Text style={styles.friendActivityDishesLabel}>
+                        {'\u{1F37D}️ '}{isOwnLog ? 'You ordered' : 'Ordered'}
                       </Text>
-                    ) : null}
-                  </View>
+                      <View style={styles.friendActivityDishesList}>
+                        {log.dishes!.map((d, i) => (
+                          <Text key={i} style={styles.friendActivityDishItem}>{'• '}{d}</Text>
+                        ))}
+                      </View>
+                    </View>
+                  ) : null}
+
+                  {hasTagged ? (
+                    <Text style={styles.friendActivityTagged}>
+                      {isOwnLog ? 'with ' : `${logOwnerName} went with `}
+                      {log.taggedUsers!.map((t, i) => (
+                        <Text
+                          key={`${t.userId ?? t.userName}-${i}`}
+                          style={styles.friendActivityTaggedName}
+                          onPress={() => openFriendProfile(t.userId, t.displayName || t.userName)}
+                        >
+                          {i > 0 ? ', ' : ''}
+                          {t.displayName || t.userName}
+                        </Text>
+                      ))}
+                    </Text>
+                  ) : null}
                 </View>
-              </View>
-
-              {log.note ? (
-                <Text style={styles.friendActivityNote} numberOfLines={4}>{'“'}{log.note}{'”'}</Text>
-              ) : null}
-
-              {log.dishes && log.dishes.length > 0 ? (
-                <View style={styles.friendActivityDishesWrap}>
-                  <Text style={styles.friendActivityDishesLabel}>
-                    {'\u{1F37D}️ '}{isOwnLog ? 'You ordered' : 'Ordered'}
-                  </Text>
-                  <View style={styles.friendActivityDishesList}>
-                    {log.dishes.map((d, i) => (
-                      <Text key={i} style={styles.friendActivityDishItem}>{'• '}{d}</Text>
-                    ))}
-                  </View>
-                </View>
-              ) : null}
-
-              {log.taggedUsers && log.taggedUsers.length > 0 ? (
-                <Text style={styles.friendActivityTagged}>
-                  {isOwnLog ? 'with ' : `${logOwnerName} went with `}
-                  {log.taggedUsers.map((t) => t.displayName || t.userName).join(', ')}
-                </Text>
-              ) : null}
-            </View>
+              );
+            })()}
 
             {/* Restaurant content always renders — identical to the
                 Discover-arrival flow. Previously these blocks were
@@ -2145,6 +2222,10 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '500',
     color: colors.textMuted,
+  },
+  friendActivityTaggedName: {
+    color: colors.text,
+    fontWeight: '700',
   },
 
   // Details (de-emphasized)

@@ -295,11 +295,6 @@ export function RestaurantCard({ item, saved, userCoords }: Props) {
                 <Text style={styles.name} numberOfLines={1}>
                   {restaurant.name}
                 </Text>
-                {saved && (
-                  <View style={styles.savedIndicator}>
-                    <Ionicons name="bookmark" size={14} color={colors.accent} />
-                  </View>
-                )}
               </View>
               <Text style={styles.secondary} numberOfLines={1}>
                 {cuisine}
@@ -462,16 +457,12 @@ const styles = StyleSheet.create({
   nameRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
   },
   name: {
     flex: 1,
     fontSize: 16,
     fontWeight: '600',
     color: colors.text,
-  },
-  savedIndicator: {
-    padding: 2,
   },
   secondary: {
     marginTop: 2,

@@ -1924,6 +1924,26 @@ async function areFriends(userIdA, userIdB) {
   return data.status === 'accepted';
 }
 
+// Tag permission is more permissive than `areFriends`. The app surfaces a
+// follow graph (one-way + mutual) — requiring a mutual accepted friendship
+// to tag silently dropped tags for people the user follows but hasn't been
+// followed back by yet ("tagged my friend but my log didn't show on their
+// profile" report). Allow the tag whenever ANY friendship row exists between
+// the two users (pending in either direction, or accepted). The complete
+// strangers case still rejects, which prevents random tagging-as-spam.
+async function canTagUser(taggerId, targetId) {
+  if (!taggerId || !targetId || taggerId === targetId) return false;
+  if (!supabaseConfigured || !supabase) return true; // dev: tolerate
+  const { a, b } = friendshipKey(taggerId, targetId);
+  const { data } = await supabase
+    .from('friendships')
+    .select('status')
+    .eq('user_a', a).eq('user_b', b)
+    .maybeSingle();
+  if (!data) return false;
+  return data.status === 'accepted' || data.status === 'pending';
+}
+
 async function getActiveTagsForLog(logId) {
   if (!logId || !supabaseConfigured || !supabase) return [];
   const { data, error } = await supabase
@@ -1938,6 +1958,69 @@ async function getActiveTagsForLog(logId) {
   return (data || []).map((r) => ({ userId: r.tagged_user_id }));
 }
 
+/**
+ * Bulk-fetch active tag rows for a list of log IDs, resolve each tagged
+ * user's username/displayName, and return a Map<logId, taggedUsers[]>
+ * shaped for the FeedLog `taggedUsers` field. Two DB round-trips total
+ * (log_tags IN(...), then users IN(...)) so this stays cheap even on
+ * the global feed.
+ */
+async function getTaggedUsersByLogId(logIds) {
+  const empty = new Map();
+  if (!Array.isArray(logIds) || logIds.length === 0) return empty;
+  if (!supabaseConfigured || !supabase) return empty;
+  const { data: rows, error } = await supabase
+    .from('log_tags')
+    .select('log_id, tagged_user_id')
+    .in('log_id', logIds)
+    .eq('status', 'active');
+  if (error) {
+    if (error.code !== '42P01') console.warn('[BiteRight] log_tags bulk read error:', error.message);
+    return empty;
+  }
+  const tagRows = rows || [];
+  if (tagRows.length === 0) return empty;
+  const userIds = Array.from(new Set(tagRows.map((r) => r.tagged_user_id)));
+  const { data: users } = await supabase
+    .from('users')
+    .select('id, username, display_name')
+    .in('id', userIds);
+  const userById = new Map((users || []).map((u) => [u.id, u]));
+  const byLog = new Map();
+  for (const r of tagRows) {
+    const u = userById.get(r.tagged_user_id);
+    if (!u) continue;
+    const list = byLog.get(r.log_id) || [];
+    list.push({
+      userId: u.id,
+      userName: u.username,
+      displayName: u.display_name || u.username,
+      userAvatar: null,
+    });
+    byLog.set(r.log_id, list);
+  }
+  return byLog;
+}
+
+/**
+ * Returns the IDs of every log where `targetUserId` is an active tag.
+ * Used by /api/users/:userId/logs to surface tagged-in posts on the
+ * user's profile alongside their authored logs.
+ */
+async function getLogIdsWhereUserIsTagged(targetUserId) {
+  if (!targetUserId || !supabaseConfigured || !supabase) return [];
+  const { data, error } = await supabase
+    .from('log_tags')
+    .select('log_id')
+    .eq('tagged_user_id', targetUserId)
+    .eq('status', 'active');
+  if (error) {
+    if (error.code !== '42P01') console.warn('[BiteRight] log_tags reverse read error:', error.message);
+    return [];
+  }
+  return (data || []).map((r) => r.log_id);
+}
+
 /** Returns { added: [userIds], rejected: [{userId,reason}] } */
 async function addTagsToLog(logId, taggedBy, candidateUserIds) {
   if (!supabaseConfigured || !supabase) return { added: [], rejected: [] };
@@ -1946,7 +2029,7 @@ async function addTagsToLog(logId, taggedBy, candidateUserIds) {
   const added = [];
   const rejected = [];
   for (const uid of unique) {
-    if (!(await areFriends(taggedBy, uid))) {
+    if (!(await canTagUser(taggedBy, uid))) {
       rejected.push({ userId: uid, reason: 'not_friends' });
       continue;
     }
@@ -2015,6 +2098,7 @@ app.get('/api/feed', async (req, res) => {
     });
 
     const recent = visible.slice(0, limit);
+    const tagsByLog = await getTaggedUsersByLogId(recent.map((l) => l.id));
 
     const items = await Promise.all(recent.map(async (l) => {
       const info = await getRestaurantInfo(l.restaurantId).catch(() => null);
@@ -2043,6 +2127,7 @@ app.get('/api/feed', async (req, res) => {
         vibeTags: l.vibeTags || undefined,
         quickTip: l.quickTip || null,
         highlight: l.highlight || null,
+        taggedUsers: tagsByLog.get(l.id) || [],
       };
     }));
 
@@ -2712,7 +2797,63 @@ app.get('/api/users/:userId/logs', async (req, res) => {
 
     const allLogs = await db.getAllLogs();
     const mine = allLogs.filter((l) => l.userId === targetId);
-    const items = await Promise.all(mine.map(async (l) => {
+
+    // Logs where targetId was tagged. We include these so visiting a
+    // profile (own or friend's) surfaces every place that user was
+    // actually at — not just the ones they authored a post for.
+    // Each tagged-in log goes through the AUTHOR's visibility check,
+    // not the profile-owner's — the author chose who could see their
+    // post, and being tagged doesn't override that. Block edges (in
+    // either direction with the viewer) also drop the row.
+    const taggedLogIds = await getLogIdsWhereUserIsTagged(targetId);
+    let taggedLogs = [];
+    if (taggedLogIds.length > 0) {
+      const candidate = allLogs.filter(
+        (l) => taggedLogIds.includes(l.id) && l.userId && l.userId !== targetId,
+      );
+      const authorIds = Array.from(new Set(candidate.map((l) => l.userId)));
+      const visibilityByAuthor = new Map();
+      const blockedIds = new Set();
+      if (supabaseConfigured && authorIds.length > 0) {
+        const { data: vis } = await supabase
+          .from('users')
+          .select('id, visibility')
+          .in('id', authorIds);
+        vis?.forEach((u) => visibilityByAuthor.set(u.id, u.visibility ?? 'public'));
+        if (myId) {
+          const [bOut, bIn] = await Promise.all([
+            supabase.from('blocked_users').select('blocked_id').eq('blocker_id', myId),
+            supabase.from('blocked_users').select('blocker_id').eq('blocked_id', myId),
+          ]);
+          bOut.data?.forEach((b) => blockedIds.add(b.blocked_id));
+          bIn.data?.forEach((b) => blockedIds.add(b.blocker_id));
+        }
+      }
+      taggedLogs = candidate.filter((l) => {
+        if (blockedIds.has(l.userId)) return false;
+        const v = visibilityByAuthor.get(l.userId) ?? 'public';
+        if (v === 'public') return true;
+        if (v === 'private') return myId === l.userId;
+        // 'friends': viewer must be a friend of the author, or be the author.
+        // (The tagged user themselves always qualifies — they were tagged.)
+        if (!myId) return false;
+        if (myId === l.userId) return true;
+        if (myId === targetId) return true;
+        // For third-party viewers, defer to friendship check synchronously
+        // would require an extra round-trip; we conservatively hide.
+        return false;
+      });
+    }
+
+    // Merge + dedupe by log id. Authored logs win on collision.
+    const seen = new Set(mine.map((l) => l.id));
+    const merged = [
+      ...mine,
+      ...taggedLogs.filter((l) => !seen.has(l.id)),
+    ];
+    const tagsByLog = await getTaggedUsersByLogId(merged.map((l) => l.id));
+
+    const items = await Promise.all(merged.map(async (l) => {
       const info = await getRestaurantInfo(l.restaurantId).catch(() => null);
       return {
         id: l.id,
@@ -2736,8 +2877,15 @@ app.get('/api/users/:userId/logs', async (req, res) => {
         vibeTags: l.vibeTags || undefined,
         quickTip: l.quickTip || null,
         highlight: l.highlight || null,
+        taggedUsers: tagsByLog.get(l.id) || [],
       };
     }));
+    // Newest first across both authored and tagged-in logs.
+    items.sort((a, b) => {
+      const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return tb - ta;
+    });
     res.json(items);
   } catch (e) {
     console.error('[user-logs] error', e?.message);
@@ -2811,6 +2959,58 @@ app.post('/api/follows/:userId', async (req, res) => {
     return res.status(500).json({ error: 'Could not follow' });
   }
   return res.json({ ok: true, following: true, mutual: true });
+});
+
+// DELETE /api/follows/:userId — unfollow another user. Mirrors POST semantics
+// on the directional friendships schema:
+//   - No row, or pending with the OTHER as initiator: I wasn't following them
+//     anyway — no-op, return following=false.
+//   - Pending with ME as initiator: delete the row (I was the only follower).
+//   - Accepted (mutual): demote to pending with the OTHER as initiator so
+//     they keep following me, but I no longer follow them.
+app.delete('/api/follows/:userId', async (req, res) => {
+  if (!supabaseConfigured) return res.status(503).json({ error: 'Supabase not configured' });
+  const myId = getCurrentUserId(req);
+  if (!myId) return res.status(401).json({ error: 'Not signed in' });
+  const otherId = req.params.userId;
+  if (!otherId || otherId === myId) return res.status(400).json({ error: 'Invalid target' });
+
+  const [userA, userB] = myId < otherId ? [myId, otherId] : [otherId, myId];
+
+  const { data: existing } = await supabase
+    .from('friendships')
+    .select('status, initiated_by')
+    .eq('user_a', userA)
+    .eq('user_b', userB)
+    .maybeSingle();
+
+  if (!existing || (existing.status === 'pending' && existing.initiated_by !== myId)) {
+    return res.json({ ok: true, following: false, mutual: false });
+  }
+
+  if (existing.status === 'pending') {
+    const { error } = await supabase
+      .from('friendships')
+      .delete()
+      .eq('user_a', userA)
+      .eq('user_b', userB);
+    if (error) {
+      console.error('[follows] delete error', error.message);
+      return res.status(500).json({ error: 'Could not unfollow' });
+    }
+    return res.json({ ok: true, following: false, mutual: false });
+  }
+
+  const { error } = await supabase
+    .from('friendships')
+    .update({ status: 'pending', initiated_by: otherId, accepted_at: null })
+    .eq('user_a', userA)
+    .eq('user_b', userB);
+  if (error) {
+    console.error('[follows] demote error', error.message);
+    return res.status(500).json({ error: 'Could not unfollow' });
+  }
+  return res.json({ ok: true, following: false, mutual: false });
 });
 
 app.get('/api/users/:userId/dining-partners', async (req, res) => {
@@ -7497,6 +7697,27 @@ async function buildGooglePlaceDiscover(lat, lng, radiusMiles, userId, cuisineFi
   let nearby = searchTerm
     ? mergedRaw.filter((p) => !p.types?.some((t) => ['lodging', 'hospital', 'school', 'bank', 'gym'].includes(t)))
     : mergedRaw.filter((p) => isFoodPlace(p.types));
+
+  // Hard radius filter. Google's Text Search treats `location` + `radius` as
+  // a *soft* bias — when there's nothing relevant near the user it'll happily
+  // return results hundreds of miles away (the "I'm in a small town, asked
+  // for ramen, got Chicago" bug). Drop anything outside the requested radius
+  // here so the user sees a clean empty state instead of teleported results.
+  // Small slack (15%) absorbs Google's coordinate jitter on edge cases.
+  const HARD_RADIUS_SLACK = 1.15;
+  const beforeRadius = nearby.length;
+  nearby = nearby.filter((p) => {
+    if (p.lat == null || p.lng == null) return false;
+    const d = distanceMiles(lat, lng, p.lat, p.lng);
+    return d <= radiusMiles * HARD_RADIUS_SLACK;
+  });
+  if (beforeRadius !== nearby.length) {
+    console.log('[BiteRight][Discover] hard radius filter dropped results', {
+      radiusMiles,
+      before: beforeRadius,
+      after: nearby.length,
+    });
+  }
 
   // DEBUG: tracing La Luna through pipeline — after isFoodPlace filter
   _debugTarget('La Luna', nearby, 'AFTER_FOOD_FILTER');

@@ -121,12 +121,59 @@ async function downloadPdf(url) {
   }
 }
 
+const DEBUG_PDF = !!process.env.DEBUG_MENU_EXTRACT;
+const dlog = (...args) => { if (DEBUG_PDF) console.log('[menuPdf]', ...args); };
+
+// Beverage-category indicators. Used during a post-processing pass to
+// detect items that bled in from a different physical column of a
+// multi-column PDF (e.g. a sake item landing under a food header like
+// "ZUZU ROLLS" or "LOBSTER TEMPURA"). We don't want to split sushi
+// rolls into a sake section just because of a column accident.
+const SAKE_INDICATORS_RE =
+  /\b(?:sake|junmai|ginjo|daiginjo|honjozo|nigori|namazake|tokubetsu|kura|brewery|polish(?:ing|ed)?\s*rate|seimaibuai|rice\s*polish|hakkaisan|dassai|kubota|otokoyama|kikusui|fukucho|nanbu\s*bijin|den\s*kotobuki|tatenokawa|izumibashi)\b/i;
+const WINE_INDICATORS_RE =
+  /\b(?:vintage|chardonnay|cabernet|sauvignon|merlot|pinot\s+(?:noir|grigio|gris)|riesling|syrah|shiraz|tempranillo|malbec|prosecco|champagne|sparkling|rose|rosé|sangiovese|grenache|zinfandel|gewurztraminer|albari[ñn]o|viognier|nebbiolo|cava|brut|reserve|napa|sonoma|bordeaux|burgundy|tuscany|piedmont)\b/i;
+const COCKTAIL_INDICATORS_RE =
+  /\b(?:negroni|martini|margarita|manhattan|old\s*fashioned|daiquiri|mojito|paloma|spritz|sour|highball|julep|cosmo|gimlet|aperol|campari|amaro|vermouth|bitters|gin|vodka|rum|tequila|mezcal|bourbon|rye|scotch|whiskey|whisky)\b/i;
+const BEER_INDICATORS_RE =
+  /\b(?:ipa|pilsner|lager|stout|porter|hefeweizen|saison|kolsch|kölsch|gose|sour\s+ale|hazy|pale\s+ale|amber\s+ale|wheat\s+ale|on\s+draft|draft|cask|abv)\b/i;
+// Short evaluative phrases that show up in beverage tasting notes — e.g.
+// sake menus list "Light & Dry", "Full & Sweet". When these are item
+// names, they are almost certainly column-bleed flavor descriptors.
+const BEVERAGE_FLAVOR_RE =
+  /^(?:light(?:\s*&\s*|\s+(?:and\s+)?)(?:dry|crisp|sweet|fruity)|full(?:\s*&\s*|\s+(?:and\s+)?)(?:sweet|bodied|dry|rich)|sweet(?:\s*&\s*|\s+(?:and\s+)?)(?:tart|fruity|dry|crisp)|dry(?:\s*&\s*|\s+(?:and\s+)?)(?:crisp|spicy|earthy)|rich(?:\s*&\s*|\s+(?:and\s+)?)(?:fruity|sweet|smooth)|earthy(?:\s*&\s*|\s+(?:and\s+)?)\w+)$/i;
+
+function categorizeItem(name, description) {
+  const blob = `${name || ''} ${description || ''}`;
+  if (BEVERAGE_FLAVOR_RE.test((name || '').trim())) return 'beverage-flavor';
+  if (SAKE_INDICATORS_RE.test(blob)) return 'sake';
+  if (WINE_INDICATORS_RE.test(blob)) return 'wine';
+  if (COCKTAIL_INDICATORS_RE.test(blob)) return 'cocktail';
+  if (BEER_INDICATORS_RE.test(blob)) return 'beer';
+  return 'food';
+}
+
+function categorizeSectionTitle(title) {
+  const t = (title || '').toLowerCase();
+  if (/\b(?:sake|junmai|ginjo|daiginjo|nigori)\b/.test(t)) return 'sake';
+  if (/\b(?:wine|wines|champagne|sparkling|by\s+the\s+(?:glass|bottle))\b/.test(t)) return 'wine';
+  if (/\b(?:cocktail|cocktails|spirit|spirits|whisk(?:e)?y|bourbon|gin|vodka|rum|tequila|mezcal)\b/.test(t)) return 'cocktail';
+  if (/\b(?:beer|beers|draft|drafts|on\s+tap|brews?)\b/.test(t)) return 'beer';
+  if (/\b(?:drink|drinks|beverage|beverages|bar|libation)\b/.test(t)) return 'beverage';
+  return 'food';
+}
+
 /**
  * Parse extracted PDF text into MenuSection[].
  * Heuristics:
  *   - ALL-CAPS line (≥3 chars, no digits) -> section header
  *   - line ending with $X.XX            -> item + price
  *   - long line right after an item     -> description for that item
+ *
+ * After parsing, a category-consistency pass detects beverage items
+ * (sake, wine, cocktails, beer) that bled into food sections from
+ * adjacent PDF columns and either moves them into a proper beverage
+ * section or drops them entirely if they look like flavor descriptors.
  */
 function parsePdfTextToSections(text) {
   if (typeof text !== 'string' || text.length < 50) return null;
@@ -223,9 +270,99 @@ function parsePdfTextToSections(text) {
     }
     // sec.items.length === 0 → drop entirely
   }
-  const totalItems = cleaned.reduce((acc, s) => acc + s.items.length, 0);
+
+  // Category-consistency pass: for each section, classify each item.
+  // If a section's title is "food" but a majority of its items are
+  // beverages, the header was a column-bleed accident — relabel the
+  // section. If only a minority of items are beverages, hoist those
+  // items into separate beverage sections. Drop beverage-flavor
+  // descriptor "items" (e.g. "Light & Dry") entirely — those are tasting
+  // notes captured as item names.
+  const beverageBuckets = { sake: null, wine: null, cocktail: null, beer: null };
+  const getBucket = (cat) => {
+    const title = cat === 'sake' ? 'Sake'
+      : cat === 'wine' ? 'Wine'
+      : cat === 'cocktail' ? 'Cocktails'
+      : 'Beer';
+    if (!beverageBuckets[cat]) beverageBuckets[cat] = { title, items: [] };
+    return beverageBuckets[cat];
+  };
+
+  const recategorized = [];
+  for (const sec of cleaned) {
+    const sectionCat = categorizeSectionTitle(sec.title);
+    const itemCats = sec.items.map((it) => categorizeItem(it.name, it.description));
+    dlog('section', JSON.stringify(sec.title), 'cat=', sectionCat, 'itemCats=', itemCats);
+
+    if (sectionCat !== 'food') {
+      // Section is already beverage-typed — keep all its items as-is,
+      // dropping only obvious tasting-note fragments.
+      const kept = sec.items.filter((_, idx) => itemCats[idx] !== 'beverage-flavor');
+      if (kept.length >= 2) recategorized.push({ title: sec.title, items: kept });
+      continue;
+    }
+
+    // Food-titled section. Count beverage items.
+    const beverageIdx = itemCats
+      .map((c, idx) => ({ c, idx }))
+      .filter(({ c }) => c === 'sake' || c === 'wine' || c === 'cocktail' || c === 'beer');
+    const flavorIdx = itemCats
+      .map((c, idx) => ({ c, idx }))
+      .filter(({ c }) => c === 'beverage-flavor');
+
+    if (beverageIdx.length > sec.items.length / 2 && sec.items.length >= 3) {
+      // Section is majority-beverage — header was wrong. Move all
+      // beverage items into the dominant beverage bucket.
+      const dominant = beverageIdx
+        .map((x) => x.c)
+        .reduce((acc, c) => { acc[c] = (acc[c] || 0) + 1; return acc; }, {});
+      const top = Object.entries(dominant).sort((a, b) => b[1] - a[1])[0][0];
+      const bucket = getBucket(top);
+      beverageIdx.forEach(({ idx }) => bucket.items.push(sec.items[idx]));
+      dlog('section reclassified as beverage', sec.title, '->', top);
+      // Any remaining food items? Drop the misnamed section but keep them
+      // in a generic Menu bucket so they're not lost.
+      const remaining = sec.items.filter((_, idx) =>
+        itemCats[idx] === 'food' && !flavorIdx.find((f) => f.idx === idx),
+      );
+      if (remaining.length >= 2) recategorized.push({ title: 'Menu', items: remaining });
+      continue;
+    }
+
+    // Minority beverage bleed — hoist those items into the right bucket.
+    const keptItems = [];
+    sec.items.forEach((it, idx) => {
+      const c = itemCats[idx];
+      if (c === 'beverage-flavor') {
+        dlog('dropped flavor descriptor', it.name);
+        return;
+      }
+      if (c === 'sake' || c === 'wine' || c === 'cocktail' || c === 'beer') {
+        getBucket(c).items.push(it);
+        dlog('hoisted', it.name, 'from', sec.title, '->', c);
+        return;
+      }
+      keptItems.push(it);
+    });
+    if (keptItems.length >= 1) recategorized.push({ title: sec.title, items: keptItems });
+  }
+
+  // Append populated beverage buckets in a sensible order. We use a
+  // threshold of 1 here (not 2) because every item in these buckets was
+  // hoisted out of a food section we already trusted — losing it would
+  // mean either dropping a real item or leaving it misfiled.
+  for (const cat of ['cocktail', 'sake', 'wine', 'beer']) {
+    const bucket = beverageBuckets[cat];
+    if (bucket && bucket.items.length >= 1) recategorized.push(bucket);
+  }
+
+  // Earlier passes (cleaned + category-consistency) already filtered
+  // orphans and recovered hoisted items; we deliberately do NOT apply
+  // another >=2 filter here, since that would drop legitimate single
+  // beverage items that were hoisted out of food sections.
+  const totalItems = recategorized.reduce((acc, s) => acc + s.items.length, 0);
   if (totalItems < 3) return null;
-  return cleaned;
+  return recategorized;
 }
 
 function titleCase(s) {
