@@ -183,16 +183,16 @@ const SCHEMA = {
 
 // ─── API call ──────────────────────────────────────────────────────────────
 
-async function callClaudeVision(imageBlock) {
+async function callClaudeVision(imageBlock, opts = {}) {
   if (!ANTHROPIC_API_KEY) return null;
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? REQUEST_TIMEOUT_MS);
 
   const userContent = [
     // Strip the internal _cacheKey before sending.
     { type: imageBlock.type, source: imageBlock.source },
-    { type: 'text', text: 'Extract the menu from this photo per the rules.' },
+    { type: 'text', text: opts.userText ?? 'Extract the menu from this photo per the rules.' },
   ];
 
   try {
@@ -315,7 +315,73 @@ async function extractMenuFromPhoto(input, _opts = {}) {
   return value;
 }
 
+// ─── PDF support ───────────────────────────────────────────────────────────
+// Anthropic's content API accepts `type: 'document'` with media_type
+// application/pdf. Sending the PDF directly lets Claude see the visual
+// layout — multi-column design menus that pdf-parse mangles into garbage
+// fragments come out structured here. Used by the menu pipeline as the
+// PRIMARY path when a PDF is detected behind an embed page (GoDaddy/wsimg
+// "Download PDF" layouts, etc.) and as a fallback when text-mode PDF
+// parsing produces low-quality output.
+
+// Anthropic per-document limit. Empirically generous; we cap conservatively
+// at 30MB so we don't blow up the upload on outsized files.
+const MAX_PDF_BYTES = 30 * 1024 * 1024;
+
+async function extractMenuFromPdfBytes(buffer, _opts = {}) {
+  if (!ANTHROPIC_API_KEY) return null;
+  if (!Buffer.isBuffer(buffer)) {
+    console.warn('[menuVision] extractMenuFromPdfBytes called with non-Buffer');
+    return null;
+  }
+  if (buffer.length === 0 || buffer.length > MAX_PDF_BYTES) {
+    console.warn('[menuVision] pdf size out of range', buffer.length);
+    return null;
+  }
+
+  // Cache by content hash — same PDF served from a different URL should
+  // hit the cache. The `pdf:` prefix keeps PDF entries from colliding with
+  // image cache keys.
+  const sha = crypto.createHash('sha256').update(buffer).digest('hex').slice(0, 24);
+  const cacheKey = `pdf:${sha}`;
+  const cached = getCached(cacheKey);
+  if (cached !== undefined) return cached;
+
+  const block = {
+    type: 'document',
+    source: {
+      type: 'base64',
+      media_type: 'application/pdf',
+      data: buffer.toString('base64'),
+    },
+    _cacheKey: cacheKey,
+  };
+
+  // PDFs can be multi-page → allow more output tokens and a longer timeout
+  // than a single photo. Cap at 60s so a stuck call doesn't block the menu
+  // resolver indefinitely.
+  const result = await callClaudeVision(block, {
+    timeoutMs: 60000,
+    userText: 'Extract the menu from this PDF per the rules. Read every page.',
+  });
+  if (!result) {
+    setCached(cacheKey, null);
+    return null;
+  }
+
+  const { parsed, usage } = result;
+  const isMenu = parsed?.isMenu === true;
+  const confidence =
+    typeof parsed?.confidence === 'number' ? Math.max(0, Math.min(1, parsed.confidence)) : 0;
+  const sections = isMenu ? normalizeSections(parsed?.sections) : [];
+
+  const value = { isMenu, confidence, sections, usage };
+  setCached(cacheKey, value);
+  return value;
+}
+
 module.exports = {
   extractMenuFromPhoto,
+  extractMenuFromPdfBytes,
   isConfigured: () => !!ANTHROPIC_API_KEY,
 };

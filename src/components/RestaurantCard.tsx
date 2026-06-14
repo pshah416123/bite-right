@@ -318,13 +318,23 @@ export function RestaurantCard({ item, saved, userCoords }: Props) {
                   </Text>
                 </Pressable>
               ) : null}
-              {/* Price only for now. "Try the X" was driven by a cuisine-based
-                  guess that often didn't match the actual menu; re-enable once
-                  dish persistence lands and we can surface the most-favorited
-                  dish from real logs. */}
               <Text style={styles.secondary} numberOfLines={1}>
                 {Array.from({ length: restaurant.priceLevel ?? 0 }).map(() => '$').join('')}
               </Text>
+              {/* Standout dishes preview — up to 2 chips so the user has a
+                  sense of what's worth ordering before tapping in. Pulled
+                  from the server's recommendedDishes field (already wired
+                  on DiscoverItem). Skipped when the list is empty so plain
+                  cards stay plain. */}
+              {restaurant.recommendedDishes && restaurant.recommendedDishes.length > 0 ? (
+                <View style={styles.dishChipsRow}>
+                  {restaurant.recommendedDishes.slice(0, 2).map((d) => (
+                    <View key={d.name} style={styles.dishChip}>
+                      <Text style={styles.dishChipText} numberOfLines={1}>{d.name}</Text>
+                    </View>
+                  ))}
+                </View>
+              ) : null}
             </View>
           </View>
           <View style={styles.rightBlock}>
@@ -523,6 +533,24 @@ const styles = StyleSheet.create({
   tagText: {
     fontSize: 11,
     color: colors.textMuted,
+  },
+  dishChipsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginTop: 6,
+    gap: 4,
+  },
+  dishChip: {
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    backgroundColor: colors.accentSoft,
+    maxWidth: 130,
+  },
+  dishChipText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: colors.accentText,
   },
 
   // ── Modals ──

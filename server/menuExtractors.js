@@ -11,7 +11,7 @@
 
 const axios = require('axios');
 const cheerio = require('cheerio');
-const { detectMenuPdfUrls, extractMenuFromPdfUrl } = require('./menuPdf');
+const { detectMenuPdfUrls, extractMenuFromPdfUrl, hasPdfMenuSignal } = require('./menuPdf');
 
 const SCRAPE_HEADERS = {
   'User-Agent':
@@ -1633,6 +1633,34 @@ async function extractMenuFromHtml(html, url) {
   const trace = (strategy, items) => {
     console.log('[BiteRight] menu: strategy=' + strategy + ' items=' + items + ' url=' + (url || '?'));
   };
+
+  // PDF-FIRST short-circuit. When the page is obviously a PDF embed shell
+  // (GoDaddy "Download PDF" / wsimg.com-hosted PDF / file viewer), the
+  // generic HTML parsers will happily return junk from the surrounding
+  // chrome — header tracking strings, JS data structures, the "Loading
+  // files" placeholder. Route to the PDF pipeline FIRST so the actual
+  // menu wins. Vision is preferred for design PDFs because pdf-parse
+  // breaks multi-column layouts into spatial-order fragments.
+  const earlyPdfSignal = hasPdfMenuSignal(html);
+  const earlyPdfCandidates = earlyPdfSignal ? detectMenuPdfUrls(html, url) : [];
+  if (earlyPdfSignal && earlyPdfCandidates.length > 0) {
+    console.log('[BiteRight] menu: pdf signal detected', {
+      url: url || '?', pdfCandidates: earlyPdfCandidates,
+    });
+    for (const pdfUrl of earlyPdfCandidates) {
+      try {
+        const r = await extractMenuFromPdfUrl(pdfUrl, { preferVision: true });
+        if (r && Array.isArray(r.sections) && r.sections.length > 0) {
+          const items = r.sections.reduce((n, s) => n + (s.items?.length || 0), 0);
+          if (items >= 3) {
+            trace(r.source || 'pdf', items);
+            return { ...r, pdfUrl };
+          }
+        }
+      } catch { /* try next candidate */ }
+    }
+    console.log('[BiteRight] menu: pdf-first path returned nothing, falling through to html parsers', url || '?');
+  }
 
   if (provider === 'toast') {
     const r = parseToastMenu(html);

@@ -15,10 +15,13 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ActivityIndicator } from 'react-native';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'expo-router';
 import { useDiscover, type DiscoverSectionItems } from '~/src/hooks/useDiscover';
 import { RestaurantCard } from '~/src/components/RestaurantCard';
 import { FirstVisitTip } from '~/src/components/FirstVisitTip';
 import { FoodAutocomplete } from '~/src/components/FoodAutocomplete';
+import { RestaurantAutocomplete } from '~/src/components/RestaurantAutocomplete';
+import { selectRestaurant } from '~/src/api/restaurants';
 import { POPULAR_LOCATIONS, type DiscoverSelectedLocation } from '~/src/components/DiscoverLocationBar';
 import { useSavedRestaurants } from '~/src/context/SavedRestaurantsContext';
 import { useFeedContext } from '~/src/context/FeedContext';
@@ -280,6 +283,8 @@ export default function DiscoverScreen() {
       .map((log) => ({ cuisine: log.cuisine, score: log.score }));
     return buildPersonalizedChips(myLogs);
   }, [feedItems]);
+
+  const router = useRouter();
 
   // ── Search ─────────────────────────────────────────────────────────────
   const [searchInput, setSearchInput] = useState('');
@@ -682,12 +687,14 @@ export default function DiscoverScreen() {
           </Text>
         ) : null}
 
-        {/* Food autocomplete — shows matched dish/drink suggestions while
-            the user is typing in the search bar. Strict food catalog so
-            restaurant names and freeform text never appear here. Tapping
-            a suggestion commits it as the active search. */}
+        {/* Food + restaurant autocomplete — shows matched dish/drink
+            suggestions and restaurant name matches while the user is
+            typing. Tapping a food commits it as the active search; tapping
+            a restaurant resolves it via /api/restaurants/select and routes
+            straight to the detail page. The food list is from a strict
+            catalog; the restaurant list is Google-Places-backed. */}
         {searchFocused && searchInput.trim().length >= 2 ? (
-          <View style={{ paddingHorizontal: 16, marginTop: 6 }}>
+          <View style={{ paddingHorizontal: 16, marginTop: 6, gap: 8 }}>
             <FoodAutocomplete
               query={searchInput}
               onPick={(food) => {
@@ -695,6 +702,37 @@ export default function DiscoverScreen() {
                 setActiveSearch(food);
                 setSearchFocused(false);
                 searchInputRef.current?.blur();
+              }}
+            />
+            <RestaurantAutocomplete
+              query={searchInput}
+              coords={effectiveCoords}
+              onPick={async (sug) => {
+                setSearchFocused(false);
+                searchInputRef.current?.blur();
+                try {
+                  const sel = await selectRestaurant(sug.placeId);
+                  const payload = encodeURIComponent(JSON.stringify({
+                    id: sel.restaurantId,
+                    name: sel.name,
+                    cuisine: sel.cuisine ?? '',
+                    neighborhood: sel.neighborhood ?? null,
+                    address: sel.address ?? null,
+                    placeId: sel.placeId,
+                    googlePlaceId: sel.googlePlaceId ?? sel.placeId ?? null,
+                    displayImageUrl: sel.displayImageUrl ?? null,
+                    displayImageSourceType: sel.displayImageSourceType ?? null,
+                    displayImageLastResolvedAt: sel.displayImageLastResolvedAt ?? null,
+                    fromLat: effectiveCoords?.lat ?? null,
+                    fromLng: effectiveCoords?.lng ?? null,
+                  }));
+                  router.push(`/restaurant/${encodeURIComponent(sel.restaurantId)}?payload=${payload}` as never);
+                } catch {
+                  // selectRestaurant failed — fall back to a regular search
+                  // so the user still gets results for what they typed.
+                  setSearchInput(sug.name);
+                  setActiveSearch(sug.name);
+                }
               }}
             />
           </View>
