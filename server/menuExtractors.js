@@ -1759,6 +1759,87 @@ async function extractMenuFromHtml(html, url) {
   return null;
 }
 
+// ─── Menu evidence gate ────────────────────────────────────────────────────
+// Marketing-copy section titles. These show up on homepage scrapes ("Cater
+// With Us", "Traditional Ingredients", "Need More Bagels?") and on Squarespace
+// /about-style pages but are NEVER the headers of a real menu section. The
+// pattern is anchored on whole-title matches so legitimate menu sections
+// that happen to use one of these words ("Catering Menu", "Story Sandwich")
+// pass through.
+const MARKETING_TITLE_RE =
+  /^(\s*(?:our\s+)?(?:story|mission|history|values?|team|people|chef|kitchen|approach|philosophy|locations?|address|contact|hours|directions|parking|press|news|blog|events?|gift\s*cards?|merch|shop|shipping|delivery|catering|private\s+dining|reservations?|book|order(?:\s+online)?|careers?|jobs?|about|follow(?:\s+us|\s+all\s+things)?|subscribe|sign\s*up|newsletter|social|instagram|facebook|twitter)\s*)$/i;
+// Marketing CTA / tagline patterns. These produce false-positive section
+// titles when DOM heuristics pick up h2/h3 hero text from the homepage:
+//   "Need More than a Dozen Bagels?"   — call-to-action with "?"
+//   "Cater with Gotham Bagels!"        — verb + "!"
+//   "Looking For Bagel News?"          — question header
+//   "Authentic Bagels Made by Hand"    — long descriptive tagline
+//   "Traditional Ingredients"          — single-noun marketing tagline
+const MARKETING_CTA_RE = /[?!]\s*$/;
+const MARKETING_VERB_RE =
+  /^(?:need|looking|cater|follow|subscribe|sign\s*up|join|shop|order|discover|introducing|learn|read|see|view|find|visit|join|book)\b/i;
+const MARKETING_PHRASES_RE =
+  /\b(traditional\s+ingredients|authentic\s+(?:bagels|tacos|pizza)|made\s+(?:by\s+hand|with\s+love|from\s+scratch)|family[-\s]owned|since\s+\d{4}|best\s+in\s+the\s+\w+|home\s+of\s+the|made\s+fresh\s+daily)\b/i;
+
+function isMarketingTitle(title) {
+  const t = String(title || '').trim();
+  if (!t) return true;
+  if (t.length > 45) return true;                  // taglines, not section headers
+  if (MARKETING_TITLE_RE.test(t)) return true;
+  if (MARKETING_CTA_RE.test(t)) return true;       // ends in ? or !
+  if (MARKETING_VERB_RE.test(t)) return true;
+  if (MARKETING_PHRASES_RE.test(t)) return true;
+  return false;
+}
+
+/**
+ * Reject pages whose extracted "menu" is really marketing chrome: homepage
+ * hero copy, about-page sections, footer CTAs. Used as the gate inside
+ * extractMenuFromUrl so a weak homepage scrape doesn't short-circuit
+ * discovery of the real /menu / /food / PDF / online-ordering pages.
+ *
+ * Signals (any single strong-fail triggers rejection):
+ *   - every section title looks like marketing (no real menu section names)
+ *   - zero items carry a price AND any item name is paragraph-length
+ *     (the parser captured an h2 hero + p as a "dish")
+ *   - fewer than 3 total items
+ *
+ * Returns { ok: boolean, reason?: string, signals: object } for logging.
+ */
+function hasMenuEvidence(menu) {
+  if (!menu || !Array.isArray(menu.sections) || menu.sections.length === 0) {
+    return { ok: false, reason: 'no_sections', signals: {} };
+  }
+  const sections = menu.sections;
+  const items = sections.flatMap((s) => s.items || []);
+  const itemCount = items.length;
+  const priced = items.filter((it) => it && it.price && /\d/.test(it.price)).length;
+  const marketingTitles = sections.filter((s) => isMarketingTitle(s.title)).length;
+  const longItemNames = items.filter((it) => String(it?.name || '').length > 60).length;
+  const signals = {
+    sections: sections.length,
+    items: itemCount,
+    priced,
+    marketingTitles,
+    longItemNames,
+  };
+
+  if (itemCount < 3) return { ok: false, reason: 'too_few_items', signals };
+  // ALL titles look like marketing → almost certainly homepage chrome.
+  if (marketingTitles === sections.length) {
+    return { ok: false, reason: 'all_titles_marketing', signals };
+  }
+  // No prices anywhere AND paragraph-length "names" → captured prose, not menu.
+  if (priced === 0 && longItemNames > 0) {
+    return { ok: false, reason: 'prose_not_menu', signals };
+  }
+  // No prices AND >70% titles marketing → probably the same.
+  if (priced === 0 && marketingTitles / sections.length > 0.7) {
+    return { ok: false, reason: 'marketing_majority_no_prices', signals };
+  }
+  return { ok: true, signals };
+}
+
 async function extractMenuFromUrl(url, opts = {}) {
   // Recursion guard. We follow at most 2 levels deep (homepage → menu
   // index → individual menu page) and never revisit a URL we've already
@@ -1785,7 +1866,24 @@ async function extractMenuFromUrl(url, opts = {}) {
   }
 
   const direct = await extractMenuFromHtml(html, url);
-  if (direct) return direct;
+  // Evidence gate. Some DOM heuristics (Squarespace text parser, generic
+  // DOM, etc.) happily return marketing chrome from a homepage as a "menu"
+  // — three sections like "Traditional Ingredients", "Need More Bagels?",
+  // "Cater With Us" with paragraph copy as item names and zero prices.
+  // Without this gate the caller short-circuits to that junk and never
+  // tries /menu, online-ordering pages, PDFs, embedded screenshots, or
+  // JS-rendered content. We stash a "best so far" candidate so that if
+  // the deeper crawl also finds nothing solid we can still return the
+  // weak match rather than nothing.
+  let bestWeak = null;
+  if (direct) {
+    const evidence = hasMenuEvidence(direct);
+    if (evidence.ok) return direct;
+    console.log('[BiteRight] menu: rejecting low-evidence direct result, continuing crawl', {
+      url, reason: evidence.reason, signals: evidence.signals,
+    });
+    bestWeak = direct;
+  }
 
   // Link discovery + recursion. The page we landed on may not be the menu
   // itself — it might be a homepage or a hub page. Look for menu-like
@@ -1800,6 +1898,14 @@ async function extractMenuFromUrl(url, opts = {}) {
     }
   }
 
+  // Crawl exhausted. Return the weak homepage match as a last-resort
+  // signal, but only at the top of the recursion — inner recursive calls
+  // should propagate null so the parent can keep searching its own
+  // candidate list.
+  if (bestWeak && depth === 0) {
+    console.log('[BiteRight] menu: crawl found nothing better, returning low-evidence direct result', { url });
+    return bestWeak;
+  }
   return null;
 }
 
@@ -1820,4 +1926,6 @@ module.exports = {
   assignMenuGroups,
   discoverMenuLinks,
   extractMenuFromHtml,
+  hasMenuEvidence,
+  isMarketingTitle,
 };
