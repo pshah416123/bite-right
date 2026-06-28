@@ -5305,6 +5305,13 @@ function getChainMenu(restaurantName) {
 // ─── Menu cache + quality helpers ───────────────────────────────────────────
 const { extractMenuFromUrl, scoreMenu, assignMenuGroups } = require('./menuExtractors');
 const { extractDishesWithLLM, extractMenuFromReviewsWithLLM } = require('./menuLlm');
+const {
+  classifyMenuType,
+  selectPrimaryMenu,
+  MENU_TYPES,
+  HIDDEN_BY_DEFAULT_TYPES,
+} = require('./menuClassify');
+const { createTrace } = require('./menuTrace');
 
 const MENU_QUALITY_THRESHOLD = 50;
 const MENU_TTL_SUCCESS_DAYS = 30;
@@ -5508,6 +5515,12 @@ function computeIsOpenNowFromPeriods(periods) {
 
 app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
   const restaurantId = req.params.restaurantId;
+  // Structured per-stage trace. Every meaningful decision in this endpoint
+  // routes through `trace.{ok,fail,skip}(stage, details)`. At the end of
+  // the request the trace is emitted as a single multi-line log blob and,
+  // when extraction fails, attached to the response as `diagnostic` so we
+  // never silently return "No menu available".
+  const trace = createTrace({ restaurantId });
 
   // ── Cache lookup (stale-while-revalidate) ──
   // Fresh, high-quality row -> serve and return.
@@ -5516,6 +5529,16 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
   //   (TTL still gates a future re-attempt; user gets the popular-dishes
   //   fallback in the meantime).
   const cached = await readCachedMenu(restaurantId);
+  if (cached) {
+    trace.ok('cache_hit', {
+      source: cached.source_type,
+      quality: cached.quality_score,
+      sections: cached.structured_data?.sections?.length || 0,
+      fresh: isCacheFresh(cached),
+    });
+  } else {
+    trace.skip('cache_hit', { reason: 'no_cached_row' });
+  }
   // Heuristic: a generic_scrape cache that holds fewer than 15 items is
   // almost always a casualty of the pre-provider-parser era — the old
   // extractor pulled a stray handful of items off a WordPress / Squarespace
@@ -5538,6 +5561,8 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
     // written before assignMenuGroups existed; classifying here means we
     // don't need a backfill migration — the next write picks up the group
     // field naturally.
+    trace.ok('cache_serve', { source: cached.source_type, quality: cached.quality_score });
+    console.log(trace.toLog());
     return res.json({
       sections: assignMenuGroups(cached.structured_data?.sections ?? []),
       menuPhotos: [],
@@ -5548,10 +5573,13 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
     });
   }
   if (cached && cached.scrape_status === 'low_quality' && isCacheFresh(cached)) {
+    trace.fail('cache_serve', { reason: 'cached_low_quality_within_ttl', quality: cached.quality_score });
+    console.log(trace.toLog());
     return res.json({
       sections: [], menuPhotos: [], source: null,
       qualityScore: cached.quality_score, available: false,
       lastScrapedAt: cached.last_scraped_at,
+      diagnostic: trace.toDiagnostic(),
     });
   }
 
@@ -5579,6 +5607,17 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
       sections.length === 0 ? 'failed'
       : score >= MENU_QUALITY_THRESHOLD ? 'success'
       : 'low_quality';
+    if (status === 'success') {
+      trace.ok('finalize', { sourceType, sections: sections.length, qualityScore: score });
+    } else if (status === 'low_quality') {
+      trace.fail('finalize', { reason: 'low_quality', sourceType, sections: sections.length, qualityScore: score });
+    } else {
+      trace.fail('finalize', { reason: 'no_sections', sourceType });
+    }
+    // Single multi-line trace blob — greppable as
+    // `[BiteRight][MenuPipeline]` so we always see the full ingestion
+    // story per request rather than scattered partial logs.
+    console.log(trace.toLog());
     await writeCachedMenu({
       restaurantId,
       sections: status === 'success' ? sections : [],
@@ -5589,7 +5628,7 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
       qualityScore: score,
       status,
     });
-    return {
+    const response = {
       sections: status === 'success' ? sections : [],
       menuPhotos: result.menuPhotos ?? [],
       source: status === 'success' ? (sourceType || 'generic_scrape') : null,
@@ -5597,6 +5636,13 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
       available: status === 'success',
       lastScrapedAt: new Date().toISOString(),
     };
+    // Attach the structured trace to failure / low-quality responses so
+    // "No menu available" is never silent — the API consumer can ask why
+    // and we have a stage-by-stage answer.
+    if (status !== 'success') {
+      response.diagnostic = trace.toDiagnostic();
+    }
+    return response;
   };
 
   // Resolve website URL and restaurant name from multiple sources
@@ -5647,27 +5693,34 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
   // reliable than DOM heuristics. The PDF pipeline is the last fallback
   // inside extractMenuFromUrl — finds linked menu PDFs and parses them.
   if (websiteUrl) {
+    trace.setMeta({ websiteUrl });
     try {
       const extracted = await extractMenuFromUrl(websiteUrl);
       if (extracted && extracted.sections && extracted.sections.length > 0) {
-        result.sections = extracted.sections;
-        result.source = extracted.source;
-        console.log('[BiteRight] menu: provider extractor hit', {
-          restaurantId, source: extracted.source, sections: extracted.sections.length,
+        const items = extracted.sections.reduce((n, s) => n + (s.items?.length || 0), 0);
+        trace.ok('provider_extractor', {
+          source: extracted.source,
+          sections: extracted.sections.length,
+          items,
           pdfUrl: extracted.pdfUrl || null,
         });
+        result.sections = extracted.sections;
+        result.source = extracted.source;
+        console.log(trace.toLog());
         return res.json(await finalize(extracted.source, websiteUrl, extracted.rawData, extracted.pdfUrl ?? null));
       }
+      trace.fail('provider_extractor', { reason: 'returned_empty_or_null' });
     } catch (e) {
-      console.log('[BiteRight] menu: provider extractor failed', e?.message);
+      trace.fail('provider_extractor', { reason: 'threw', error: e?.message });
     }
+  } else {
+    trace.skip('provider_extractor', { reason: 'no_website_url' });
   }
 
   try {
 
     // ── Priority 1: Scrape the restaurant website for structured menu ──
     if (websiteUrl) {
-      console.log('[BiteRight] menu: attempting website scrape', { restaurantId, websiteUrl });
       let menuSections = null;
 
       // 1a. Fetch the homepage/website once — use it for JSON-LD, link finding, and provider detection
@@ -5678,8 +5731,15 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
           maxRedirects: 5,
           responseType: 'text',
         });
-        if (typeof resp.data === 'string') homepageHtml = resp.data;
-      } catch { /* ignore */ }
+        if (typeof resp.data === 'string') {
+          homepageHtml = resp.data;
+          trace.ok('fetch_website', { url: websiteUrl, bytes: resp.data.length, status: resp.status });
+        } else {
+          trace.fail('fetch_website', { url: websiteUrl, reason: 'non_string_body', status: resp.status });
+        }
+      } catch (e) {
+        trace.fail('fetch_website', { url: websiteUrl, reason: 'fetch_error', error: e?.message });
+      }
 
       // 1b. Walk the full ranked list of menu candidates discovered on
       // the homepage. Previously we tried only the single top candidate
@@ -5692,10 +5752,9 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
       const menuTrace = []; // structured telemetry buffer
       if (homepageHtml) {
         const candidates = findMenuUrls(homepageHtml, websiteUrl);
-        console.log('[BiteRight][MenuTrace] homepage candidates', {
-          websiteUrl,
-          count: candidates.length,
-          top5: candidates.slice(0, 5).map((c) => ({ url: c.url, score: c.score, reason: c.reasonDiscovered, text: c.anchorText })),
+        trace.ok('link_discovery', {
+          candidates: candidates.length,
+          top: candidates.slice(0, 5).map((c) => ({ url: c.url, score: c.score, reason: c.reasonDiscovered })),
         });
 
         // Walk every top-scoring candidate and AGGREGATE the menus they
@@ -5734,20 +5793,104 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
           return null;
         };
 
+        // Track candidate menus separately so the priority selector at the
+        // end of the loop can rank them. Each entry is one URL's extraction,
+        // independently classified — that's what stops a catering menu
+        // from ever bleeding into the aggregated "primary" menu.
+        const candidateMenus = [];
+        const skippedCateringTrace = [];
+
+        // Pre-classify by URL + anchor so we can skip catering/group/party/
+        // family-meals URLs WITHOUT spending a scrape on them. Classification
+        // by URL is cheap and high-confidence — "catering" in the path or
+        // anchor is rarely ambiguous.
+        const preClassify = (cand) => {
+          let urlPath = '';
+          try { urlPath = new URL(cand.url, websiteUrl).pathname; } catch {}
+          return classifyMenuType({ urlPath, anchorText: cand.anchorText || '' });
+        };
+
         for (const cand of candidates.slice(0, 6)) {
           if (cand.url === websiteUrl) continue;
           const aggregateCount = Array.from(aggregatedSectionsByKey.values())
             .reduce((n, s) => n + (s.items?.length || 0), 0);
           if (aggregateCount >= AGGREGATE_SATURATION) break;
 
+          // URL/anchor-level catering filter. A candidate whose URL screams
+          // catering ("/catering", "/party-packs", "/family-meals", "/group-
+          // ordering") never gets scraped, never reaches aggregation, and is
+          // logged with its classification so we can verify in Render.
+          const candClass = preClassify(cand);
+          if (HIDDEN_BY_DEFAULT_TYPES.has(candClass.type)) {
+            skippedCateringTrace.push({
+              url: cand.url, anchorText: cand.anchorText, classification: candClass,
+            });
+            console.log('[BiteRight][MenuClassify] skipping bulk-order candidate', {
+              url: cand.url, type: candClass.type, confidence: candClass.confidence,
+              signals: candClass.signals?.slice(0, 4),
+            });
+            continue;
+          }
+
           const candSections = await scrapeMenuFromUrl(cand.url);
           const itemCount = candSections ? candSections.reduce((n, s) => n + (s.items?.length || 0), 0) : 0;
+
+          // Item-level catering check. URL/anchor were generic ("/order",
+          // "/menu") but the extraction came back as 100% trays and
+          // platters. classifyMenuType inspects item names (serves N,
+          // feeds N, tray, dozen, ...) and pushes catering to the top.
+          // Hold the candidate aside the same way URL-level catering is.
+          let postClass = null;
+          if (candSections && itemCount > 0) {
+            const sectionTitles = candSections.map((s) => s?.title || '').filter(Boolean);
+            const itemNames = candSections
+              .flatMap((s) => (s?.items || []).map((it) => it?.name || ''))
+              .filter(Boolean);
+            postClass = classifyMenuType({
+              urlPath: (() => { try { return new URL(cand.url, websiteUrl).pathname; } catch { return ''; } })(),
+              anchorText: cand.anchorText || '',
+              sectionTitles,
+              itemNames,
+            });
+            if (HIDDEN_BY_DEFAULT_TYPES.has(postClass.type) && postClass.confidence >= 0.2) {
+              skippedCateringTrace.push({
+                url: cand.url, anchorText: cand.anchorText, classification: postClass,
+                reason: 'post_extract_items_signal',
+              });
+              console.log('[BiteRight][MenuClassify] candidate scraped but items look like catering', {
+                url: cand.url, type: postClass.type, confidence: postClass.confidence,
+                signals: postClass.signals?.slice(0, 4),
+              });
+              continue;
+            }
+          }
+
+          // Track this URL as a separate candidate menu so the priority
+          // selector at the end of the candidate walk can rank them. We
+          // ALSO continue with the existing aggregation below so multi-
+          // menu hospitality sites (Bar Pendry's Food + Cocktail + Late
+          // Night) still get their sections merged for the legacy single-
+          // menu UI. When the UI gains a menu-switcher the aggregation
+          // path can be retired in favor of candidateMenus + selection.
+          if (candSections && itemCount > 0) {
+            candidateMenus.push({
+              sourceUrl: cand.url,
+              anchorText: cand.anchorText || '',
+              menuTitle: cand.anchorText || '',
+              sections: candSections,
+              source: 'generic_scrape',
+              menuType: postClass?.type,
+              confidence: postClass?.confidence,
+            });
+          }
+
           menuTrace.push({
             url: cand.url,
             reasonDiscovered: cand.reasonDiscovered,
             anchorText: cand.anchorText,
             menuScore: cand.score,
-            menuType: inferMenuType(cand.anchorText),
+            menuType: postClass?.type || inferMenuType(cand.anchorText),
+            classification: postClass,
             fetched: true,
             extractionResult: candSections ? 'sections' : 'null',
             itemCount,
@@ -5814,6 +5957,20 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
               const deeper = findMenuUrls(subHtml, cand.url).slice(0, 4);
               for (const dCand of deeper) {
                 if (dCand.url === cand.url || dCand.url === websiteUrl) continue;
+                // Same URL-level catering skip as the top-level loop —
+                // applies one level deeper in hub walks (Squarespace
+                // /food-menus → /catering nested under it).
+                const dCandClass = preClassify(dCand);
+                if (HIDDEN_BY_DEFAULT_TYPES.has(dCandClass.type)) {
+                  skippedCateringTrace.push({
+                    url: dCand.url, anchorText: dCand.anchorText, classification: dCandClass,
+                    reason: 'deep_url_catering',
+                  });
+                  console.log('[BiteRight][MenuClassify] deeper candidate skipped as catering', {
+                    url: dCand.url, type: dCandClass.type,
+                  });
+                  continue;
+                }
                 const deepSections = await scrapeMenuFromUrl(dCand.url);
                 const dCount = deepSections ? deepSections.reduce((n, s) => n + (s.items?.length || 0), 0) : 0;
                 menuTrace.push({
@@ -5867,6 +6024,28 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
             sources: menuTrace.filter((t) => t.includedInFinalMenu).length,
           });
         }
+
+        // Classification + priority summary. Always logged when there were
+        // candidates so we can audit why a particular menu won (or why
+        // none did) without rebuilding the request locally. The selector
+        // is run for trace + diagnostics; it's not (yet) the source of
+        // truth for menuSections — the UI switcher tracking that work
+        // lives in a follow-up. For now it tells us:
+        //   - which candidates were classified as bulk-order and skipped
+        //   - what the primary would have been
+        //   - what the alternates would have been
+        if (candidateMenus.length > 0 || skippedCateringTrace.length > 0) {
+          const sel = selectPrimaryMenu(candidateMenus);
+          trace.ok('candidate_walk', {
+            scraped: candidateMenus.length,
+            skippedCatering: skippedCateringTrace.length,
+            primary: sel.primary?.sourceUrl || null,
+            primaryType: sel.primary?.menuType || null,
+            reason: sel.trace?.reason,
+          });
+        } else {
+          trace.fail('candidate_walk', { reason: 'no_candidates_yielded_items' });
+        }
       }
 
       // 1c. Try common menu URL paths. Expanded to cover meal-period and
@@ -5898,33 +6077,42 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
             });
             if (directSections && directSections.length > 0 && dCount > 0) {
               menuSections = directSections;
-              console.log('[BiteRight] menu: found via direct path', { directUrl });
+              trace.ok('common_path_fallback', { url: directUrl, items: dCount });
               break;
             }
           }
-        } catch { /* ignore URL parse errors */ }
-      }
-
-      // Summary log — surfaces the entire candidate journey so debugging
-      // "why did <restaurant> return no menu" no longer requires
-      // re-instrumenting from scratch.
-      if (!menuSections && menuTrace.length > 0) {
-        console.log('[BiteRight][MenuTrace] EXHAUSTED — no candidate yielded items', {
-          restaurantId,
-          websiteUrl,
-          tried: menuTrace.length,
-          trace: menuTrace,
-        });
+        } catch (e) {
+          trace.fail('common_path_fallback', { reason: 'parse_error', error: e?.message });
+        }
+        if (!menuSections) {
+          trace.fail('common_path_fallback', { reason: 'no_common_paths_yielded_items' });
+        }
       }
 
       // 1d. Detect third-party menu providers (SinglePlatform, Popmenu, etc.)
       if (!menuSections && homepageHtml) {
         menuSections = await tryThirdPartyMenuProviders(homepageHtml, websiteUrl);
+        if (menuSections && menuSections.length > 0) {
+          trace.ok('third_party_providers', {
+            sections: menuSections.length,
+            items: menuSections.reduce((n, s) => n + (s.items?.length || 0), 0),
+          });
+        } else {
+          trace.fail('third_party_providers', { reason: 'no_provider_match' });
+        }
       }
 
       // 1e. Try parsing the homepage itself as last resort (may have JSON-LD or inline menu)
       if (!menuSections && homepageHtml) {
         menuSections = parseMenuHtml(homepageHtml);
+        if (menuSections && menuSections.length > 0) {
+          trace.ok('parse_homepage_html', {
+            sections: menuSections.length,
+            items: menuSections.reduce((n, s) => n + (s.items?.length || 0), 0),
+          });
+        } else {
+          trace.fail('parse_homepage_html', { reason: 'no_structured_data_in_homepage' });
+        }
       }
 
       if (menuSections && menuSections.length > 0) {
@@ -5933,14 +6121,9 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
         if (totalItems >= 2) {
           result.sections = menuSections;
           result.source = 'generic_scrape';
-          console.log('[BiteRight] menu: scraped successfully', {
-            restaurantId,
-            sectionCount: menuSections.length,
-            totalItems,
-          });
           return res.json(await finalize('generic_scrape', websiteUrl));
         }
-        console.log('[BiteRight] menu: scrape found too few items', { restaurantId, totalItems });
+        trace.fail('scrape_quality_threshold', { reason: 'too_few_items', items: totalItems });
       }
     }
 
@@ -6023,14 +6206,16 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
         if (totalItems >= 2) {
           result.sections = puppeteerSections;
           result.source = 'generic_scrape';
-          console.log('[BiteRight] menu: Puppeteer found menu', {
-            restaurantId,
+          trace.ok('puppeteer_render', {
             urlsTried: urlsToTry.length,
-            sectionsAfterCap: puppeteerSections.length,
-            totalItems,
+            sections: puppeteerSections.length,
+            items: totalItems,
           });
           return res.json(await finalize('generic_scrape', websiteUrl));
         }
+        trace.fail('puppeteer_render', { reason: 'too_few_items', items: totalItems });
+      } else {
+        trace.fail('puppeteer_render', { reason: 'no_sections_aggregated' });
       }
     }
 
@@ -6068,23 +6253,29 @@ app.get('/api/restaurants/:restaurantId/menu', async (req, res) => {
       // or returned nothing — for some restaurants the home page itself
       // carries the menu screenshots.
       const htmlsToTry = [menuPageHtml, homepageHtml].filter(Boolean);
+      let pageOcrSuccess = false;
       for (const htmlSrc of htmlsToTry) {
         try {
           const pageOcr = await pageImagesModule.extractMenuFromPageImages(htmlSrc, menuPageUrl || websiteUrl);
           if (pageOcr && pageOcr.sections.length > 0) {
             result.sections = pageOcr.sections;
             result.source = 'page_image_ocr';
-            console.log('[BiteRight] menu: extracted via page-image OCR', {
-              restaurantId,
+            trace.ok('page_image_ocr', {
               sections: pageOcr.sections.length,
               items: pageOcr.sections.reduce((n, s) => n + s.items.length, 0),
             });
+            pageOcrSuccess = true;
             return res.json(await finalize('page_image_ocr', menuPageUrl || websiteUrl));
           }
         } catch (err) {
-          console.log('[BiteRight] menu: page_image_ocr failed', err.message);
+          trace.fail('page_image_ocr', { reason: 'threw', error: err?.message });
         }
       }
+      if (!pageOcrSuccess) {
+        trace.fail('page_image_ocr', { reason: 'no_menu_image_found' });
+      }
+    } else {
+      trace.skip('page_image_ocr', { reason: 'vision_not_configured' });
     }
 
     // ── Priority 3.5: OCR menu photos from Google Places via Claude Vision ──

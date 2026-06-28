@@ -260,6 +260,12 @@ export type MenuSourceType =
   | 'llm' | 'photos' | 'google_photo_ocr' | 'page_image_ocr' | 'dine_wp'
   | 'next_data' | 'dom_item_name' | 'json_ld' | 'squarespace_text' | null;
 
+export type MenuType =
+  | 'main' | 'all_day' | 'lunch' | 'dinner' | 'brunch' | 'breakfast'
+  | 'specials' | 'seasonal' | 'drinks' | 'dessert' | 'kids' | 'happy_hour'
+  | 'catering' | 'group_orders' | 'party_packs' | 'family_meals'
+  | 'unknown';
+
 export interface RestaurantMenu {
   sections: MenuSection[];
   menuPhotos: MenuPhoto[];
@@ -271,9 +277,37 @@ export interface RestaurantMenu {
    *  false, render the "What people order" fallback instead. */
   available?: boolean;
   lastScrapedAt?: string;
+  /** Classification of the selected menu (main / lunch / dinner / catering /
+   *  …). Server's menu-priority selector decides which menuType wins when
+   *  a restaurant publishes multiple menus. UI defaults to non-catering. */
+  menuType?: MenuType;
+  /** 0–1 confidence the selected menu was classified correctly. */
+  menuTypeConfidence?: number;
+  /** Other non-catering menus the server discovered. Forward-compatible
+   *  with a UI menu switcher; currently informational only. */
+  alternateMenus?: { menuType: MenuType; sourceUrl?: string; menuTitle?: string }[];
+  /** Catering / group / party / family-meal menus the server detected but
+   *  withheld from the default view. Surfaced only on explicit opt-in. */
+  hiddenCateringMenus?: { menuType: MenuType; sourceUrl?: string; menuTitle?: string }[];
   /** Client-side only — set when the menu fetch timed out or errored so the
    *  UI can offer a retry instead of permanently showing "unavailable". */
   loadError?: 'timeout' | 'error';
+  /** Server-attached when the menu extraction failed or returned low-quality
+   *  output. Contains a per-stage trace ({ stage, status, elapsedMs,
+   *  details }) plus a one-line summary explaining why "Menu unavailable"
+   *  is the answer. Always present on `available: false` responses so the
+   *  client can surface a debug affordance instead of silently failing. */
+  diagnostic?: {
+    summary: string;
+    totalMs: number;
+    meta?: Record<string, unknown>;
+    stages: {
+      stage: string;
+      status: 'ok' | 'fail' | 'skip';
+      elapsedMs: number;
+      details?: Record<string, unknown>;
+    }[];
+  };
 }
 
 // Cold restaurants force the server through a long pipeline (Puppeteer +

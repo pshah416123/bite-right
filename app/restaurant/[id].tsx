@@ -207,6 +207,11 @@ export default function RestaurantScreen() {
   const [menuRefreshKey, setMenuRefreshKey] = useState(0);
   const [detailRefreshKey, setDetailRefreshKey] = useState(0);
   const [hoursExpanded, setHoursExpanded] = useState(false);
+  // Restaurant info (address / phone / hours / reservations) lives lower
+  // on the page as a collapsible card. The redesign moved practical info
+  // below the decision-making sections so the page leads with social
+  // proof and dishes rather than logistics.
+  const [infoExpanded, setInfoExpanded] = useState(false);
   const [afterSpots, setAfterSpots] = useState<NearbyAfterSpot[]>([]);
   const [cyclingPhoto, setCyclingPhoto] = useState(false);
   const [photoKey, setPhotoKey] = useState(0); // bump to force image reload
@@ -809,6 +814,95 @@ export default function RestaurantScreen() {
     </View>
   );
 
+  // ── Why You'll Like It ────────────────────────────────────────────────
+  // Quick-recommendation card surfaced near the top so the user gets a
+  // friend-style "go here because…" answer before scrolling. Each highlight
+  // is sourced from existing detail/friend/save signals — no extra fetch.
+  // Capped at 3 highlights; ordered by personal-relevance (you-match → your
+  // friends → community → general signal). Hidden when no signal is strong
+  // enough so the page doesn't show an empty card on a brand-new restaurant.
+  const whyYoullLikeIt = useMemo(() => {
+    const highlights: { icon: string; title: string; subtitle?: string }[] = [];
+
+    // 1. Personal match — strongest "for you" signal.
+    if (matchScorePercent != null && matchScorePercent >= 85) {
+      highlights.push({
+        icon: '✨',
+        title: 'Top match for your taste',
+        subtitle: `${matchScorePercent}% match based on your logs and saves`,
+      });
+    }
+
+    // 2. Friend signal — names + average rating when available.
+    if (friendVisits.length > 0) {
+      const names = friendVisits.slice(0, 2).map((fv) => fv.userName.split(' ')[0]);
+      const extra = friendVisits.length - names.length;
+      const namePart = extra > 0 ? `${names.join(', ')} +${extra}` : names.join(' & ');
+      const loved = friendAvgScore != null && friendAvgScore >= 8.5;
+      highlights.push({
+        icon: loved ? '\u{1F90D}' : '\u{1F465}',
+        title: loved
+          ? `Loved by ${namePart}`
+          : `${namePart} ${friendVisits.length === 1 ? 'has been' : 'have been'} here`,
+        subtitle: friendAvgScore != null
+          ? `${friendAvgScore.toFixed(1)} avg from your circle`
+          : undefined,
+      });
+    }
+
+    // 3. Standout dish — anchor on the strongest popular pick.
+    if (standoutDishes.length > 0) {
+      const top = standoutDishes[0];
+      const second = standoutDishes[1];
+      highlights.push({
+        icon: '\u{1F37D}️',
+        title: `Best known for ${top}`,
+        subtitle: second ? `Also rave-worthy: ${second}` : undefined,
+      });
+    }
+
+    // 4. Community save signal — only when meaningful (not 0 / 1).
+    const saves = detail?.saveCount ?? 0;
+    if (saves >= 5 && highlights.length < 3) {
+      highlights.push({
+        icon: '\u{1F516}',
+        title: `Saved by ${saves} on BiteRight`,
+        subtitle: 'Community favorite',
+      });
+    }
+
+    // 5. Regulars callout if we still have room.
+    if (regulars.length > 0 && highlights.length < 3) {
+      const r = regulars[0];
+      highlights.push({
+        icon: '\u{1F525}',
+        title: `${r.userName.split(' ')[0]} keeps coming back`,
+        subtitle: `${r.visitCount ?? 3} visits and counting`,
+      });
+    }
+
+    return highlights.slice(0, 3);
+  }, [matchScorePercent, friendVisits, friendAvgScore, standoutDishes, detail?.saveCount, regulars]);
+
+  const whyYoullLikeItBlock = whyYoullLikeIt.length > 0 ? (
+    <View style={styles.whySection}>
+      <Text style={styles.sectionTitle}>Why you{'’'}ll like it</Text>
+      <View style={styles.whyHighlightsCol}>
+        {whyYoullLikeIt.map((h, i) => (
+          <View key={`why-${i}`} style={styles.whyHighlightCard}>
+            <Text style={styles.whyHighlightIcon}>{h.icon}</Text>
+            <View style={styles.whyHighlightTextWrap}>
+              <Text style={styles.whyHighlightTitle} numberOfLines={1}>{h.title}</Text>
+              {h.subtitle ? (
+                <Text style={styles.whyHighlightSubtitle} numberOfLines={1}>{h.subtitle}</Text>
+              ) : null}
+            </View>
+          </View>
+        ))}
+      </View>
+    </View>
+  ) : null;
+
   const friendsBar = friendVisits.length > 0 ? (
     <TouchableOpacity
       style={styles.friendsSection}
@@ -1050,12 +1144,16 @@ export default function RestaurantScreen() {
   ) : null;
 
   // Social-proof summary block — sits right above the menu and is
-  // ALWAYS rendered (zero-state included). The friendsBar near the top
-  // is a visual avatar strip and only renders when friends > 0; this
-  // block is the textual summary that the user explicitly asked for
-  // above the menu, and is reliable to find regardless of state.
-  const friendVisitCount = friendVisits.length;
-  const friendNames = friendVisits.slice(0, 3).map((fv) => fv.userName);
+  // ALWAYS rendered (zero-state included). Uses allFriendVisits (the
+  // unfiltered list) rather than `friendVisits`, which drops the log
+  // owner so the friends-bar doesn't echo the activity card. When the
+  // user arrives via a friend's log, that filter empties the list and
+  // the zero-state copy ("No friends have been here yet") fires even
+  // though the user is literally looking at a friend's visit. Using
+  // the unfiltered list fixes that — the summary now reflects every
+  // friend who's logged this restaurant.
+  const friendVisitCount = allFriendVisits.length;
+  const friendNames = allFriendVisits.slice(0, 3).map((fv) => fv.userName);
   const friendQuote = quotesWithNotes[0] ?? null;
   const saveCount = detail?.saveCount ?? 0;
   const socialProofBlock = (
@@ -1127,7 +1225,7 @@ export default function RestaurantScreen() {
 
   const afterSpotsBlock = afterSpots.length > 0 ? (
     <View style={styles.section}>
-      <Text style={styles.sectionTitle}>Next stop</Text>
+      <Text style={styles.sectionTitle}>Similar restaurants</Text>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.afterSpotsScroll}>
         {afterSpots.map((spot) => {
           // Next Stop spot.restaurantId is typically a Google place id
@@ -1197,7 +1295,12 @@ export default function RestaurantScreen() {
     </View>
   ) : null;
 
-  const detailsBlock = (
+  // Collapsible wrapper for the practical info card. We render the
+  // detailsBody once and gate it behind infoExpanded so the page leads
+  // with discovery content (Why You'll Like It, Standout Dishes, Friends)
+  // and pushes logistics below the fold. The header always shows so the
+  // user knows the info exists.
+  const detailsBody = (
     <>
       {(detail?.address || restaurantFromPayload?.address || restaurant?.neighborhood || restaurant?.state) ? (
         <View style={styles.detailsCard}>
@@ -1318,6 +1421,24 @@ export default function RestaurantScreen() {
     </>
   );
 
+  const detailsBlock = (
+    <View style={styles.infoSection}>
+      <TouchableOpacity
+        style={styles.infoHeaderRow}
+        onPress={() => setInfoExpanded((v) => !v)}
+        activeOpacity={0.7}
+      >
+        <Text style={styles.sectionTitle}>Restaurant info</Text>
+        <Ionicons
+          name={infoExpanded ? 'chevron-up' : 'chevron-down'}
+          size={20}
+          color={colors.textMuted}
+        />
+      </TouchableOpacity>
+      {infoExpanded ? detailsBody : null}
+    </View>
+  );
+
   // ── Render ─────────────────────────────────────────────────────────────
 
   return (
@@ -1411,11 +1532,23 @@ export default function RestaurantScreen() {
               {infoLine}
             </View>
 
-            {friendsBar}
-            {regularsBlock}
             {actionButtons}
 
-            {/* Vibe — restaurant identity surfaces before review content. */}
+            {/* New order (visited): decisions before logistics.
+                  Why You'll Like It — quick recommendation card
+                  Standout Dishes  — what to try
+                  Friends bar / regulars — social proof in one cluster
+                  (Friend Activity card for the visit's note/dishes)
+                  Vibe             — restaurant identity
+                  Public reviews   — friend quotes + sayings + tips
+                  Restaurant info  — practical info, collapsed by default
+                  Menu             — deep-browse content
+                  Similar restaurants → outbound suggestions */}
+            {whyYoullLikeItBlock}
+            {standoutDishesBlock}
+            {friendsBar}
+            {regularsBlock}
+
             {log.vibeTags && log.vibeTags.length > 0 ? (
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Vibe</Text>
@@ -1428,12 +1561,6 @@ export default function RestaurantScreen() {
                 </View>
               </View>
             ) : null}
-
-            {/* Restaurant-first section order: details → popular dishes →
-                compact friend activity card → friends said → public
-                reviews → tips → menu → next stop. */}
-            {detailsBlock}
-            {standoutDishesBlock}
 
             {/* Compact friend activity card. For friend visits this carries
                 avatar + "<friend> visited" + their rating + note/dishes/tagged.
@@ -1518,18 +1645,21 @@ export default function RestaurantScreen() {
               );
             })()}
 
-            {/* Restaurant content always renders — identical to the
-                Discover-arrival flow. Previously these blocks were
-                hidden behind isFromFriendPost and replaced with a
-                "View full restaurant" CTA that just re-pushed the same
-                screen without the logId, forcing a redundant tap. The
-                friend's activity is already shown above as a compact
-                supporting card. */}
+            {/* Reviews cluster (limited surface — quotes + sayings + tips). */}
             {friendQuotesBlock}
             {whatPeopleAreSayingBlock}
             {id ? <QuickTipsBlock restaurantId={id} /> : null}
             {socialProofBlock}
+
+            {/* Practical info collapsed below the discovery sections. */}
+            {detailsBlock}
+
+            {/* Menu — collapsed by default (MenuTemplate handles its own
+                expand state); appears below info so the page leads with
+                decision content. */}
             {menuBlock}
+
+            {/* Similar restaurants → outbound suggestions. */}
             {afterSpotsBlock}
           </>
         ) : (
@@ -1550,27 +1680,26 @@ export default function RestaurantScreen() {
               {infoLine}
             </View>
 
-            {friendsBar}
-            {regularsBlock}
             {actionButtons}
 
-            {/* Section order (info-first variant, for places you haven't
-                visited): logistics surface first (hours / website / phone),
-                then the discovery flow (dishes / social), and menu sits
-                near the bottom for users who want to dig in.
-                  details          → hours / website / address
-                  standout dishes  → what to try
-                  what friends said → trusted social proof
-                  what people are saying → public review keywords
-                  quick tips       → niche / tactical
-                  menu             → deep-browse content
-                  next stop        → outbound suggestion */}
-            {detailsBlock}
+            {/* New order (not visited): help the user decide before showing
+                logistics.
+                  Why You'll Like It — friend-style recommendation
+                  Standout Dishes  — what to try
+                  Friends & community — friends bar + regulars
+                  Reviews          — friend quotes + sayings + tips
+                  Restaurant info  — collapsed practical details
+                  Menu             — reference, kept collapsed by template
+                  Similar restaurants → outbound */}
+            {whyYoullLikeItBlock}
             {standoutDishesBlock}
+            {friendsBar}
+            {regularsBlock}
             {friendQuotesBlock}
             {whatPeopleAreSayingBlock}
             {id ? <QuickTipsBlock restaurantId={id} /> : null}
             {socialProofBlock}
+            {detailsBlock}
             {menuBlock}
             {afterSpotsBlock}
           </>
@@ -1924,8 +2053,46 @@ const styles = StyleSheet.create({
   },
 
   // Sections (rating, dishes, vibe, posts)
-  section: { marginTop: 20 },
-  sectionTitle: { fontSize: 16, fontWeight: '700', color: colors.text, marginBottom: 8 },
+  section: { marginTop: 28 },
+  sectionTitle: { fontSize: 18, fontWeight: '800', color: colors.text, marginBottom: 10, letterSpacing: -0.2 },
+
+  // Why You'll Like It — quick-recommendation cards near the top.
+  whySection: { marginTop: 28 },
+  whyHighlightsCol: { gap: 8 },
+  whyHighlightCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 16,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  whyHighlightIcon: { fontSize: 20 },
+  whyHighlightTextWrap: { flex: 1 },
+  whyHighlightTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.text,
+    letterSpacing: -0.1,
+  },
+  whyHighlightSubtitle: {
+    fontSize: 12,
+    color: colors.textMuted,
+    marginTop: 2,
+  },
+
+  // Collapsible "Restaurant info" wrapper.
+  infoSection: { marginTop: 28 },
+  infoHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 4,
+    marginBottom: 6,
+  },
   sectionSubtitle: { fontSize: 12, color: colors.textMuted, marginTop: -4, marginBottom: 10 },
   sayingsWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   sayingChip: {
